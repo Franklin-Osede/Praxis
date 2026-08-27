@@ -185,6 +185,13 @@ Required growing properties:
 - The same ambiguous bar always resolves identically.
 - A trailing drawdown threshold can rise with its high-water mark and never
   moves down.
+- Cost basis is conserved across partial closes: for any partition of a
+  position into partial closes at the same prices, total realised P&L equals
+  the realised P&L of a single full close. Achieve this by removing an exact
+  allocated cost from the basis and leaving the remainder in the residual
+  basis, never by computing the remaining basis independently. If a future
+  rule makes exact conservation impossible, state the accepted leakage bound
+  instead of leaving it undefined.
 
 ## 8. Roadmap
 
@@ -215,8 +222,14 @@ session from its event log without information loss. No web UI.
 
 ### Phase 4 — Personal experiment
 
-Run 50–100 sessions against hypotheses frozen before session one. An effect
-counts only if it is present in both halves of the sample. If no stable
+Run sessions against hypotheses frozen before session one. An effect counts
+only if it is present in both halves of the sample. Derive the session target
+from a power calculation performed before freezing the hypotheses—trades per
+session, expected frequency of the conditioning event, and assumed dispersion
+of the outcome—rather than from a round number. Splitting the sample in half
+halves the power of each test. Declare one primary hypothesis; the rest are
+exploratory, because four tests at p < 0.05 carry roughly a 19% family-wise
+error rate. If no stable
 behavioural patterns appear, stop adaptive-training work and retain Praxis as a
 personal simulator.
 
@@ -255,7 +268,9 @@ write its invariant tests, implement the minimum, and grow Phase 0 case by case.
 ## 11. Statistical and commercial guardrails
 
 Freeze hypotheses before collecting sessions; do not rewrite them during data
-collection. With a small sample, exploratory patterns are hypotheses, not
+collection. An underpowered study fails to reject for lack of data, not for
+absence of effect: a kill criterion evaluated without a prior power
+calculation can retire a true thesis. With a small sample, exploratory patterns are hypotheses, not
 findings. Stability across two halves is a minimum guardrail, not proof of
 causality or transfer to real-money trading.
 
