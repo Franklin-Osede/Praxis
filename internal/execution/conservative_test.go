@@ -123,57 +123,106 @@ func TestExecuteOnQuoteMarketOrder(t *testing.T) {
 //
 //	Given an order or a quote the domain treats as impossible
 //	When execution is attempted
-//	Then it reports an error instead of inventing a fill.
+//	Then it reports the class of fault and its precise cause,
+//	  instead of inventing a fill.
+//
+// Order and Quote have exported fields, so their constructors cannot make an
+// invalid value unrepresentable. Execution must therefore validate what it is
+// handed, not trust that it came from a constructor.
 func TestExecuteOnQuoteRejectsImpossibleInput(t *testing.T) {
 	good := market.Quote{Instrument: mnq, Time: 1, Bid: 20_000, Ask: 20_001, BidSize: 5, AskSize: 5}
 
 	tests := []struct {
-		name  string
-		order market.Order
-		quote market.Quote
-		want  error
+		name      string
+		order     market.Order
+		quote     market.Quote
+		wantClass error
+		wantCause error
 	}{
 		{
-			name:  "instrument mismatch",
-			order: mustOrder(t, market.SideBuy, 1),
-			quote: market.Quote{Instrument: market.Instrument{Symbol: "MES"}, Bid: 5, Ask: 6, BidSize: 1, AskSize: 1},
-			want:  execution.ErrInstrumentMismatch,
+			name:      "instrument mismatch",
+			order:     mustOrder(t, market.SideBuy, 1),
+			quote:     market.Quote{Instrument: market.Instrument{Symbol: "MES"}, Bid: 5, Ask: 6, BidSize: 1, AskSize: 1},
+			wantClass: execution.ErrInstrumentMismatch,
+			wantCause: execution.ErrInstrumentMismatch,
 		},
 		{
-			name:  "crossed book",
-			order: mustOrder(t, market.SideBuy, 1),
-			quote: market.Quote{Instrument: mnq, Bid: 20_002, Ask: 20_001, BidSize: 1, AskSize: 1},
-			want:  execution.ErrCrossedQuote,
+			name:      "crossed book",
+			order:     mustOrder(t, market.SideBuy, 1),
+			quote:     market.Quote{Instrument: mnq, Bid: 20_002, Ask: 20_001, BidSize: 1, AskSize: 1},
+			wantClass: execution.ErrInvalidQuote,
+			wantCause: market.ErrCrossedQuote,
 		},
 		{
-			name:  "negative ask size",
-			order: mustOrder(t, market.SideBuy, 1),
-			quote: market.Quote{Instrument: mnq, Bid: 20_000, Ask: 20_001, BidSize: 1, AskSize: -1},
-			want:  execution.ErrInvalidQuote,
+			name:      "negative ask size",
+			order:     mustOrder(t, market.SideBuy, 1),
+			quote:     market.Quote{Instrument: mnq, Bid: 20_000, Ask: 20_001, BidSize: 1, AskSize: -1},
+			wantClass: execution.ErrInvalidQuote,
+			wantCause: market.ErrNegativeSize,
 		},
 		{
-			name:  "negative bid size",
-			order: mustOrder(t, market.SideSell, 1),
-			quote: market.Quote{Instrument: mnq, Bid: 20_000, Ask: 20_001, BidSize: -1, AskSize: 1},
-			want:  execution.ErrInvalidQuote,
+			name:      "negative bid size",
+			order:     mustOrder(t, market.SideSell, 1),
+			quote:     market.Quote{Instrument: mnq, Bid: 20_000, Ask: 20_001, BidSize: -1, AskSize: 1},
+			wantClass: execution.ErrInvalidQuote,
+			wantCause: market.ErrNegativeSize,
 		},
 		{
-			name:  "zero value order",
-			order: market.Order{},
-			quote: good,
-			want:  execution.ErrInvalidOrder,
+			name:      "zero value order",
+			order:     market.Order{},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrEmptyOrderID,
 		},
 		{
-			name:  "unspecified side",
-			order: market.Order{ID: "o-1", Instrument: mnq, Type: market.OrderTypeMarket, Qty: 1},
-			quote: good,
-			want:  execution.ErrInvalidOrder,
+			name:      "unspecified side",
+			order:     market.Order{ID: "o-1", Instrument: mnq, Type: market.OrderTypeMarket, Qty: 1},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrInvalidSide,
 		},
 		{
-			name:  "non-positive quantity",
-			order: market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 0},
-			quote: good,
-			want:  execution.ErrInvalidOrder,
+			name:      "unspecified order type",
+			order:     market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Qty: 1},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrInvalidOrderType,
+		},
+		{
+			name:      "non-positive quantity",
+			order:     market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 0},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrNonPositiveQty,
+		},
+		{
+			// Regression: an order composed directly, bypassing the
+			// constructor, produced a fill that no event log could attribute
+			// back to an order.
+			name:      "empty order id bypasses the constructor",
+			order:     market.Order{ID: "", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 1},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrEmptyOrderID,
+		},
+		{
+			// Regression: an order and a quote both carrying the empty
+			// instrument compared equal, so the mismatch check passed and a
+			// fill was produced for no instrument at all.
+			name:      "empty instrument on both sides is not a match",
+			order:     market.Order{ID: "o-1", Instrument: market.Instrument{}, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 1},
+			quote:     market.Quote{Instrument: market.Instrument{}, Time: 1, Bid: 20_000, Ask: 20_001, BidSize: 5, AskSize: 5},
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrEmptySymbol,
+		},
+		{
+			// Regression: a quote with no instrument, against a well formed
+			// order, must be rejected as data rather than as a mismatch.
+			name:      "quote without an instrument",
+			order:     mustOrder(t, market.SideBuy, 1),
+			quote:     market.Quote{Instrument: market.Instrument{}, Time: 1, Bid: 20_000, Ask: 20_001, BidSize: 5, AskSize: 5},
+			wantClass: execution.ErrInvalidQuote,
+			wantCause: market.ErrEmptySymbol,
 		},
 	}
 
@@ -181,8 +230,11 @@ func TestExecuteOnQuoteRejectsImpossibleInput(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := policy.ExecuteOnQuote(tc.order, tc.quote)
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("error: got %v, want %v", err, tc.want)
+			if !errors.Is(err, tc.wantClass) {
+				t.Fatalf("error class: got %v, want %v", err, tc.wantClass)
+			}
+			if !errors.Is(err, tc.wantCause) {
+				t.Fatalf("error cause: got %v, want %v", err, tc.wantCause)
 			}
 			if got != nil {
 				t.Fatalf("rejected input produced fills: %+v", got)

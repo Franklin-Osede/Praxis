@@ -4,6 +4,7 @@ package execution
 
 import (
 	"errors"
+	"fmt"
 
 	"praxis/internal/market"
 )
@@ -13,9 +14,8 @@ import (
 // finds no liquidity returns no fills and no error.
 var (
 	ErrInstrumentMismatch = errors.New("execution: order and quote are for different instruments")
-	ErrCrossedQuote       = errors.New("execution: quote is crossed")
-	ErrInvalidQuote       = errors.New("execution: quote has a negative displayed size")
-	ErrInvalidOrder       = errors.New("execution: order cannot be executed as written")
+	ErrInvalidOrder       = errors.New("execution: order is not a valid domain value")
+	ErrInvalidQuote       = errors.New("execution: quote is not a valid domain value")
 )
 
 // ConservativeExecution never grants the trader a price or a quantity the
@@ -32,17 +32,14 @@ type ConservativeExecution struct{}
 //
 // Finding no liquidity is not an error: it returns no fills and no error.
 func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]market.Fill, error) {
-	if o.Type != market.OrderTypeMarket || !o.Side.Valid() || o.Qty <= 0 {
-		return nil, ErrInvalidOrder
+	if err := o.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidOrder, err)
+	}
+	if err := q.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidQuote, err)
 	}
 	if o.Instrument != q.Instrument {
 		return nil, ErrInstrumentMismatch
-	}
-	if q.Crossed() {
-		return nil, ErrCrossedQuote
-	}
-	if q.BidSize < 0 || q.AskSize < 0 {
-		return nil, ErrInvalidQuote
 	}
 
 	price, available := q.Bid, q.BidSize

@@ -63,6 +63,23 @@ type Quote struct {
 	AskSize    Qty
 }
 
+// Validate reports why the quote is not a valid domain value, or nil. A
+// quote is composable field by field, so its consumers check it for the same
+// reason Order.Validate exists. Being untradable is not invalid: an empty
+// side is a legal observation.
+func (q Quote) Validate() error {
+	if q.Instrument.Symbol == "" {
+		return ErrEmptySymbol
+	}
+	if q.Crossed() {
+		return ErrCrossedQuote
+	}
+	if q.BidSize < 0 || q.AskSize < 0 {
+		return ErrNegativeSize
+	}
+	return nil
+}
+
 // Crossed reports whether the book is crossed, meaning the bid is strictly
 // above the ask. A crossed book is invalid input rather than a tradable
 // state. A locked book (bid equal to ask) is legal and tradable.
@@ -95,30 +112,50 @@ type Order struct {
 	Qty        Qty
 }
 
-// Errors returned when an order or an instrument cannot be constructed.
+// Errors describing why an order or a quote is not a valid domain value.
 var (
-	ErrEmptyOrderID   = errors.New("market: order id is empty")
-	ErrEmptySymbol    = errors.New("market: instrument symbol is empty")
-	ErrInvalidSide    = errors.New("market: side is unspecified")
-	ErrNonPositiveQty = errors.New("market: order quantity is not positive")
+	ErrEmptyOrderID     = errors.New("market: order id is empty")
+	ErrEmptySymbol      = errors.New("market: instrument symbol is empty")
+	ErrInvalidSide      = errors.New("market: side is unspecified")
+	ErrInvalidOrderType = errors.New("market: order type is unspecified")
+	ErrNonPositiveQty   = errors.New("market: order quantity is not positive")
+	ErrCrossedQuote     = errors.New("market: quote is crossed")
+	ErrNegativeSize     = errors.New("market: quote has a negative displayed size")
 )
+
+// Validate reports why the order is not a valid domain value, or nil.
+//
+// Order has exported fields, so a constructor cannot make an invalid order
+// unrepresentable: any caller can compose one directly. Validity therefore
+// lives on the value itself and every consumer checks it, so that the
+// constructor and the consumers cannot drift apart.
+func (o Order) Validate() error {
+	if o.ID == "" {
+		return ErrEmptyOrderID
+	}
+	if o.Instrument.Symbol == "" {
+		return ErrEmptySymbol
+	}
+	if !o.Side.Valid() {
+		return ErrInvalidSide
+	}
+	if o.Type != OrderTypeMarket {
+		return ErrInvalidOrderType
+	}
+	if o.Qty <= 0 {
+		return ErrNonPositiveQty
+	}
+	return nil
+}
 
 // NewMarketOrder builds a market order, rejecting states the domain treats as
 // impossible rather than as failed executions.
 func NewMarketOrder(id string, i Instrument, side Side, qty Qty) (Order, error) {
-	if id == "" {
-		return Order{}, ErrEmptyOrderID
+	o := Order{ID: id, Instrument: i, Side: side, Type: OrderTypeMarket, Qty: qty}
+	if err := o.Validate(); err != nil {
+		return Order{}, err
 	}
-	if i.Symbol == "" {
-		return Order{}, ErrEmptySymbol
-	}
-	if !side.Valid() {
-		return Order{}, ErrInvalidSide
-	}
-	if qty <= 0 {
-		return Order{}, ErrNonPositiveQty
-	}
-	return Order{ID: id, Instrument: i, Side: side, Type: OrderTypeMarket, Qty: qty}, nil
+	return o, nil
 }
 
 // Fill is an executed quantity at an executed price. It records the logical

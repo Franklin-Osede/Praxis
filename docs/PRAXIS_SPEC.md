@@ -31,8 +31,13 @@ signals, market prediction, and hardcoded provider-specific challenge engines.
 
 At the time this specification was installed, the repository contained only
 `README.md`. Earlier design material described a planned baseline containing
-`domain/types.go`, `domain/execution.go`, and 24 passing tests, but that baseline
-is not present and has not been verified in this repository.
+`domain/types.go`, `domain/execution.go`, and 24 passing tests; that baseline
+was never present in this repository.
+
+What exists now, built and verified here: `internal/market` holds the observed
+market vocabulary, and `internal/execution` holds `ConservativeExecution`,
+which executes a market order against a single top-of-book quote. Limit orders,
+stops, bars, intrabar resolution, position and account do not exist yet.
 
 Always inspect the repository and run the suite before relying on a documented
 baseline. Never rewrite working code without evidence that it is wrong.
@@ -125,6 +130,34 @@ a clean short cost basis for two.
 
 A zero-quantity position remains as a flat position associated with its
 instrument and emits `PositionClosed`; it is not deleted mid-session.
+
+### Limit orders fill at their limit price
+
+This is a deliberately pessimistic simulation policy, not a claim about market
+microstructure. A real resting limit order can be filled at a better price than
+its limit. Praxis never grants that, because unearned price improvement teaches
+a habit the market will not honour. It is recorded here so that it is not later
+"corrected" as a bug by someone who expects a fill at the ask or the bid.
+
+- A buy limit is executable when the ask is at or below the limit, and fills at
+  the limit.
+- A sell limit is executable when the bid is at or above the limit, and fills at
+  the limit.
+- No fill ever occurs outside the limit price.
+- Filled quantity is capped by the size displayed on the taken side, as for
+  market orders.
+- A limit that is not executable against the observation produces no fills and
+  no error.
+- A limit price is part of a valid limit order; an order of that type without
+  one is invalid input, not an order that never executes.
+
+### Domain values validate themselves
+
+`Order` and `Quote` have exported fields, so a constructor cannot make an
+invalid value unrepresentable: any caller can compose one directly. Validity
+therefore lives on the value as a `Validate` method that every consumer calls,
+so a constructor and its consumers cannot drift apart. Consumers report the
+class of fault they are rejecting and wrap the precise cause.
 
 ## 5. Explicit port exceptions
 
@@ -260,10 +293,11 @@ domain failures.
 
 ## 10. Next smallest vertical slice
 
-Because the documented Phase 0 implementation is absent, the next slice is the
-smallest coherent Phase 0 execution path—not Position/Account. Before coding,
-define the domain types needed by one conservative market-order-on-quote case,
-write its invariant tests, implement the minimum, and grow Phase 0 case by case.
+The market-order-on-quote path is implemented. The next slice is limit orders
+on a quote, under the policy in section 4, followed by stop orders, and only
+then `Bar` and intrabar resolution—which is the point at which the origin of
+bars must be decided, since `MarketDataPort` streams observations and nothing
+yet states whether a bar is one of them or an adapter aggregate.
 
 ## 11. Statistical and commercial guardrails
 
