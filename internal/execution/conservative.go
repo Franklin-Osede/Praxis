@@ -25,12 +25,21 @@ type ConservativeExecution struct{}
 // ExecuteOnQuote executes an order against a single top-of-book observation.
 //
 // A market order crosses the spread: a buy pays the ask, a sell hits the bid,
-// and neither ever receives a better price. It takes at most the quantity the
-// taken side displays, because assuming depth that was never observed is the
-// most common way a simulator flatters the trader. The unfilled remainder is
-// the caller's to carry; this policy holds no state.
+// and neither ever receives a better price.
 //
-// Finding no liquidity is not an error: it returns no fills and no error.
+// A limit order is executable when the touch on the taken side has reached its
+// limit, and then fills at its own limit rather than at the touch. A real
+// resting limit order can be filled better than its limit; granting that in a
+// simulator teaches a habit the market will not honour. See "Limit orders fill
+// at their limit price" in docs/PRAXIS_SPEC.md section 4 before changing this.
+//
+// Either kind takes at most the quantity the taken side displays, because
+// assuming depth that was never observed is the most common way a simulator
+// flatters the trader. The unfilled remainder is the caller's to carry; this
+// policy holds no state.
+//
+// Neither finding no liquidity nor being unexecutable is an error: both return
+// no fills and no error.
 func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]market.Fill, error) {
 	if err := o.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidOrder, err)
@@ -42,9 +51,17 @@ func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]m
 		return nil, ErrInstrumentMismatch
 	}
 
-	price, available := q.Bid, q.BidSize
+	touch, available := q.Bid, q.BidSize
 	if o.Side == market.SideBuy {
-		price, available = q.Ask, q.AskSize
+		touch, available = q.Ask, q.AskSize
+	}
+
+	price := touch
+	if o.Type == market.OrderTypeLimit {
+		if !reachedLimit(o.Side, touch, o.LimitPrice) {
+			return nil, nil
+		}
+		price = o.LimitPrice
 	}
 
 	filled := o.Qty
@@ -63,4 +80,13 @@ func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]m
 		Price:      price,
 		Qty:        filled,
 	}}, nil
+}
+
+// reachedLimit reports whether the touch on the taken side has come to the
+// limit price: at or below it for a buy, at or above it for a sell.
+func reachedLimit(side market.Side, touch, limit market.Ticks) bool {
+	if side == market.SideBuy {
+		return touch <= limit
+	}
+	return touch >= limit
 }

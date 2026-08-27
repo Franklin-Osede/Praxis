@@ -36,8 +36,8 @@ was never present in this repository.
 
 What exists now, built and verified here: `internal/market` holds the observed
 market vocabulary, and `internal/execution` holds `ConservativeExecution`,
-which executes a market order against a single top-of-book quote. Limit orders,
-stops, bars, intrabar resolution, position and account do not exist yet.
+which executes market and limit orders against a single top-of-book quote.
+Stops, bars, intrabar resolution, position and account do not exist yet.
 
 Always inspect the repository and run the suite before relying on a documented
 baseline. Never rewrite working code without evidence that it is wrong.
@@ -293,11 +293,12 @@ domain failures.
 
 ## 10. Next smallest vertical slice
 
-The market-order-on-quote path is implemented. The next slice is limit orders
-on a quote, under the policy in section 4, followed by stop orders, and only
-then `Bar` and intrabar resolution—which is the point at which the origin of
-bars must be decided, since `MarketDataPort` streams observations and nothing
-yet states whether a bar is one of them or an adapter aggregate.
+Market and limit orders on a quote are implemented. The next slice is stop
+orders on a quote: a stop is triggered by the touch reaching its level and then
+executes as a market order, so it can fill worse than its level on a gap but
+never better. After that comes `Bar` and intrabar resolution—the point at which
+the origin of bars must be decided, since `MarketDataPort` streams observations
+and nothing yet states whether a bar is one of them or an adapter aggregate.
 
 ## 11. Statistical and commercial guardrails
 

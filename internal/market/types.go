@@ -85,21 +85,26 @@ func (q Quote) Validate() error {
 // state. A locked book (bid equal to ask) is legal and tradable.
 func (q Quote) Crossed() bool { return q.Bid > q.Ask }
 
-// OrderType distinguishes execution semantics. Only market orders exist in
-// this slice; limit and stop orders arrive with their own tests.
+// OrderType distinguishes execution semantics. Stop orders arrive with their
+// own tests.
 type OrderType uint8
 
 const (
 	// OrderTypeUnspecified is the zero value and is never valid input.
 	OrderTypeUnspecified OrderType = iota
 	OrderTypeMarket
+	OrderTypeLimit
 )
 
 func (t OrderType) String() string {
-	if t == OrderTypeMarket {
+	switch t {
+	case OrderTypeMarket:
 		return "market"
+	case OrderTypeLimit:
+		return "limit"
+	default:
+		return "unspecified"
 	}
-	return "unspecified"
 }
 
 // Order is a trader instruction. Construct it through a constructor so that
@@ -110,17 +115,25 @@ type Order struct {
 	Side       Side
 	Type       OrderType
 	Qty        Qty
+
+	// LimitPrice is the worst price a limit order accepts. It is meaningful
+	// only for OrderTypeLimit and must be left at zero otherwise, so that a
+	// price set on an order whose type was never changed cannot be ignored
+	// in silence.
+	LimitPrice Ticks
 }
 
 // Errors describing why an order or a quote is not a valid domain value.
 var (
-	ErrEmptyOrderID     = errors.New("market: order id is empty")
-	ErrEmptySymbol      = errors.New("market: instrument symbol is empty")
-	ErrInvalidSide      = errors.New("market: side is unspecified")
-	ErrInvalidOrderType = errors.New("market: order type is unspecified")
-	ErrNonPositiveQty   = errors.New("market: order quantity is not positive")
-	ErrCrossedQuote     = errors.New("market: quote is crossed")
-	ErrNegativeSize     = errors.New("market: quote has a negative displayed size")
+	ErrEmptyOrderID         = errors.New("market: order id is empty")
+	ErrEmptySymbol          = errors.New("market: instrument symbol is empty")
+	ErrInvalidSide          = errors.New("market: side is unspecified")
+	ErrInvalidOrderType     = errors.New("market: order type is unknown")
+	ErrMissingLimitPrice    = errors.New("market: limit order has no limit price")
+	ErrUnexpectedLimitPrice = errors.New("market: non-limit order carries a limit price")
+	ErrNonPositiveQty       = errors.New("market: order quantity is not positive")
+	ErrCrossedQuote         = errors.New("market: quote is crossed")
+	ErrNegativeSize         = errors.New("market: quote has a negative displayed size")
 )
 
 // Validate reports why the order is not a valid domain value, or nil.
@@ -139,13 +152,34 @@ func (o Order) Validate() error {
 	if !o.Side.Valid() {
 		return ErrInvalidSide
 	}
-	if o.Type != OrderTypeMarket {
+	switch o.Type {
+	case OrderTypeMarket:
+		if o.LimitPrice != 0 {
+			return ErrUnexpectedLimitPrice
+		}
+	case OrderTypeLimit:
+		// A zero limit price cannot be told apart from an unset field, and no
+		// supported instrument trades at zero ticks. Reject it as unset.
+		if o.LimitPrice == 0 {
+			return ErrMissingLimitPrice
+		}
+	default:
 		return ErrInvalidOrderType
 	}
 	if o.Qty <= 0 {
 		return ErrNonPositiveQty
 	}
 	return nil
+}
+
+// NewLimitOrder builds a limit order. The limit is the worst price the order
+// accepts, not a price it is guaranteed to better.
+func NewLimitOrder(id string, i Instrument, side Side, qty Qty, limit Ticks) (Order, error) {
+	o := Order{ID: id, Instrument: i, Side: side, Type: OrderTypeLimit, Qty: qty, LimitPrice: limit}
+	if err := o.Validate(); err != nil {
+		return Order{}, err
+	}
+	return o, nil
 }
 
 // NewMarketOrder builds a market order, rejecting states the domain treats as
