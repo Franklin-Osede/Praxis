@@ -34,10 +34,13 @@ At the time this specification was installed, the repository contained only
 `domain/types.go`, `domain/execution.go`, and 24 passing tests; that baseline
 was never present in this repository.
 
-What exists now, built and verified here: `internal/market` holds the observed
-market vocabulary, and `internal/execution` holds `ConservativeExecution`,
-which executes market, limit and stop orders against a single top-of-book
-quote. Bars, intrabar resolution, position and account do not exist yet.
+What exists now, built and verified here. `internal/market` holds the observed
+market vocabulary, including `Bar`. `internal/portfolio` holds `Position` and
+`ProtectiveLevels` at the minimum intrabar resolution needs; it has no cost
+basis, P&L or account yet. `internal/execution` holds `ConservativeExecution`,
+which executes market, limit and stop orders against a top-of-book quote, and
+`WorstCaseIntrabar`, which resolves a completed bar against a protected
+position. There is no aggregator, no generic market event and no adapter.
 
 Always inspect the repository and run the suite before relying on a documented
 baseline. Never rewrite working code without evidence that it is wrong.
@@ -103,6 +106,17 @@ MNQ is settled for the first product slice. The architecture may support more
 instruments later, but the product does not expose them yet. Crypto may provide
 cheap development data through an adapter; it must not distort the kernel
 around crypto semantics.
+
+### ADR-010 — Bars are adapter-supplied first-class observations
+
+`Quote` and `Bar` are distinct observations and a session executes at exactly
+one resolution, never both. Bars come from an adapter, which either reads
+vendor bars or aggregates a more granular source deterministically; the kernel
+never builds bars, because choosing bid, ask or midpoint as the basis silently
+changes OHLC and therefore changes which stops trigger. Provenance lives in the
+session and source configuration. See
+[`docs/adr/010-bars-are-adapter-supplied-observations.md`](adr/010-bars-are-adapter-supplied-observations.md)
+for the full decision, including bar semantics, ordering and gap rules.
 
 ## 4. Domain rules
 
@@ -172,6 +186,23 @@ opposites—a limit waits for the market to come to it, a stop waits for the
 market to move into it—so they are written as separate predicates rather than
 shared behind a flag.
 
+### A bar's open settles what it can
+
+Worst-case intrabar resolution treats a position's protective levels as orders
+on the exit side: the stop is a stop order and the target is a limit order, so
+whether a level was reached is decided by the same predicates as quote
+execution, applied to the extreme of the bar that could have reached it.
+
+The open is the first price the bar showed. A level the open is already beyond
+was reached before anything else in the interval, so such a bar is not
+ambiguous: the stop fills at the open, worse than its level, and a target
+gapped through still fills at the target and never better. `Ambiguous` is a
+fact about the observation, not about the policy, and recording it when the
+open already settled the order would put a false fact in the behavioural log.
+
+Only when the open sits between the levels and the bar later reaches both is
+the order of events unknowable. Then the stop wins.
+
 ### Domain values validate themselves
 
 `Order` and `Quote` have exported fields, so a constructor cannot make an
@@ -198,7 +229,10 @@ type ExecutionPolicy interface {
 }
 
 type IntrabarResolutionPolicy interface {
-    Resolve(bar Bar, pos Position, lv ProtectiveLevels) IntrabarResult
+    // Reports an error for input that cannot describe a resolution, as
+    // ExecutionPolicy does. Bar, Position and ProtectiveLevels all have
+    // exported fields, so a consumer cannot assume a constructor was used.
+    Resolve(bar Bar, pos Position, lv ProtectiveLevels) (IntrabarResult, error)
 }
 
 type EventStorePort interface {
@@ -314,21 +348,20 @@ domain failures.
 
 ## 10. Next smallest vertical slice
 
-Market, limit and stop orders on a quote are implemented. Quote-level
-execution is complete for the order types Phase 0 requires.
+Phase 0 is complete: conservative quote execution for market, limit and stop
+orders, worst-case intrabar resolution, and property tests for determinism and
+for every execution invariant.
 
-The next slice is `Bar` and worst-case intrabar resolution, and it is blocked
-on a decision that must be recorded as an ADR before any code is written: is a
-`Bar` a first-class observation supplied by adapters, or is it aggregated
-deterministically from quotes or ticks inside the kernel?
+The next slice is Phase 1, `Position` and `Account`, which grows
+`internal/portfolio` from the two minimal types intrabar resolution needed into
+exact cost basis, partial and full closes, flips, realised and unrealised P&L,
+commissions and account equity. Converting ticks to money needs an instrument's
+`CentsPerTick`, which does not exist yet and is the first thing that slice must
+define.
 
-The decision is not cosmetic. It determines how bars are ordered against quotes
-in a single stream, whether a bar's provenance is recoverable from the event
-log, whether a replayed session and a live-paper session see the same
-observations, and what a gap means—an adapter-supplied bar carries the venue's
-own gap, while an aggregated bar can only show a gap the quote stream already
-contained. Take the decision explicitly; do not let the first adapter settle it
-by accident.
+An aggregator, a generic market event and the first market data adapter are
+deliberately absent. ADR-010 decides where they live; the code arrives when a
+real vertical slice needs it.
 
 ## 11. Statistical and commercial guardrails
 

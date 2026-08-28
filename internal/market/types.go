@@ -85,6 +85,49 @@ func (q Quote) Validate() error {
 // state. A locked book (bid equal to ask) is legal and tradable.
 func (q Quote) Crossed() bool { return q.Bid > q.Ask }
 
+// Bar is a completed interval of market observations, supplied by an adapter.
+// The kernel never builds one: see ADR-010. The interval convention is
+// [StartTime, EndTime).
+type Bar struct {
+	Instrument Instrument
+	StartTime  LogicalTime
+	EndTime    LogicalTime
+	Open       Ticks
+	High       Ticks
+	Low        Ticks
+	Close      Ticks
+
+	// Volume is optional and meaningful only when the source configuration
+	// defines what it counts. Zero means unstated, never "no trades".
+	Volume Qty
+
+	// Sequence orders bars that share an EndTime. Bars are emitted in
+	// ascending (EndTime, Sequence) order.
+	Sequence uint64
+}
+
+// Validate reports why the bar is not a valid domain value, or nil. A bar is
+// composable field by field, so its consumers check it for the same reason
+// Order.Validate exists.
+func (b Bar) Validate() error {
+	if b.Instrument.Symbol == "" {
+		return ErrEmptySymbol
+	}
+	if b.StartTime >= b.EndTime {
+		return ErrEmptyInterval
+	}
+	if b.Open < b.Low || b.Open > b.High {
+		return ErrOpenOutsideRange
+	}
+	if b.Close < b.Low || b.Close > b.High {
+		return ErrCloseOutsideRange
+	}
+	if b.Volume < 0 {
+		return ErrNegativeVolume
+	}
+	return nil
+}
+
 // OrderType distinguishes execution semantics.
 type OrderType uint8
 
@@ -143,6 +186,10 @@ var (
 	ErrNonPositiveQty       = errors.New("market: order quantity is not positive")
 	ErrCrossedQuote         = errors.New("market: quote is crossed")
 	ErrNegativeSize         = errors.New("market: quote has a negative displayed size")
+	ErrEmptyInterval        = errors.New("market: bar interval does not start before it ends")
+	ErrOpenOutsideRange     = errors.New("market: bar open is outside its low-high range")
+	ErrCloseOutsideRange    = errors.New("market: bar close is outside its low-high range")
+	ErrNegativeVolume       = errors.New("market: bar volume is negative")
 )
 
 // Validate reports why the order is not a valid domain value, or nil.

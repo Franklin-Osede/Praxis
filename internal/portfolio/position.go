@@ -1,0 +1,86 @@
+// Package portfolio holds what the trader owns and how it is protected. It
+// imports no infrastructure.
+//
+// This package exists at the minimum needed by intrabar resolution, which must
+// know a position's direction. Cost basis, realised and unrealised P&L and
+// account equity arrive with Phase 1 and will grow these types.
+package portfolio
+
+import (
+	"errors"
+
+	"praxis/internal/market"
+)
+
+// Position is a net holding in one instrument.
+type Position struct {
+	Instrument market.Instrument
+
+	// NetQty is signed: positive is long, negative is short, zero is flat.
+	// This differs deliberately from Order and Fill quantities, which are
+	// always positive and carry direction in their Side.
+	NetQty market.Qty
+}
+
+func (p Position) IsLong() bool  { return p.NetQty > 0 }
+func (p Position) IsShort() bool { return p.NetQty < 0 }
+func (p Position) IsFlat() bool  { return p.NetQty == 0 }
+
+// ExitSide is the side an order must take to reduce the position.
+func (p Position) ExitSide() market.Side {
+	if p.IsLong() {
+		return market.SideSell
+	}
+	if p.IsShort() {
+		return market.SideBuy
+	}
+	return market.SideUnspecified
+}
+
+// Validate reports why the position is not a valid domain value, or nil. A
+// flat position is valid: a position that closes to zero stays flat rather
+// than being deleted.
+func (p Position) Validate() error {
+	if p.Instrument.Symbol == "" {
+		return market.ErrEmptySymbol
+	}
+	return nil
+}
+
+// ProtectiveLevels are the stop and target attached to a position. A zero
+// price means the level is not set, consistent with order prices.
+type ProtectiveLevels struct {
+	Stop   market.Ticks
+	Target market.Ticks
+}
+
+func (l ProtectiveLevels) HasStop() bool   { return l.Stop != 0 }
+func (l ProtectiveLevels) HasTarget() bool { return l.Target != 0 }
+
+// Errors reported when protective levels cannot describe a real position.
+var (
+	ErrLevelsOnFlatPosition = errors.New("portfolio: protective levels on a flat position")
+	ErrInvertedLevels       = errors.New("portfolio: stop and target are on the wrong sides of the position")
+)
+
+// ValidateFor reports why the levels cannot protect the given position, or
+// nil. A long is protected by a stop below its target and a short by a stop
+// above it; the reverse is a configuration error, not an exotic strategy.
+func (l ProtectiveLevels) ValidateFor(p Position) error {
+	if p.IsFlat() {
+		if l.HasStop() || l.HasTarget() {
+			return ErrLevelsOnFlatPosition
+		}
+		return nil
+	}
+	if !l.HasStop() || !l.HasTarget() {
+		return nil
+	}
+	if p.IsLong() && l.Stop >= l.Target {
+		return ErrInvertedLevels
+	}
+	if p.IsShort() && l.Stop <= l.Target {
+		return ErrInvertedLevels
+	}
+	return nil
+}
