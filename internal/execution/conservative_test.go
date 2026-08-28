@@ -242,6 +242,126 @@ func TestExecuteOnQuoteLimitOrder(t *testing.T) {
 	}
 }
 
+func mustStopOrder(t *testing.T, side market.Side, qty market.Qty, stop market.Ticks) market.Order {
+	t.Helper()
+	o, err := market.NewStopOrder("o-1", mnq, side, qty, stop)
+	if err != nil {
+		t.Fatalf("NewStopOrder: %v", err)
+	}
+	return o
+}
+
+// Scenario: a stop triggers on the touch and then takes whatever the book shows
+//
+//	Given a two-sided quote for MNQ
+//	When the touch on the taken side has reached the stop level
+//	Then the order fills at the touch, which on a gap is worse than the level
+//	  and is never better than it; an unreached stop produces no fills and
+//	  no error.
+func TestExecuteOnQuoteStopOrder(t *testing.T) {
+	quote := market.Quote{
+		Instrument: mnq,
+		Time:       1_700_000_000_000_000_000,
+		Bid:        20_000,
+		Ask:        20_001,
+		BidSize:    4,
+		AskSize:    3,
+	}
+
+	tests := []struct {
+		name  string
+		order market.Order
+		quote market.Quote
+		want  []market.Fill
+	}{
+		{
+			name:  "buy stop above the ask is not triggered",
+			order: mustStopOrder(t, market.SideBuy, 2, 20_010),
+			quote: quote,
+			want:  nil,
+		},
+		{
+			name:  "buy stop exactly at the ask fills at its level",
+			order: mustStopOrder(t, market.SideBuy, 2, 20_001),
+			quote: quote,
+			want: []market.Fill{{
+				OrderID: "o-1", Instrument: mnq, Time: quote.Time,
+				Side: market.SideBuy, Price: 20_001, Qty: 2,
+			}},
+		},
+		{
+			name:  "buy stop gapped through fills at the ask, worse than its level",
+			order: mustStopOrder(t, market.SideBuy, 2, 20_001),
+			quote: market.Quote{Instrument: mnq, Time: 3, Bid: 20_049, Ask: 20_050, BidSize: 4, AskSize: 3},
+			want: []market.Fill{{
+				OrderID: "o-1", Instrument: mnq, Time: 3,
+				Side: market.SideBuy, Price: 20_050, Qty: 2,
+			}},
+		},
+		{
+			name:  "sell stop below the bid is not triggered",
+			order: mustStopOrder(t, market.SideSell, 2, 19_990),
+			quote: quote,
+			want:  nil,
+		},
+		{
+			name:  "sell stop exactly at the bid fills at its level",
+			order: mustStopOrder(t, market.SideSell, 2, 20_000),
+			quote: quote,
+			want: []market.Fill{{
+				OrderID: "o-1", Instrument: mnq, Time: quote.Time,
+				Side: market.SideSell, Price: 20_000, Qty: 2,
+			}},
+		},
+		{
+			name:  "sell stop gapped through fills at the bid, worse than its level",
+			order: mustStopOrder(t, market.SideSell, 2, 20_000),
+			quote: market.Quote{Instrument: mnq, Time: 4, Bid: 19_950, Ask: 19_951, BidSize: 4, AskSize: 3},
+			want: []market.Fill{{
+				OrderID: "o-1", Instrument: mnq, Time: 4,
+				Side: market.SideSell, Price: 19_950, Qty: 2,
+			}},
+		},
+		{
+			name:  "a triggered stop is still capped by the displayed size",
+			order: mustStopOrder(t, market.SideBuy, 10, 20_001),
+			quote: quote,
+			want: []market.Fill{{
+				OrderID: "o-1", Instrument: mnq, Time: quote.Time,
+				Side: market.SideBuy, Price: 20_001, Qty: 3,
+			}},
+		},
+		{
+			name:  "a triggered stop against an empty side does not fill",
+			order: mustStopOrder(t, market.SideBuy, 2, 20_001),
+			quote: market.Quote{Instrument: mnq, Time: 5, Bid: 20_000, Ask: 20_001, BidSize: 4, AskSize: 0},
+			want:  nil,
+		},
+		{
+			name:  "a stop triggers on a locked book",
+			order: mustStopOrder(t, market.SideSell, 1, 20_000),
+			quote: market.Quote{Instrument: mnq, Time: 7, Bid: 20_000, Ask: 20_000, BidSize: 1, AskSize: 1},
+			want: []market.Fill{{
+				OrderID: "o-1", Instrument: mnq, Time: 7,
+				Side: market.SideSell, Price: 20_000, Qty: 1,
+			}},
+		},
+	}
+
+	var policy execution.ConservativeExecution
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			if err != nil {
+				t.Fatalf("ExecuteOnQuote returned error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("fills\n got: %+v\nwant: %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Scenario: input that cannot describe a real execution is rejected
 //
 //	Given an order or a quote the domain treats as impossible
@@ -335,6 +455,34 @@ func TestExecuteOnQuoteRejectsImpossibleInput(t *testing.T) {
 			wantCause: market.ErrUnexpectedLimitPrice,
 		},
 		{
+			name:      "stop order without a stop price",
+			order:     market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeStop, Qty: 1},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrMissingStopPrice,
+		},
+		{
+			name:      "market order carrying a stop price",
+			order:     market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 1, StopPrice: 20_000},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrUnexpectedStopPrice,
+		},
+		{
+			name:      "limit order carrying a stop price",
+			order:     market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeLimit, Qty: 1, LimitPrice: 20_000, StopPrice: 19_990},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrUnexpectedStopPrice,
+		},
+		{
+			name:      "stop order carrying a limit price",
+			order:     market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeStop, Qty: 1, StopPrice: 20_000, LimitPrice: 19_990},
+			quote:     good,
+			wantClass: execution.ErrInvalidOrder,
+			wantCause: market.ErrUnexpectedLimitPrice,
+		},
+		{
 			// Regression: an order composed directly, bypassing the
 			// constructor, produced a fill that no event log could attribute
 			// back to an order.
@@ -421,6 +569,23 @@ func TestNewMarketOrderRejectsInvalidStates(t *testing.T) {
 	}
 }
 
+func TestNewStopOrderRequiresAStopPrice(t *testing.T) {
+	if _, err := market.NewStopOrder("o-1", mnq, market.SideBuy, 1, 0); !errors.Is(err, market.ErrMissingStopPrice) {
+		t.Fatalf("error: got %v, want %v", err, market.ErrMissingStopPrice)
+	}
+
+	o, err := market.NewStopOrder("o-1", mnq, market.SideBuy, 1, 20_000)
+	if err != nil {
+		t.Fatalf("valid order rejected: %v", err)
+	}
+	if o.Type != market.OrderTypeStop || o.StopPrice != 20_000 {
+		t.Fatalf("order: got %+v, want a stop order at 20000", o)
+	}
+	if o.LimitPrice != 0 {
+		t.Fatalf("stop order carries a limit price of %d", o.LimitPrice)
+	}
+}
+
 func TestNewLimitOrderRequiresALimitPrice(t *testing.T) {
 	if _, err := market.NewLimitOrder("o-1", mnq, market.SideBuy, 1, 0); !errors.Is(err, market.ErrMissingLimitPrice) {
 		t.Fatalf("error: got %v, want %v", err, market.ErrMissingLimitPrice)
@@ -462,19 +627,24 @@ func randomOrder(r *rand.Rand, q market.Quote) market.Order {
 		Type:       market.OrderTypeMarket,
 		Qty:        market.Qty(r.Int63n(12) + 1),
 	}
-	if r.Int63n(2) == 1 {
-		// A limit scattered around the touch, so both the executable and the
-		// non-executable case are generated.
-		reference := q.Ask
-		if side == market.SideSell {
-			reference = q.Bid
-		}
-		limit := reference + market.Ticks(r.Int63n(11)-5)
-		if limit == 0 {
-			limit = 1 // zero is reserved for "unset"
-		}
+	// A trigger scattered around the touch, so both the executable and the
+	// non-executable case are generated.
+	reference := q.Ask
+	if side == market.SideSell {
+		reference = q.Bid
+	}
+	trigger := reference + market.Ticks(r.Int63n(11)-5)
+	if trigger == 0 {
+		trigger = 1 // zero is reserved for "unset"
+	}
+
+	switch r.Int63n(3) {
+	case 1:
 		o.Type = market.OrderTypeLimit
-		o.LimitPrice = limit
+		o.LimitPrice = trigger
+	case 2:
+		o.Type = market.OrderTypeStop
+		o.StopPrice = trigger
 	}
 	return o
 }
@@ -546,8 +716,9 @@ func TestPropertyFillNeverExceedsOrderOrDisplayedSize(t *testing.T) {
 	}
 }
 
-// Property: a limit order is never filled outside its limit. Combined with
-// the property above, an executable limit fills exactly at its limit.
+// Property: a limit order never fills outside its limit.
+// Filling exactly at the limit is a stricter simulation policy protected by
+// TestExecuteOnQuoteLimitOrder.
 func TestPropertyLimitFillIsNeverOutsideTheLimit(t *testing.T) {
 	r := rand.New(rand.NewSource(20240820))
 	var policy execution.ConservativeExecution
@@ -579,6 +750,63 @@ func TestPropertyLimitFillIsNeverOutsideTheLimit(t *testing.T) {
 	}
 	if executed == 0 {
 		t.Fatal("no limit order was ever executed: the property proved nothing")
+	}
+}
+
+// Property: a triggered stop never fills better than its level. A gap may
+// carry the fill far past the level; it may never stop short of it.
+func TestPropertyStopFillIsNeverBetterThanItsLevel(t *testing.T) {
+	r := rand.New(rand.NewSource(20240821))
+	var policy execution.ConservativeExecution
+
+	executed := 0
+	for i := 0; i < 5000; i++ {
+		q := randomQuote(r)
+		o := randomOrder(r, q)
+		if o.Type != market.OrderTypeStop {
+			continue
+		}
+		fills, err := policy.ExecuteOnQuote(o, q)
+		if err != nil {
+			t.Fatalf("iteration %d: legal input rejected: %v (order %+v quote %+v)", i, err, o, q)
+		}
+		for _, f := range fills {
+			executed++
+			switch f.Side {
+			case market.SideBuy:
+				if f.Price < o.StopPrice {
+					t.Fatalf("iteration %d: buy stop filled at %d, below its level %d", i, f.Price, o.StopPrice)
+				}
+			case market.SideSell:
+				if f.Price > o.StopPrice {
+					t.Fatalf("iteration %d: sell stop filled at %d, above its level %d", i, f.Price, o.StopPrice)
+				}
+			}
+		}
+	}
+	if executed == 0 {
+		t.Fatal("no stop order was ever triggered: the property proved nothing")
+	}
+}
+
+// Property: a fill always carries the logical time of the observation that
+// produced it. Time is data; execution never invents it.
+func TestPropertyFillCarriesTheObservationTime(t *testing.T) {
+	r := rand.New(rand.NewSource(20240822))
+	var policy execution.ConservativeExecution
+
+	for i := 0; i < 5000; i++ {
+		q := randomQuote(r)
+		o := randomOrder(r, q)
+		fills, err := policy.ExecuteOnQuote(o, q)
+		if err != nil {
+			t.Fatalf("iteration %d: legal input rejected: %v", i, err)
+		}
+		for _, f := range fills {
+			if f.Time != q.Time {
+				t.Fatalf("iteration %d: fill at time %d from an observation at %d", i, f.Time, q.Time)
+			}
+		}
 	}
 }
 

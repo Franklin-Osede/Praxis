@@ -36,8 +36,8 @@ was never present in this repository.
 
 What exists now, built and verified here: `internal/market` holds the observed
 market vocabulary, and `internal/execution` holds `ConservativeExecution`,
-which executes market and limit orders against a single top-of-book quote.
-Stops, bars, intrabar resolution, position and account do not exist yet.
+which executes market, limit and stop orders against a single top-of-book
+quote. Bars, intrabar resolution, position and account do not exist yet.
 
 Always inspect the repository and run the suite before relying on a documented
 baseline. Never rewrite working code without evidence that it is wrong.
@@ -150,6 +150,27 @@ a habit the market will not honour. It is recorded here so that it is not later
   no error.
 - A limit price is part of a valid limit order; an order of that type without
   one is invalid input, not an order that never executes.
+
+### Stops fill at the touch, not at their level
+
+A stop is a trigger, never a promised price. It is triggered when the touch on
+the taken side has reached the level, and then executes as a market order.
+
+- A buy stop triggers when the ask is at or above the level, and fills at the
+  ask.
+- A sell stop triggers when the bid is at or below the level, and fills at the
+  bid.
+- A gap therefore fills worse than the level, sometimes far worse; it never
+  fills better than the level.
+- Triggering does not imply a fill: an empty side produces no fills.
+- An untriggered stop produces no fills and no error.
+- A stop price is required on a stop order and forbidden on any other type, as
+  a limit price is required on a limit order and forbidden on any other.
+
+The trigger comparisons mirror those of a limit, but the domain meanings are
+opposites—a limit waits for the market to come to it, a stop waits for the
+market to move into it—so they are written as separate predicates rather than
+shared behind a flag.
 
 ### Domain values validate themselves
 
@@ -293,12 +314,21 @@ domain failures.
 
 ## 10. Next smallest vertical slice
 
-Market and limit orders on a quote are implemented. The next slice is stop
-orders on a quote: a stop is triggered by the touch reaching its level and then
-executes as a market order, so it can fill worse than its level on a gap but
-never better. After that comes `Bar` and intrabar resolution—the point at which
-the origin of bars must be decided, since `MarketDataPort` streams observations
-and nothing yet states whether a bar is one of them or an adapter aggregate.
+Market, limit and stop orders on a quote are implemented. Quote-level
+execution is complete for the order types Phase 0 requires.
+
+The next slice is `Bar` and worst-case intrabar resolution, and it is blocked
+on a decision that must be recorded as an ADR before any code is written: is a
+`Bar` a first-class observation supplied by adapters, or is it aggregated
+deterministically from quotes or ticks inside the kernel?
+
+The decision is not cosmetic. It determines how bars are ordered against quotes
+in a single stream, whether a bar's provenance is recoverable from the event
+log, whether a replayed session and a live-paper session see the same
+observations, and what a gap means—an adapter-supplied bar carries the venue's
+own gap, while an aggregated bar can only show a gap the quote stream already
+contained. Take the decision explicitly; do not let the first adapter settle it
+by accident.
 
 ## 11. Statistical and commercial guardrails
 

@@ -33,6 +33,10 @@ type ConservativeExecution struct{}
 // simulator teaches a habit the market will not honour. See "Limit orders fill
 // at their limit price" in docs/PRAXIS_SPEC.md section 4 before changing this.
 //
+// A stop order is triggered when the touch has reached its level, and then
+// behaves as a market order: it takes the touch, which on a gap is far worse
+// than the level. The stop is a trigger, never a promised price.
+//
 // Either kind takes at most the quantity the taken side displays, because
 // assuming depth that was never observed is the most common way a simulator
 // flatters the trader. The unfilled remainder is the caller's to carry; this
@@ -57,11 +61,16 @@ func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]m
 	}
 
 	price := touch
-	if o.Type == market.OrderTypeLimit {
+	switch o.Type {
+	case market.OrderTypeLimit:
 		if !reachedLimit(o.Side, touch, o.LimitPrice) {
 			return nil, nil
 		}
 		price = o.LimitPrice
+	case market.OrderTypeStop:
+		if !reachedStop(o.Side, touch, o.StopPrice) {
+			return nil, nil
+		}
 	}
 
 	filled := o.Qty
@@ -83,10 +92,24 @@ func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]m
 }
 
 // reachedLimit reports whether the touch on the taken side has come to the
-// limit price: at or below it for a buy, at or above it for a sell.
+// limit price: at or below it for a buy, at or above it for a sell. A limit is
+// the worst price the trader accepts, so the market must come down to a buy
+// and up to a sell.
 func reachedLimit(side market.Side, touch, limit market.Ticks) bool {
 	if side == market.SideBuy {
 		return touch <= limit
 	}
 	return touch >= limit
+}
+
+// reachedStop reports whether the touch on the taken side has come to the stop
+// level: at or above it for a buy, at or below it for a sell. The comparisons
+// are the mirror of reachedLimit but the domain meaning is not: a stop is a
+// trigger the market moves *into*, so it is written separately rather than
+// shared with a flag that would be easy to read backwards.
+func reachedStop(side market.Side, touch, stop market.Ticks) bool {
+	if side == market.SideBuy {
+		return touch >= stop
+	}
+	return touch <= stop
 }

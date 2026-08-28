@@ -85,8 +85,7 @@ func (q Quote) Validate() error {
 // state. A locked book (bid equal to ask) is legal and tradable.
 func (q Quote) Crossed() bool { return q.Bid > q.Ask }
 
-// OrderType distinguishes execution semantics. Stop orders arrive with their
-// own tests.
+// OrderType distinguishes execution semantics.
 type OrderType uint8
 
 const (
@@ -94,6 +93,7 @@ const (
 	OrderTypeUnspecified OrderType = iota
 	OrderTypeMarket
 	OrderTypeLimit
+	OrderTypeStop
 )
 
 func (t OrderType) String() string {
@@ -102,6 +102,8 @@ func (t OrderType) String() string {
 		return "market"
 	case OrderTypeLimit:
 		return "limit"
+	case OrderTypeStop:
+		return "stop"
 	default:
 		return "unspecified"
 	}
@@ -121,6 +123,11 @@ type Order struct {
 	// price set on an order whose type was never changed cannot be ignored
 	// in silence.
 	LimitPrice Ticks
+
+	// StopPrice is the level at which a stop order becomes a market order. It
+	// is meaningful only for OrderTypeStop and, like LimitPrice, must be left
+	// at zero otherwise. It is not a price the order is promised.
+	StopPrice Ticks
 }
 
 // Errors describing why an order or a quote is not a valid domain value.
@@ -131,6 +138,8 @@ var (
 	ErrInvalidOrderType     = errors.New("market: order type is unknown")
 	ErrMissingLimitPrice    = errors.New("market: limit order has no limit price")
 	ErrUnexpectedLimitPrice = errors.New("market: non-limit order carries a limit price")
+	ErrMissingStopPrice     = errors.New("market: stop order has no stop price")
+	ErrUnexpectedStopPrice  = errors.New("market: non-stop order carries a stop price")
 	ErrNonPositiveQty       = errors.New("market: order quantity is not positive")
 	ErrCrossedQuote         = errors.New("market: quote is crossed")
 	ErrNegativeSize         = errors.New("market: quote has a negative displayed size")
@@ -152,19 +161,28 @@ func (o Order) Validate() error {
 	if !o.Side.Valid() {
 		return ErrInvalidSide
 	}
+	// A zero price cannot be told apart from an unset field, and no supported
+	// instrument trades at zero ticks, so zero means unset. Each type requires
+	// its own price and must carry no other, so a price left on an order whose
+	// type was changed cannot be ignored in silence.
 	switch o.Type {
 	case OrderTypeMarket:
-		if o.LimitPrice != 0 {
-			return ErrUnexpectedLimitPrice
-		}
 	case OrderTypeLimit:
-		// A zero limit price cannot be told apart from an unset field, and no
-		// supported instrument trades at zero ticks. Reject it as unset.
 		if o.LimitPrice == 0 {
 			return ErrMissingLimitPrice
 		}
+	case OrderTypeStop:
+		if o.StopPrice == 0 {
+			return ErrMissingStopPrice
+		}
 	default:
 		return ErrInvalidOrderType
+	}
+	if o.Type != OrderTypeLimit && o.LimitPrice != 0 {
+		return ErrUnexpectedLimitPrice
+	}
+	if o.Type != OrderTypeStop && o.StopPrice != 0 {
+		return ErrUnexpectedStopPrice
 	}
 	if o.Qty <= 0 {
 		return ErrNonPositiveQty
@@ -176,6 +194,17 @@ func (o Order) Validate() error {
 // accepts, not a price it is guaranteed to better.
 func NewLimitOrder(id string, i Instrument, side Side, qty Qty, limit Ticks) (Order, error) {
 	o := Order{ID: id, Instrument: i, Side: side, Type: OrderTypeLimit, Qty: qty, LimitPrice: limit}
+	if err := o.Validate(); err != nil {
+		return Order{}, err
+	}
+	return o, nil
+}
+
+// NewStopOrder builds a stop order. The stop is the level that triggers a
+// market order, not a price the order is promised: once triggered it takes
+// whatever the book shows, which on a gap is worse than the level.
+func NewStopOrder(id string, i Instrument, side Side, qty Qty, stop Ticks) (Order, error) {
+	o := Order{ID: id, Instrument: i, Side: side, Type: OrderTypeStop, Qty: qty, StopPrice: stop}
 	if err := o.Validate(); err != nil {
 		return Order{}, err
 	}
