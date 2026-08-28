@@ -604,7 +604,7 @@ func TestNewLimitOrderRequiresALimitPrice(t *testing.T) {
 // randomQuote and randomOrder generate arbitrary but legal input from an
 // explicitly seeded source. No global randomness enters the domain.
 func randomQuote(r *rand.Rand) market.Quote {
-	bid := market.Ticks(r.Int63n(40_000) - 20_000)
+	bid := market.Ticks(r.Int63n(40_000) + 1)
 	spread := market.Ticks(r.Int63n(5)) // zero spread means a locked book
 	return market.Quote{
 		Instrument: mnq,
@@ -635,8 +635,8 @@ func randomOrder(r *rand.Rand, q market.Quote) market.Order {
 		reference = q.Bid
 	}
 	trigger := reference + market.Ticks(r.Int63n(11)-5)
-	if trigger == 0 {
-		trigger = 1 // zero is reserved for "unset"
+	if trigger <= 0 {
+		trigger = 1 // zero is reserved for "unset", and prices are positive
 	}
 
 	switch r.Int63n(3) {

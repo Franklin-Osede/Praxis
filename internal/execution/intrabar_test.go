@@ -25,8 +25,8 @@ func bar(open, high, low, close market.Ticks) market.Bar {
 }
 
 var (
-	long  = portfolio.Position{Instrument: mnq, NetQty: 2}
-	short = portfolio.Position{Instrument: mnq, NetQty: -2}
+	long  = portfolio.Position{Instrument: mnq, NetQty: 2, CostBasisCts: 2_000_000}
+	short = portfolio.Position{Instrument: mnq, NetQty: -2, CostBasisCts: -2_000_000}
 )
 
 // Scenario: a completed bar resolves a protected position against the trader
@@ -245,7 +245,7 @@ func TestWorstCaseIntrabarRejectsImpossibleInput(t *testing.T) {
 		{
 			name:      "position without an instrument",
 			bar:       goodBar,
-			pos:       portfolio.Position{NetQty: 2},
+			pos:       portfolio.Position{NetQty: 2, CostBasisCts: 1},
 			levels:    levels,
 			wantClass: execution.ErrInvalidPosition,
 			wantCause: market.ErrEmptySymbol,
@@ -253,7 +253,7 @@ func TestWorstCaseIntrabarRejectsImpossibleInput(t *testing.T) {
 		{
 			name:      "position in another instrument",
 			bar:       goodBar,
-			pos:       portfolio.Position{Instrument: market.Instrument{Symbol: "MES", CentsPerTick: 125}, NetQty: 2},
+			pos:       portfolio.Position{Instrument: market.Instrument{Symbol: "MES", CentsPerTick: 125}, NetQty: 2, CostBasisCts: 2_000_000},
 			levels:    levels,
 			wantClass: execution.ErrInstrumentMismatch,
 			wantCause: execution.ErrInstrumentMismatch,
@@ -324,10 +324,11 @@ func randomProtectedBar(r *rand.Rand) (market.Bar, portfolio.Position, portfolio
 	low := open - market.Ticks(r.Int63n(int64(spread)+1))
 	close := low + market.Ticks(r.Int63n(int64(high-low)+1))
 
-	pos := portfolio.Position{Instrument: mnq, NetQty: 2}
+	pos := portfolio.Position{Instrument: mnq, NetQty: 2, CostBasisCts: 2_000_000}
 	levels := portfolio.ProtectiveLevels{Stop: mid - spread/2, Target: mid + spread/2}
 	if r.Int63n(2) == 1 {
 		pos.NetQty = -2
+		pos.CostBasisCts = -2_000_000
 		levels = portfolio.ProtectiveLevels{Stop: mid + spread/2, Target: mid - spread/2}
 	}
 	if levels.Stop == levels.Target {

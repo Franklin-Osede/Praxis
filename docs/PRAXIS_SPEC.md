@@ -212,6 +212,36 @@ open already settled the order would put a false fact in the behavioural log.
 Only when the open sits between the levels and the bar later reaches both is
 the order of events unknowable. Then the stop wins.
 
+### A symbol is not an instrument
+
+Within one account a symbol names exactly one monetary specification. A fill or
+a mark carrying a known symbol with a different `CentsPerTick` is rejected, and
+the account is left untouched: accepting it would accumulate two incompatible
+cost bases in one position and manufacture P&L with no price movement at all.
+
+### Prices are strictly positive
+
+Praxis rejects prices at or below zero on fills, quotes, bars, order levels and
+marks. This is a decision scoped to MNQ, the only supported instrument, and it
+is what makes the cost-basis sign relation—a long commits cash, a short
+receives it—an invariant rather than a coincidence. An instrument that really
+trades at or below zero cannot simply be added; both claims must be revisited
+together.
+
+### Overflow is an error, not a wrap
+
+Go's integer overflow is silent, so exact accounting is only exact until it
+happens. Every monetary and quantity operation goes through checked arithmetic
+that reports `ErrOverflow`. `ApplyFill` computes the whole new state into local
+values first and writes the account only once all of it has succeeded, so a
+rejected fill leaves position, realised P&L and fees exactly as they were.
+
+### A position is flat exactly when it holds no cost
+
+`NetQty == 0` if and only if `CostBasisCts == 0`, and an open position's basis
+sign matches its direction. `Position.Validate` enforces both and `ApplyFill`
+checks the result before committing.
+
 ### Domain values validate themselves
 
 `Order` and `Quote` have exported fields, so a constructor cannot make an
@@ -357,23 +387,28 @@ domain failures.
 
 ## 10. Next smallest vertical slice
 
-Phases 0 and 1 are complete. Quote execution covers market, limit and stop
-orders; worst-case intrabar resolution covers completed bars; `Account` applies
-fills exactly, and a known sequence of a hundred fills reproduces across twenty
-runs and matches an independent cash-flow calculation that never touches cost
-basis.
+Phases 0 and 1 are complete and hardened. Quote execution covers market, limit
+and stop orders; worst-case intrabar resolution covers completed bars;
+`Account` applies fills exactly, rejects a symbol carried under two
+specifications, reports overflow instead of wrapping, and leaves itself
+untouched when it rejects anything.
 
-The next slice is Phase 2, the challenge engine, and its first vertical cut is
-the smallest rule that can fail an account: a static daily loss limit evaluated
-against equity. Everything hard in Phase 2 hangs off decisions that slice must
-force into the open—what a session boundary is, whether the limit is measured
-on realised or on total equity, and what happens to a position still open when
-the boundary passes.
+Before the challenge engine, ADR-011 must settle what a trading day is. The
+domain must not read a clock or hardcode a venue calendar, so the intended
+shape is: the adapter stamps every observation with a `SessionID`, a change of
+`SessionID` is a session boundary, and the kernel receives it as data. The ADR
+must resolve who assigns it, when the session's reference equity is taken, what
+happens to a position open across the boundary, and whether commissions and
+unrealised P&L count toward a daily limit.
+
+Only then the first challenge slice: a static daily loss limit, and nothing
+else. No trailing drawdown, no profit target, no minimum days, no provider
+rules, no time zones inside the domain, no liquidation.
 
 Known gaps to close when a slice needs them: commission is a flat per-contract
 figure on the account, not a schedule and not per instrument; `Account` has no
-notion of a session or a day; and nothing yet records the behavioural context
-around a fill, which is Phase 3.
+notion of a session; and nothing yet records the behavioural context around a
+fill, which is Phase 3.
 
 ## 11. Statistical and commercial guardrails
 

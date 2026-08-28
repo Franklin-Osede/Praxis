@@ -7,7 +7,11 @@
 //   - no infrastructure imports.
 package market
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"math"
+)
 
 // Ticks is a price expressed in whole instrument ticks. Converting ticks to
 // money requires the instrument's immutable monetary tick value, which does
@@ -86,8 +90,57 @@ func (i Instrument) Validate() error {
 
 // Money converts a price in ticks and a contract count into cents. Both
 // arguments are taken as given: direction and sign are the caller's business.
-func (i Instrument) Money(price Ticks, qty Qty) Cents {
-	return Cents(price) * i.CentsPerTick * Cents(qty)
+//
+// It reports an error rather than wrapping silently. Go's integer overflow is
+// silent, so exact accounting is only exact until it happens.
+func (i Instrument) Money(price Ticks, qty Qty) (Cents, error) {
+	perContract, err := MulCents(Cents(price), i.CentsPerTick)
+	if err != nil {
+		return 0, err
+	}
+	return MulCents(perContract, Cents(qty))
+}
+
+// ErrOverflow reports arithmetic that cannot be represented.
+var ErrOverflow = errors.New("market: integer overflow")
+
+// MulCents, AddCents and SubCents are checked arithmetic. Every monetary
+// operation in the domain goes through them, because Go's integer overflow is
+// silent and exact accounting is only exact until it happens.
+func MulCents(a, b Cents) (Cents, error) {
+	if a == 0 || b == 0 {
+		return 0, nil
+	}
+	r := a * b
+	if r/a != b || (a == -1 && b == math.MinInt64) || (b == -1 && a == math.MinInt64) {
+		return 0, fmt.Errorf("%w: %d * %d", ErrOverflow, a, b)
+	}
+	return r, nil
+}
+
+func AddCents(a, b Cents) (Cents, error) {
+	r := a + b
+	if (r > a) != (b > 0) {
+		return 0, fmt.Errorf("%w: %d + %d", ErrOverflow, a, b)
+	}
+	return r, nil
+}
+
+func SubCents(a, b Cents) (Cents, error) {
+	r := a - b
+	if (r < a) != (b > 0) {
+		return 0, fmt.Errorf("%w: %d - %d", ErrOverflow, a, b)
+	}
+	return r, nil
+}
+
+// AddQty is checked addition of contract counts.
+func AddQty(a, b Qty) (Qty, error) {
+	r := a + b
+	if (r > a) != (b > 0) {
+		return 0, fmt.Errorf("%w: %d + %d contracts", ErrOverflow, a, b)
+	}
+	return r, nil
 }
 
 // Quote is a two-sided top-of-book observation at a point in logical time.
@@ -107,6 +160,9 @@ type Quote struct {
 func (q Quote) Validate() error {
 	if err := q.Instrument.Validate(); err != nil {
 		return err
+	}
+	if q.Bid <= 0 || q.Ask <= 0 {
+		return ErrNonPositivePrice
 	}
 	if q.Crossed() {
 		return ErrCrossedQuote
@@ -152,6 +208,9 @@ func (b Bar) Validate() error {
 	}
 	if b.StartTime >= b.EndTime {
 		return ErrEmptyInterval
+	}
+	if b.Low <= 0 {
+		return ErrNonPositivePrice
 	}
 	if b.Open < b.Low || b.Open > b.High {
 		return ErrOpenOutsideRange
@@ -228,6 +287,7 @@ var (
 	ErrCloseOutsideRange    = errors.New("market: bar close is outside its low-high range")
 	ErrNegativeVolume       = errors.New("market: bar volume is negative")
 	ErrNonPositiveTickValue = errors.New("market: instrument tick value is not positive")
+	ErrNonPositivePrice     = errors.New("market: price is not positive")
 )
 
 // Validate reports why the order is not a valid domain value, or nil.
@@ -256,9 +316,15 @@ func (o Order) Validate() error {
 		if o.LimitPrice == 0 {
 			return ErrMissingLimitPrice
 		}
+		if o.LimitPrice < 0 {
+			return ErrNonPositivePrice
+		}
 	case OrderTypeStop:
 		if o.StopPrice == 0 {
 			return ErrMissingStopPrice
+		}
+		if o.StopPrice < 0 {
+			return ErrNonPositivePrice
 		}
 	default:
 		return ErrInvalidOrderType
@@ -327,6 +393,9 @@ func (f Fill) Validate() error {
 	}
 	if !f.Side.Valid() {
 		return ErrInvalidSide
+	}
+	if f.Price <= 0 {
+		return ErrNonPositivePrice
 	}
 	if f.Qty <= 0 {
 		return ErrNonPositiveQty

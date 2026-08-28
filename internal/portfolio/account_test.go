@@ -2,6 +2,7 @@ package portfolio_test
 
 import (
 	"errors"
+	"math"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -447,7 +448,11 @@ func TestPropertyKnownFillsProduceAnIdenticalAndIndependentlyCheckedAccount(t *t
 
 			var cashFlow, contracts market.Cents
 			for _, f := range fills {
-				cashFlow += f.Instrument.Money(f.Price, f.SignedQty())
+				money, err := f.Instrument.Money(f.Price, f.SignedQty())
+				if err != nil {
+					t.Fatalf("independent calculation overflowed: %v", err)
+				}
+				cashFlow += money
 				contracts += market.Cents(f.Qty)
 			}
 			if got.realised != -cashFlow {
@@ -464,6 +469,186 @@ func TestPropertyKnownFillsProduceAnIdenticalAndIndependentlyCheckedAccount(t *t
 		}
 		if !reflect.DeepEqual(got, baseline) {
 			t.Fatalf("run %d diverged from the baseline run", run)
+		}
+	}
+}
+
+// mnqWrong carries the MNQ symbol with a different monetary specification.
+// Accepting it would let two incompatible cost bases accumulate in one
+// position and manufacture a loss with no price movement at all.
+var mnqWrong = market.Instrument{Symbol: "MNQ", CentsPerTick: 100}
+
+type accountState struct {
+	realised, fees market.Cents
+	positions      []portfolio.Position
+}
+
+func snapshotOf(a *portfolio.Account) accountState {
+	return accountState{realised: a.RealisedCts(), fees: a.FeesCts(), positions: a.Positions()}
+}
+
+func assertUnchanged(t *testing.T, a *portfolio.Account, before accountState) {
+	t.Helper()
+	if got := snapshotOf(a); !reflect.DeepEqual(got, before) {
+		t.Fatalf("a rejected operation mutated the account\n got: %+v\nwas: %+v", got, before)
+	}
+}
+
+// Scenario: one symbol has one monetary specification, for the life of the
+// account
+//
+//	Given an account holding MNQ at 50 cents per tick
+//	When a fill arrives labelled MNQ at 100 cents per tick
+//	Then it is rejected and nothing about the account changes.
+func TestRejectsTheSameSymbolWithADifferentTickValue(t *testing.T) {
+	a := newAccount(t)
+	apply(t, a, fill(market.SideBuy, 1, 20_000))
+	before := snapshotOf(a)
+
+	got, err := a.ApplyFill(fillOn(mnqWrong, market.SideBuy, 1, 20_000))
+	if !errors.Is(err, portfolio.ErrInstrumentSpecMismatch) {
+		t.Fatalf("error: got %v, want %v", err, portfolio.ErrInstrumentSpecMismatch)
+	}
+	if got != nil {
+		t.Fatalf("rejected fill produced events: %+v", got)
+	}
+	assertUnchanged(t, a, before)
+
+	if len(a.Positions()) != 1 {
+		t.Fatalf("positions: got %d, want the rejected fill to create none", len(a.Positions()))
+	}
+}
+
+func TestRejectsAMarkWithADifferentTickValue(t *testing.T) {
+	a := newAccount(t)
+	apply(t, a, fill(market.SideBuy, 1, 20_000))
+
+	if _, err := a.UnrealisedCts([]portfolio.Mark{{Instrument: mnqWrong, Price: 20_000}}); !errors.Is(err, portfolio.ErrInstrumentSpecMismatch) {
+		t.Fatalf("error: got %v, want %v", err, portfolio.ErrInstrumentSpecMismatch)
+	}
+	if _, err := a.EquityCts([]portfolio.Mark{{Instrument: mnqWrong, Price: 20_000}}); !errors.Is(err, portfolio.ErrInstrumentSpecMismatch) {
+		t.Fatalf("error: got %v, want %v", err, portfolio.ErrInstrumentSpecMismatch)
+	}
+}
+
+func TestRejectsANonPositiveMarkPrice(t *testing.T) {
+	a := newAccount(t)
+	apply(t, a, fill(market.SideBuy, 1, 20_000))
+
+	if _, err := a.UnrealisedCts([]portfolio.Mark{{Instrument: mnq, Price: 0}}); !errors.Is(err, market.ErrNonPositivePrice) {
+		t.Fatalf("error: got %v, want %v", err, market.ErrNonPositivePrice)
+	}
+}
+
+func TestRejectsANonPositiveFillPrice(t *testing.T) {
+	a := newAccount(t)
+	before := snapshotOf(a)
+
+	_, err := a.ApplyFill(market.Fill{OrderID: "o-1", Instrument: mnq, Side: market.SideBuy, Qty: 1, Price: 0})
+	if !errors.Is(err, market.ErrNonPositivePrice) {
+		t.Fatalf("error: got %v, want %v", err, market.ErrNonPositivePrice)
+	}
+	assertUnchanged(t, a, before)
+}
+
+// Scenario: arithmetic that cannot be represented is an error, not a wrap
+//
+//	Given an instrument whose tick value is near the integer limit
+//	When a fill would overflow the conversion from ticks to money
+//	Then the fill is rejected and the account is untouched.
+func TestOverflowInTickToMoneyLeavesTheAccountUnchanged(t *testing.T) {
+	huge := market.Instrument{Symbol: "HUGE", CentsPerTick: math.MaxInt64 / 2}
+	a := newAccount(t)
+	before := snapshotOf(a)
+
+	got, err := a.ApplyFill(fillOn(huge, market.SideBuy, 1, 3))
+	if !errors.Is(err, market.ErrOverflow) {
+		t.Fatalf("error: got %v, want %v", err, market.ErrOverflow)
+	}
+	if got != nil {
+		t.Fatalf("overflowing fill produced events: %+v", got)
+	}
+	assertUnchanged(t, a, before)
+}
+
+func TestOverflowWhileAddingToAPositionLeavesTheAccountUnchanged(t *testing.T) {
+	unit := market.Instrument{Symbol: "UNIT", CentsPerTick: 1}
+	// No commission, so the overflow under test is the position's own cost.
+	a, err := portfolio.NewAccount(startingCts, 0)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+	apply(t, a, fillOn(unit, market.SideBuy, math.MaxInt64/2, 1))
+	before := snapshotOf(a)
+
+	got, err := a.ApplyFill(fillOn(unit, market.SideBuy, math.MaxInt64/2+2, 1))
+	if !errors.Is(err, market.ErrOverflow) {
+		t.Fatalf("error: got %v, want %v", err, market.ErrOverflow)
+	}
+	if got != nil {
+		t.Fatalf("overflowing fill produced events: %+v", got)
+	}
+	assertUnchanged(t, a, before)
+}
+
+func TestOverflowInEquityIsReported(t *testing.T) {
+	unit := market.Instrument{Symbol: "UNIT", CentsPerTick: 1}
+	a, err := portfolio.NewAccount(math.MaxInt64-10, 0)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+	if _, err := a.ApplyFill(fillOn(unit, market.SideBuy, 1_000, 1_000)); err != nil {
+		t.Fatalf("ApplyFill: %v", err)
+	}
+
+	if _, err := a.EquityCts([]portfolio.Mark{{Instrument: unit, Price: math.MaxInt64 / 1_000}}); !errors.Is(err, market.ErrOverflow) {
+		t.Fatalf("error: got %v, want %v", err, market.ErrOverflow)
+	}
+}
+
+// Scenario: a position is flat exactly when it holds no cost
+func TestPositionValidateEnforcesFlatnessAndSign(t *testing.T) {
+	tests := []struct {
+		name string
+		pos  portfolio.Position
+		want error
+	}{
+		{"flat and empty", portfolio.Position{Instrument: mnq}, nil},
+		{"long with a positive basis", portfolio.Position{Instrument: mnq, NetQty: 1, CostBasisCts: 1_000_000}, nil},
+		{"short with a negative basis", portfolio.Position{Instrument: mnq, NetQty: -1, CostBasisCts: -1_000_000}, nil},
+		{"flat holding a cost basis", portfolio.Position{Instrument: mnq, CostBasisCts: 1}, portfolio.ErrFlatWithCostBasis},
+		{"open holding no cost basis", portfolio.Position{Instrument: mnq, NetQty: 1}, portfolio.ErrOpenWithoutCostBasis},
+		{"long with a negative basis", portfolio.Position{Instrument: mnq, NetQty: 1, CostBasisCts: -1}, portfolio.ErrCostBasisSign},
+		{"short with a positive basis", portfolio.Position{Instrument: mnq, NetQty: -1, CostBasisCts: 1}, portfolio.ErrCostBasisSign},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.pos.Validate(); !errors.Is(err, tc.want) {
+				t.Fatalf("error: got %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// Property: every position an account holds is internally coherent after
+// every fill, whatever the sequence.
+func TestPropertyAccountPositionsStayCoherent(t *testing.T) {
+	r := rand.New(rand.NewSource(20240826))
+	a := newAccount(t)
+
+	for i := 0; i < 2_000; i++ {
+		side := market.SideBuy
+		if r.Int63n(2) == 1 {
+			side = market.SideSell
+		}
+		f := fill(side, market.Qty(r.Int63n(4)+1), market.Ticks(r.Int63n(200)+19_900))
+		if _, err := a.ApplyFill(f); err != nil {
+			t.Fatalf("iteration %d: legal fill rejected: %v", i, err)
+		}
+		for _, p := range a.Positions() {
+			if err := p.Validate(); err != nil {
+				t.Fatalf("iteration %d: incoherent position %+v: %v", i, p, err)
+			}
 		}
 	}
 }

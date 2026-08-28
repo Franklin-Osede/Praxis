@@ -29,8 +29,12 @@ type Position struct {
 }
 
 // UnrealisedCts is what the position would realise if closed at mark.
-func (p Position) UnrealisedCts(mark market.Ticks) market.Cents {
-	return p.Instrument.Money(mark, p.NetQty) - p.CostBasisCts
+func (p Position) UnrealisedCts(mark market.Ticks) (market.Cents, error) {
+	value, err := p.Instrument.Money(mark, p.NetQty)
+	if err != nil {
+		return 0, err
+	}
+	return market.SubCents(value, p.CostBasisCts)
 }
 
 // AvgPx is the average entry price, derived for display only. It must never
@@ -57,11 +61,35 @@ func (p Position) ExitSide() market.Side {
 	return market.SideUnspecified
 }
 
-// Validate reports why the position is not a valid domain value, or nil. A
-// flat position is valid: a position that closes to zero stays flat rather
-// than being deleted.
+// Errors reported when a position is not internally coherent.
+var (
+	ErrFlatWithCostBasis    = errors.New("portfolio: flat position holds a cost basis")
+	ErrOpenWithoutCostBasis = errors.New("portfolio: open position holds no cost basis")
+	ErrCostBasisSign        = errors.New("portfolio: cost basis sign contradicts the position direction")
+)
+
+// Validate reports why the position is not a valid domain value, or nil.
+//
+// A flat position is valid: a position that closes to zero stays flat rather
+// than being deleted. It must, however, hold no cost basis, and an open one
+// must hold a basis whose sign matches its direction—a long commits cash and a
+// short receives it. That sign relation holds only because Praxis requires
+// strictly positive prices; see the specification before relaxing either.
 func (p Position) Validate() error {
-	return p.Instrument.Validate()
+	if err := p.Instrument.Validate(); err != nil {
+		return err
+	}
+	switch {
+	case p.IsFlat() && p.CostBasisCts != 0:
+		return ErrFlatWithCostBasis
+	case !p.IsFlat() && p.CostBasisCts == 0:
+		return ErrOpenWithoutCostBasis
+	case p.IsLong() && p.CostBasisCts < 0:
+		return ErrCostBasisSign
+	case p.IsShort() && p.CostBasisCts > 0:
+		return ErrCostBasisSign
+	}
+	return nil
 }
 
 // ProtectiveLevels are the stop and target attached to a position. A zero
