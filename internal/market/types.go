@@ -14,6 +14,11 @@ import "errors"
 // not exist yet because nothing in this slice computes money.
 type Ticks int64
 
+// Cents is a monetary amount in whole cents. It is the only money unit in the
+// domain; an instrument whose tick value cannot be expressed exactly in it is
+// rejected rather than approximated.
+type Cents int64
+
 // Qty is a contract count. Order and fill quantities are strictly positive;
 // direction is carried by Side, never by the sign of Qty.
 type Qty int64
@@ -46,11 +51,43 @@ func (s Side) String() string {
 // Valid reports whether s names a real direction.
 func (s Side) Valid() bool { return s == SideBuy || s == SideSell }
 
-// Instrument identifies a tradable contract. It carries only what a consumer
-// in this slice needs; monetary specification arrives with the first code
-// that converts ticks to money.
+// Instrument identifies a tradable contract and carries its immutable
+// monetary specification.
 type Instrument struct {
 	Symbol string
+
+	// CentsPerTick is the money value of one tick of price movement in one
+	// contract. It belongs to the instrument, never to a global constant, and
+	// an instrument whose real tick value is not a whole number of cents is
+	// not representable and must be rejected rather than rounded.
+	CentsPerTick Cents
+}
+
+// NewInstrument builds an instrument, rejecting one whose monetary tick value
+// cannot be represented exactly.
+func NewInstrument(symbol string, centsPerTick Cents) (Instrument, error) {
+	i := Instrument{Symbol: symbol, CentsPerTick: centsPerTick}
+	if err := i.Validate(); err != nil {
+		return Instrument{}, err
+	}
+	return i, nil
+}
+
+// Validate reports why the instrument is not a valid domain value, or nil.
+func (i Instrument) Validate() error {
+	if i.Symbol == "" {
+		return ErrEmptySymbol
+	}
+	if i.CentsPerTick <= 0 {
+		return ErrNonPositiveTickValue
+	}
+	return nil
+}
+
+// Money converts a price in ticks and a contract count into cents. Both
+// arguments are taken as given: direction and sign are the caller's business.
+func (i Instrument) Money(price Ticks, qty Qty) Cents {
+	return Cents(price) * i.CentsPerTick * Cents(qty)
 }
 
 // Quote is a two-sided top-of-book observation at a point in logical time.
@@ -68,8 +105,8 @@ type Quote struct {
 // reason Order.Validate exists. Being untradable is not invalid: an empty
 // side is a legal observation.
 func (q Quote) Validate() error {
-	if q.Instrument.Symbol == "" {
-		return ErrEmptySymbol
+	if err := q.Instrument.Validate(); err != nil {
+		return err
 	}
 	if q.Crossed() {
 		return ErrCrossedQuote
@@ -110,8 +147,8 @@ type Bar struct {
 // composable field by field, so its consumers check it for the same reason
 // Order.Validate exists.
 func (b Bar) Validate() error {
-	if b.Instrument.Symbol == "" {
-		return ErrEmptySymbol
+	if err := b.Instrument.Validate(); err != nil {
+		return err
 	}
 	if b.StartTime >= b.EndTime {
 		return ErrEmptyInterval
@@ -190,6 +227,7 @@ var (
 	ErrOpenOutsideRange     = errors.New("market: bar open is outside its low-high range")
 	ErrCloseOutsideRange    = errors.New("market: bar close is outside its low-high range")
 	ErrNegativeVolume       = errors.New("market: bar volume is negative")
+	ErrNonPositiveTickValue = errors.New("market: instrument tick value is not positive")
 )
 
 // Validate reports why the order is not a valid domain value, or nil.
@@ -202,8 +240,8 @@ func (o Order) Validate() error {
 	if o.ID == "" {
 		return ErrEmptyOrderID
 	}
-	if o.Instrument.Symbol == "" {
-		return ErrEmptySymbol
+	if err := o.Instrument.Validate(); err != nil {
+		return err
 	}
 	if !o.Side.Valid() {
 		return ErrInvalidSide
@@ -277,4 +315,30 @@ type Fill struct {
 	Side       Side
 	Price      Ticks
 	Qty        Qty
+}
+
+// Validate reports why the fill is not a valid domain value, or nil.
+func (f Fill) Validate() error {
+	if f.OrderID == "" {
+		return ErrEmptyOrderID
+	}
+	if err := f.Instrument.Validate(); err != nil {
+		return err
+	}
+	if !f.Side.Valid() {
+		return ErrInvalidSide
+	}
+	if f.Qty <= 0 {
+		return ErrNonPositiveQty
+	}
+	return nil
+}
+
+// SignedQty is the fill's effect on a net position: positive for a buy,
+// negative for a sell.
+func (f Fill) SignedQty() Qty {
+	if f.Side == SideSell {
+		return -f.Qty
+	}
+	return f.Qty
 }

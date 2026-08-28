@@ -20,6 +20,26 @@ type Position struct {
 	// This differs deliberately from Order and Fill quantities, which are
 	// always positive and carry direction in their Side.
 	NetQty market.Qty
+
+	// CostBasisCts is the exact signed cash committed to the position:
+	// positive for a long, negative for a short. It is never a rounded
+	// average entry price, because averaging in integers loses precision on
+	// every partial fill.
+	CostBasisCts market.Cents
+}
+
+// UnrealisedCts is what the position would realise if closed at mark.
+func (p Position) UnrealisedCts(mark market.Ticks) market.Cents {
+	return p.Instrument.Money(mark, p.NetQty) - p.CostBasisCts
+}
+
+// AvgPx is the average entry price, derived for display only. It must never
+// feed a P&L or risk calculation: use CostBasisCts, which is exact.
+func (p Position) AvgPx() market.Ticks {
+	if p.IsFlat() || p.Instrument.CentsPerTick == 0 {
+		return 0
+	}
+	return market.Ticks(p.CostBasisCts / (p.Instrument.CentsPerTick * market.Cents(p.NetQty)))
 }
 
 func (p Position) IsLong() bool  { return p.NetQty > 0 }
@@ -41,10 +61,7 @@ func (p Position) ExitSide() market.Side {
 // flat position is valid: a position that closes to zero stays flat rather
 // than being deleted.
 func (p Position) Validate() error {
-	if p.Instrument.Symbol == "" {
-		return market.ErrEmptySymbol
-	}
-	return nil
+	return p.Instrument.Validate()
 }
 
 // ProtectiveLevels are the stop and target attached to a position. A zero

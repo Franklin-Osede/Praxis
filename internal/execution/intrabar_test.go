@@ -253,7 +253,7 @@ func TestWorstCaseIntrabarRejectsImpossibleInput(t *testing.T) {
 		{
 			name:      "position in another instrument",
 			bar:       goodBar,
-			pos:       portfolio.Position{Instrument: market.Instrument{Symbol: "MES"}, NetQty: 2},
+			pos:       portfolio.Position{Instrument: market.Instrument{Symbol: "MES", CentsPerTick: 125}, NetQty: 2},
 			levels:    levels,
 			wantClass: execution.ErrInstrumentMismatch,
 			wantCause: execution.ErrInstrumentMismatch,

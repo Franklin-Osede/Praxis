@@ -35,15 +35,16 @@ At the time this specification was installed, the repository contained only
 was never present in this repository.
 
 What exists now, built and verified here. `internal/market` holds the observed
-market vocabulary, including `Bar`. `internal/portfolio` holds `Position` and
-`ProtectiveLevels` at the minimum intrabar resolution needs; it has no cost
-basis, P&L or account yet. `internal/execution` holds `ConservativeExecution`,
-which executes market, limit and stop orders against a top-of-book quote, and
-`WorstCaseIntrabar`, which resolves a completed bar against a protected
-position. There is no aggregator, no generic market event and no adapter.
+market vocabulary—`Ticks`, `Cents`, `Instrument` with its `CentsPerTick`,
+`Quote`, `Bar`, `Order`, `Fill`. `internal/execution` holds
+`ConservativeExecution`, which executes market, limit and stop orders against a
+top-of-book quote, and `WorstCaseIntrabar`, which resolves a completed bar
+against a protected position. `internal/portfolio` holds `Position` with an
+exact cost basis and `Account`, which applies fills, realises P&L on weighted
+average cost, charges a flat per-contract commission and reports equity.
 
-Always inspect the repository and run the suite before relying on a documented
-baseline. Never rewrite working code without evidence that it is wrong.
+There is no challenge engine, no event store, no aggregator, no generic market
+event and no adapter.
 
 ## 3. Settled decisions
 
@@ -137,6 +138,14 @@ display only and must never feed P&L or risk calculations.
 Partial closes use weighted-average cost, not FIFO. Allocate proportional cost
 deterministically. If division is unavoidable, realised P&L rounds toward the
 loss; fees round up. Document the exact integer division rule in tests.
+
+The exact rule: the cost removed by a partial close is
+`ceil(costBasis * closedQty / openQty)`, rounded toward positive infinity. That
+direction reduces realised P&L for a long and for a short alike, so an inexact
+allocation always costs the trader. The residual basis is what remains after
+subtracting the allocation, never a figure computed independently, so the
+allocations over any sequence of partial closes sum to exactly the original
+basis and no cent is created or lost.
 
 A flip is a close followed by a new open. Long 3 to short 2 via a sell of 5
 charges commission on all five contracts, realises the closed three, and starts
@@ -348,20 +357,23 @@ domain failures.
 
 ## 10. Next smallest vertical slice
 
-Phase 0 is complete: conservative quote execution for market, limit and stop
-orders, worst-case intrabar resolution, and property tests for determinism and
-for every execution invariant.
+Phases 0 and 1 are complete. Quote execution covers market, limit and stop
+orders; worst-case intrabar resolution covers completed bars; `Account` applies
+fills exactly, and a known sequence of a hundred fills reproduces across twenty
+runs and matches an independent cash-flow calculation that never touches cost
+basis.
 
-The next slice is Phase 1, `Position` and `Account`, which grows
-`internal/portfolio` from the two minimal types intrabar resolution needed into
-exact cost basis, partial and full closes, flips, realised and unrealised P&L,
-commissions and account equity. Converting ticks to money needs an instrument's
-`CentsPerTick`, which does not exist yet and is the first thing that slice must
-define.
+The next slice is Phase 2, the challenge engine, and its first vertical cut is
+the smallest rule that can fail an account: a static daily loss limit evaluated
+against equity. Everything hard in Phase 2 hangs off decisions that slice must
+force into the open—what a session boundary is, whether the limit is measured
+on realised or on total equity, and what happens to a position still open when
+the boundary passes.
 
-An aggregator, a generic market event and the first market data adapter are
-deliberately absent. ADR-010 decides where they live; the code arrives when a
-real vertical slice needs it.
+Known gaps to close when a slice needs them: commission is a flat per-contract
+figure on the account, not a schedule and not per instrument; `Account` has no
+notion of a session or a day; and nothing yet records the behavioural context
+around a fill, which is Phase 3.
 
 ## 11. Statistical and commercial guardrails
 

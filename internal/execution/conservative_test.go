@@ -10,7 +10,8 @@ import (
 	"praxis/internal/market"
 )
 
-var mnq = market.Instrument{Symbol: "MNQ"}
+// MNQ moves in 0.25 index points worth $0.50, so one tick is 50 cents.
+var mnq = market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 
 func mustOrder(t *testing.T, side market.Side, qty market.Qty) market.Order {
 	t.Helper()
@@ -385,7 +386,7 @@ func TestExecuteOnQuoteRejectsImpossibleInput(t *testing.T) {
 		{
 			name:      "instrument mismatch",
 			order:     mustOrder(t, market.SideBuy, 1),
-			quote:     market.Quote{Instrument: market.Instrument{Symbol: "MES"}, Bid: 5, Ask: 6, BidSize: 1, AskSize: 1},
+			quote:     market.Quote{Instrument: market.Instrument{Symbol: "MES", CentsPerTick: 125}, Bid: 5, Ask: 6, BidSize: 1, AskSize: 1},
 			wantClass: execution.ErrInstrumentMismatch,
 			wantCause: execution.ErrInstrumentMismatch,
 		},
