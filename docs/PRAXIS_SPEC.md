@@ -122,13 +122,14 @@ for the full decision, including bar semantics, ordering and gap rules.
 
 ### ADR-011 — Session boundaries arrive as data
 
-The adapter stamps every observation with a `SessionID` and a change of
-identifier is a session boundary; the kernel compares identifiers for equality
-and never reads a clock, a calendar or a time zone. A session's reference
-equity is taken from the first snapshot of that session and includes unrealised
-P&L and fees, because the limit is measured on equity. Positions open across a
-boundary are not liquidated. Snapshots must be non-decreasing in
-`(LogicalTime, Sequence)` and a `SessionID` never returns. See
+The adapter stamps every observation with a `SessionID` and the kernel compares
+identifiers for equality, never reading a clock, a calendar or a time zone. A
+session begins with an explicit `SessionOpened` carrying its reference equity,
+never by inferring a boundary from the first ordinary snapshot; a snapshot for
+a session that was never opened is rejected. The reference is equity, so it
+includes unrealised P&L and fees. Positions open across a boundary are not
+liquidated. Inputs must be strictly increasing in `(LogicalTime, Sequence)` and
+a `SessionID` never returns. See
 [`docs/adr/011-session-boundaries.md`](adr/011-session-boundaries.md).
 
 ## 4. Domain rules

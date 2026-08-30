@@ -35,28 +35,55 @@ kernel cannot tell them apart—which is the test ADR-006 sets for the design.
 
 ## What the challenge engine consumes
 
-The challenge engine does not reach into an account. It consumes snapshots:
+The challenge engine does not reach into an account. It consumes two inputs on
+one ordered stream:
 
 ```go
+type SessionOpened struct {
+    Time               market.LogicalTime
+    Sequence           uint64
+    SessionID          SessionID
+    ReferenceEquityCts market.Cents
+}
+
 type AccountSnapshot struct {
     Time      market.LogicalTime
+    Sequence  uint64
     SessionID SessionID
     EquityCts market.Cents
 }
 ```
 
-This keeps the dependency one-way. Portfolio produces a value; challenge
-applies rules to it and decides consequences.
+This keeps the dependency one-way. Portfolio produces values; challenge applies
+rules to them and decides consequences.
+
+## A session opens explicitly
+
+A session begins with a `SessionOpened`, never by inferring one from the first
+ordinary snapshot that happens to carry a new identifier.
+
+Inferring it conflates two different facts—"the market was observed" and "a
+trading day began"—into one input, so a defect that loses the first snapshot of
+a session would silently re-base the reference against a later, different
+equity, and nothing in the stream would record that it happened. An explicit
+input makes the boundary a fact the adapter asserts and the event log can
+carry.
+
+A snapshot whose `SessionID` was never opened is rejected. The kernel does not
+open a session on its behalf.
 
 ## Reference equity
 
-A session's reference equity is taken from the **first snapshot carrying the
-new `SessionID`**, before any order in that session executes.
+The reference equity is stated by the `SessionOpened`, and it is equity, not
+realised P&L: `starting + realised − fees + unrealised`. A position held across
+a boundary therefore carries its open P&L into the new session's reference,
+which is what an evaluation measuring intraday drawdown does.
 
-It is equity, not realised P&L: `starting + realised − fees + unrealised`. A
-position held across a boundary therefore carries its open P&L into the new
-session's reference, which is what an evaluation measuring intraday drawdown
-does.
+The challenge engine sees one number and cannot tell which part of it came from
+unrealised P&L or from commissions. That both are included is a property of how
+equity is computed, and it is proven where it is decided—in an integration test
+that builds a real account—not by a unit test that would only be restating its
+own input.
 
 ## Open positions at a boundary
 
@@ -78,9 +105,15 @@ let an account fail in reality while passing in simulation.
 
 ## Ordering and identity
 
-Snapshots reaching the kernel must be non-decreasing in
-`(LogicalTime, Sequence)`. An out-of-order snapshot is rejected, not sorted:
-sorting would hide an adapter defect that changes results.
+Both inputs share one ordering. Each must be **strictly increasing** in
+`(LogicalTime, Sequence)` against everything the kernel has already accepted.
+An out-of-order input is rejected, not sorted: sorting would hide an adapter
+defect that changes results. A repeated `(LogicalTime, Sequence)` pair is
+rejected too—`Sequence` exists precisely so that two inputs at the same logical
+instant can be told apart, and two inputs at the same position are a delivery
+defect.
+
+A rejected input changes nothing about the challenge's state.
 
 A `SessionID` never returns. Once the kernel has moved past a session, a
 snapshot carrying that identifier again is an adapter defect and is rejected.
