@@ -86,19 +86,41 @@ func (r Rules) Validate() error {
 }
 
 // SessionOpened asserts that a trading session has begun, and states the
-// equity the session's rules will be measured against.
+// account's valuation at the boundary.
 type SessionOpened struct {
-	Time               market.LogicalTime
-	Sequence           uint64
-	SessionID          SessionID
-	ReferenceEquityCts market.Cents
+	Time      market.LogicalTime
+	Sequence  uint64
+	SessionID SessionID
+
+	// BalanceCts and EquityCts carry the same valuation an AccountSnapshot
+	// does, for the same reason: a rule that reads one must never be handed
+	// the other. The session's loss reference comes from EquityCts, and the
+	// evaluation's target base is the BalanceCts of the session that
+	// activated it.
+	BalanceCts market.Cents
+	EquityCts  market.Cents
 }
 
-// AccountSnapshot is an account's equity at a point in an open session.
+// AccountSnapshot is an account's valuation at a point in an open session.
+//
+// Balance and equity are separate because the rules disagree about which one
+// they mean. An open loss must be able to fail an evaluation immediately, so
+// the loss rules read equity. An open gain must not pass one, because a
+// position that touches the target for an instant and gives it all back would
+// otherwise have bought an irreversible approval — so the target reads
+// balance, and only realised money counts toward it.
+//
+// Challenge infers neither value. Both arrive from one atomic valuation of the
+// account, and nothing here can check that they were taken together.
 type AccountSnapshot struct {
 	Time      market.LogicalTime
 	Sequence  uint64
 	SessionID SessionID
+
+	// BalanceCts is the starting balance plus realised P&L, minus fees.
+	BalanceCts market.Cents
+
+	// EquityCts is the balance plus unrealised P&L.
 	EquityCts market.Cents
 }
 
@@ -142,16 +164,18 @@ type Event struct {
 	Sequence  uint64
 	SessionID SessionID
 
-	// EquityCts is the session's reference on SessionReferenceEstablished, and
-	// the observed equity on ChallengeFailed.
+	// EquityCts is the session's equity reference on
+	// SessionReferenceEstablished, the observed equity on ChallengeFailed, and
+	// the observed balance on ChallengePassed — each rule reports the value it
+	// was decided on.
 	EquityCts market.Cents
 
 	// LossCts and Reason are set on ChallengeFailed only.
 	LossCts market.Cents
 	Reason  FailureReason
 
-	// GainCts is set on ChallengePassed only, measured from the equity the
-	// evaluation began with.
+	// GainCts is set on ChallengePassed only, measured on balance from the
+	// balance the evaluation began with.
 	GainCts market.Cents
 }
 
@@ -176,12 +200,12 @@ type Challenge struct {
 
 	currentSessionID SessionID
 
-	// startingEquityCts is the equity the evaluation began with and is never
-	// re-based; referenceCts is the open session's and re-bases at every
-	// boundary. The profit target is measured against the first, the daily
-	// loss limit against the second.
-	startingEquityCts market.Cents
-	referenceCts      market.Cents
+	// startingBalanceCts is the balance the evaluation began with and is never
+	// re-based; referenceCts is the open session's equity reference and
+	// re-bases at every boundary. The profit target is measured against the
+	// first, the daily loss limit against the second.
+	startingBalanceCts market.Cents
+	referenceCts       market.Cents
 
 	// seenSessions is an ordered slice and not a map: a session identifier
 	// never returns, and how that is checked must not depend on iteration
@@ -205,7 +229,7 @@ func (c *Challenge) State() State                     { return c.state }
 func (c *Challenge) FailureReason() FailureReason     { return c.failure }
 func (c *Challenge) SessionID() SessionID             { return c.currentSessionID }
 func (c *Challenge) ReferenceEquityCts() market.Cents { return c.referenceCts }
-func (c *Challenge) StartingEquityCts() market.Cents  { return c.startingEquityCts }
+func (c *Challenge) StartingBalanceCts() market.Cents { return c.startingBalanceCts }
 
 // OpenSession begins a trading session, activating a pending challenge.
 //
@@ -230,19 +254,19 @@ func (c *Challenge) OpenSession(o SessionOpened) ([]Event, error) {
 	var events []Event
 	if c.state == StatePending {
 		c.state = StateActive
-		c.startingEquityCts = o.ReferenceEquityCts
+		c.startingBalanceCts = o.BalanceCts
 		events = append(events, Event{
 			Kind: ChallengeActivated, Time: o.Time, Sequence: o.Sequence,
-			SessionID: o.SessionID, EquityCts: o.ReferenceEquityCts,
+			SessionID: o.SessionID, EquityCts: o.EquityCts,
 		})
 	}
 	events = append(events, Event{
 		Kind: SessionReferenceEstablished, Time: o.Time, Sequence: o.Sequence,
-		SessionID: o.SessionID, EquityCts: o.ReferenceEquityCts,
+		SessionID: o.SessionID, EquityCts: o.EquityCts,
 	})
 
 	c.currentSessionID = o.SessionID
-	c.referenceCts = o.ReferenceEquityCts
+	c.referenceCts = o.EquityCts
 	c.seenSessions = append(c.seenSessions, o.SessionID)
 	c.accept(o.Time, o.Sequence)
 	return events, nil
@@ -254,8 +278,12 @@ func (c *Challenge) OpenSession(o SessionOpened) ([]Event, error) {
 // past a calendar day—changes nothing. Only a new session re-bases it. Losing
 // exactly the limit does not fail; losing more does.
 //
-// The profit target is measured against the equity the evaluation began with,
-// which no boundary moves. Reaching it exactly is enough.
+// The profit target is measured on balance, against the balance the evaluation
+// began with, which no boundary moves. Reaching it exactly is enough. It reads
+// balance and not equity because an open gain that is given back must not have
+// bought an irreversible approval: money passes an evaluation once it has been
+// realised, not while it is still on the screen. Losses are the opposite — an
+// open one can end an evaluation immediately.
 //
 // Both can breach on the same snapshot, because they are measured against
 // different references: a session that opened after a large run-up can be far
@@ -283,7 +311,7 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 		return nil, err
 	}
 
-	gainCts, err := market.SubCents(snapshot.EquityCts, c.startingEquityCts)
+	gainCts, err := market.SubCents(snapshot.BalanceCts, c.startingBalanceCts)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +330,7 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 		c.state = StatePassed
 		events = append(events, Event{
 			Kind: ChallengePassed, Time: snapshot.Time, Sequence: snapshot.Sequence,
-			SessionID: snapshot.SessionID, EquityCts: snapshot.EquityCts,
+			SessionID: snapshot.SessionID, EquityCts: snapshot.BalanceCts,
 			GainCts: gainCts,
 		})
 	}

@@ -224,6 +224,28 @@ open already settled the order would put a false fact in the behavioural log.
 Only when the open sits between the levels and the bar later reaches both is
 the order of events unknowable. Then the stop wins.
 
+### Losses read equity, gains read balance
+
+An account valuation has two figures and the rules disagree about which they
+mean. Every input to the challenge engine carries both, taken atomically from
+the same account at the same mark, and the engine infers neither.
+
+- Daily loss, static drawdown and trailing drawdown read **equity**. An open
+  loss must be able to end an evaluation immediately.
+- The profit target reads **balance**: starting balance plus realised P&L,
+  minus fees. Money passes an evaluation once it has been realised, not while
+  it is still on the screen.
+
+The asymmetry is the conservative principle applied to both ends. Reading
+equity for the target would let a position that touches the target for an
+instant and gives the whole gain back buy an irreversible approval — a
+momentary swing converted into a permanent pass, decided in the trader's
+favour. Reading balance for the losses would let an unbounded open loss sit
+unmeasured.
+
+Commissions reduce progress toward the target because they are already in the
+balance; no separate rule is needed.
+
 ### A daily loss breach beats the profit target
 
 The daily loss limit is measured against the open session's reference; the
@@ -417,7 +439,7 @@ domain failures.
 Phases 0 and 1 are complete and hardened, and Phase 2 has begun. The challenge
 engine applies two rules: a static daily loss limit measured against a session
 reference that arrives with an explicit `SessionOpened`, and a profit target
-measured against the equity the evaluation began with. The state machine is now
+measured on balance against the balance the evaluation began with. The state machine is now
 terminal in both directions.
 
 The next rules, one slice at a time and in this order:

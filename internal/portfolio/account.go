@@ -326,21 +326,28 @@ func markFor(marks []Mark, i market.Instrument) (market.Ticks, error) {
 	return 0, fmt.Errorf("%w: %s", ErrMissingMark, i.Symbol)
 }
 
-// EquityCts is the starting balance plus realised money, minus fees, plus the
-// unrealised value of open positions.
+// EquityCts is the balance plus the unrealised value of open positions.
 func (a *Account) EquityCts(marks []Mark) (market.Cents, error) {
+	balance, err := a.BalanceCts()
+	if err != nil {
+		return 0, err
+	}
 	unrealised, err := a.UnrealisedCts(marks)
 	if err != nil {
 		return 0, err
 	}
-	equity, err := market.AddCents(a.startingCts, a.realisedCts)
+	return market.AddCents(balance, unrealised)
+}
+
+// BalanceCts is the account's settled money: the starting balance plus
+// realised P&L, minus fees. It contains nothing that depends on a mark, so
+// unlike equity it cannot be moved by a price that has not been traded at.
+func (a *Account) BalanceCts() (market.Cents, error) {
+	balance, err := market.AddCents(a.startingCts, a.realisedCts)
 	if err != nil {
 		return 0, err
 	}
-	if equity, err = market.SubCents(equity, a.feesCts); err != nil {
-		return 0, err
-	}
-	return market.AddCents(equity, unrealised)
+	return market.SubCents(balance, a.feesCts)
 }
 
 // allocateCost is the cost basis removed when closing closeQty of openQty.

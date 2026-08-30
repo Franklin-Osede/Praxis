@@ -20,21 +20,33 @@ func newChallenge(t *testing.T) *challenge.Challenge {
 	return c
 }
 
-func opened(seq uint64, id challenge.SessionID, referenceCts market.Cents) challenge.SessionOpened {
+// opened and snap describe a flat account, where balance and equity agree.
+// Tests that need them to differ use openedAt and snapAt.
+func opened(seq uint64, id challenge.SessionID, valuationCts market.Cents) challenge.SessionOpened {
+	return openedAt(seq, id, valuationCts, valuationCts)
+}
+
+func openedAt(seq uint64, id challenge.SessionID, balanceCts, equityCts market.Cents) challenge.SessionOpened {
 	return challenge.SessionOpened{
-		Time:               market.LogicalTime(seq) * 1_000_000_000,
-		Sequence:           seq,
-		SessionID:          id,
-		ReferenceEquityCts: referenceCts,
+		Time:       market.LogicalTime(seq) * 1_000_000_000,
+		Sequence:   seq,
+		SessionID:  id,
+		BalanceCts: balanceCts,
+		EquityCts:  equityCts,
 	}
 }
 
-func snap(seq uint64, id challenge.SessionID, equityCts market.Cents) challenge.AccountSnapshot {
+func snap(seq uint64, id challenge.SessionID, valuationCts market.Cents) challenge.AccountSnapshot {
+	return snapAt(seq, id, valuationCts, valuationCts)
+}
+
+func snapAt(seq uint64, id challenge.SessionID, balanceCts, equityCts market.Cents) challenge.AccountSnapshot {
 	return challenge.AccountSnapshot{
-		Time:      market.LogicalTime(seq) * 1_000_000_000,
-		Sequence:  seq,
-		SessionID: id,
-		EquityCts: equityCts,
+		Time:       market.LogicalTime(seq) * 1_000_000_000,
+		Sequence:   seq,
+		SessionID:  id,
+		BalanceCts: balanceCts,
+		EquityCts:  equityCts,
 	}
 }
 
@@ -175,8 +187,8 @@ func TestTimePassingDoesNotResetTheReference(t *testing.T) {
 	const day = market.LogicalTime(24 * 60 * 60 * 1_000_000_000)
 
 	c := newChallenge(t)
-	mustOpen(t, c, challenge.SessionOpened{Time: 0, Sequence: 1, SessionID: "long-session", ReferenceEquityCts: 5_000_000})
-	mustObserve(t, c, challenge.AccountSnapshot{Time: day, Sequence: 2, SessionID: "long-session", EquityCts: 4_950_000})
+	mustOpen(t, c, challenge.SessionOpened{Time: 0, Sequence: 1, SessionID: "long-session", BalanceCts: 5_000_000, EquityCts: 5_000_000})
+	mustObserve(t, c, challenge.AccountSnapshot{Time: day, Sequence: 2, SessionID: "long-session", BalanceCts: 4_950_000, EquityCts: 4_950_000})
 
 	if c.ReferenceEquityCts() != 5_000_000 {
 		t.Fatalf("reference moved to %d after a day passed", c.ReferenceEquityCts())
@@ -185,7 +197,7 @@ func TestTimePassingDoesNotResetTheReference(t *testing.T) {
 		t.Fatalf("state: got %v, want active", c.State())
 	}
 
-	mustObserve(t, c, challenge.AccountSnapshot{Time: 3 * day, Sequence: 3, SessionID: "long-session", EquityCts: 4_899_999})
+	mustObserve(t, c, challenge.AccountSnapshot{Time: 3 * day, Sequence: 3, SessionID: "long-session", BalanceCts: 4_899_999, EquityCts: 4_899_999})
 	if c.State() != challenge.StateFailed {
 		t.Fatalf("state: got %v, want failed on the cumulative loss", c.State())
 	}
@@ -300,8 +312,8 @@ func TestRejectsOutOfOrderInput(t *testing.T) {
 // A tie in logical time is resolved by sequence, and is not out of order.
 func TestSequenceBreaksTiesInLogicalTime(t *testing.T) {
 	c := newChallenge(t)
-	mustOpen(t, c, challenge.SessionOpened{Time: 100, Sequence: 1, SessionID: "s1", ReferenceEquityCts: 5_000_000})
-	mustObserve(t, c, challenge.AccountSnapshot{Time: 100, Sequence: 2, SessionID: "s1", EquityCts: 4_990_000})
+	mustOpen(t, c, challenge.SessionOpened{Time: 100, Sequence: 1, SessionID: "s1", BalanceCts: 5_000_000, EquityCts: 5_000_000})
+	mustObserve(t, c, challenge.AccountSnapshot{Time: 100, Sequence: 2, SessionID: "s1", BalanceCts: 4_990_000, EquityCts: 4_990_000})
 
 	if c.State() != challenge.StateActive {
 		t.Fatalf("state: got %v, want active", c.State())

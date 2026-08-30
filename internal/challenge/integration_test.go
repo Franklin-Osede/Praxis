@@ -34,15 +34,31 @@ func mustFill(t *testing.T, a *portfolio.Account, side market.Side, qty market.Q
 	}
 }
 
-// equityAt is what an adapter would compute before stamping a snapshot.
-func equityAt(t *testing.T, a *portfolio.Account, mark market.Ticks) market.Cents {
+// valuationAt is the atomic account valuation an adapter would take before
+// stamping an input: both figures from the same account at the same mark.
+func valuationAt(t *testing.T, a *portfolio.Account, mark market.Ticks) (balanceCts, equityCts market.Cents) {
 	t.Helper()
-	marks := []portfolio.Mark{{Instrument: mnq, Price: mark}}
-	equity, err := a.EquityCts(marks)
+	balanceCts, err := a.BalanceCts()
+	if err != nil {
+		t.Fatalf("BalanceCts: %v", err)
+	}
+	equityCts, err = a.EquityCts([]portfolio.Mark{{Instrument: mnq, Price: mark}})
 	if err != nil {
 		t.Fatalf("EquityCts: %v", err)
 	}
-	return equity
+	return balanceCts, equityCts
+}
+
+func openAccount(t *testing.T, c *challenge.Challenge, seq uint64, id challenge.SessionID, a *portfolio.Account, mark market.Ticks) {
+	t.Helper()
+	balance, equity := valuationAt(t, a, mark)
+	mustOpen(t, c, openedAt(seq, id, balance, equity))
+}
+
+func observeAccount(t *testing.T, c *challenge.Challenge, seq uint64, id challenge.SessionID, a *portfolio.Account, mark market.Ticks) {
+	t.Helper()
+	balance, equity := valuationAt(t, a, mark)
+	mustObserve(t, c, snapAt(seq, id, balance, equity))
 }
 
 // Scenario: an unrealised loss fails an evaluation with no trade closed
@@ -55,17 +71,17 @@ func TestUnrealisedLossFailsTheChallenge(t *testing.T) {
 	a := mustAccount(t, 5_000_000, 0)
 	c := newChallenge(t)
 
-	mustOpen(t, c, opened(1, "day-1", equityAt(t, a, 20_000)))
+	openAccount(t, c, 1, "day-1", a, 20_000)
 	mustFill(t, a, market.SideBuy, 10, 20_000)
 
 	// Down exactly $1,000 on the mark: at the limit, not past it.
-	mustObserve(t, c, snap(2, "day-1", equityAt(t, a, 19_800)))
+	observeAccount(t, c, 2, "day-1", a, 19_800)
 	if c.State() != challenge.StateActive {
 		t.Fatalf("state: got %v, want active at exactly the limit", c.State())
 	}
 
 	// One tick further is $5 more, comfortably past it.
-	mustObserve(t, c, snap(3, "day-1", equityAt(t, a, 19_799)))
+	observeAccount(t, c, 3, "day-1", a, 19_799)
 	if c.State() != challenge.StateFailed {
 		t.Fatalf("state: got %v, want failed", c.State())
 	}
@@ -88,7 +104,7 @@ func TestCommissionsAloneFailTheChallenge(t *testing.T) {
 	a := mustAccount(t, 5_000_000, 50)
 	c := newChallenge(t)
 
-	mustOpen(t, c, opened(1, "day-1", equityAt(t, a, 20_000)))
+	openAccount(t, c, 1, "day-1", a, 20_000)
 
 	// 2,000 contracts at 50 cents is exactly the $1,000 limit.
 	mustFill(t, a, market.SideBuy, 1_000, 20_000)
@@ -97,7 +113,7 @@ func TestCommissionsAloneFailTheChallenge(t *testing.T) {
 		t.Fatalf("fees: got %d, want 100000", a.FeesCts())
 	}
 
-	mustObserve(t, c, snap(2, "day-1", equityAt(t, a, 20_000)))
+	observeAccount(t, c, 2, "day-1", a, 20_000)
 	if c.State() != challenge.StateActive {
 		t.Fatalf("state: got %v, want active at exactly the limit", c.State())
 	}
@@ -105,7 +121,7 @@ func TestCommissionsAloneFailTheChallenge(t *testing.T) {
 	mustFill(t, a, market.SideBuy, 1, 20_000)
 	mustFill(t, a, market.SideSell, 1, 20_000)
 
-	mustObserve(t, c, snap(3, "day-1", equityAt(t, a, 20_000)))
+	observeAccount(t, c, 3, "day-1", a, 20_000)
 	if c.State() != challenge.StateFailed {
 		t.Fatalf("state: got %v, want failed", c.State())
 	}
@@ -129,20 +145,23 @@ func TestTheNewSessionReferenceIsMarkedToMarket(t *testing.T) {
 	a := mustAccount(t, 5_000_000, 0)
 	c := newChallenge(t)
 
-	mustOpen(t, c, opened(1, "day-1", equityAt(t, a, 20_000)))
+	openAccount(t, c, 1, "day-1", a, 20_000)
 	mustFill(t, a, market.SideBuy, 10, 20_000)
 
 	// Down $500 at the close of day one, well inside the limit.
-	mustObserve(t, c, snap(2, "day-1", equityAt(t, a, 19_900)))
+	observeAccount(t, c, 2, "day-1", a, 19_900)
 	if c.State() != challenge.StateActive {
 		t.Fatalf("state: got %v, want active", c.State())
 	}
 
-	reference := equityAt(t, a, 19_900)
+	balance, reference := valuationAt(t, a, 19_900)
 	if reference != 4_950_000 {
 		t.Fatalf("reference: got %d, want 4950000 — the open loss must be in it", reference)
 	}
-	mustOpen(t, c, opened(3, "day-2", reference))
+	if balance != 5_000_000 {
+		t.Fatalf("balance: got %d, want 5000000 — nothing has been realised", balance)
+	}
+	mustOpen(t, c, openedAt(3, "day-2", balance, reference))
 
 	// The position is untouched by the boundary.
 	if p, _ := a.Position(mnq); p.NetQty != 10 || p.CostBasisCts != 10_000_000 {
@@ -150,40 +169,61 @@ func TestTheNewSessionReferenceIsMarkedToMarket(t *testing.T) {
 	}
 
 	// Another $1,000 down from the new reference, exactly at the limit.
-	mustObserve(t, c, snap(4, "day-2", equityAt(t, a, 19_700)))
+	observeAccount(t, c, 4, "day-2", a, 19_700)
 	if c.State() != challenge.StateActive {
 		t.Fatalf("state: got %v, want active at exactly the limit", c.State())
 	}
 
-	mustObserve(t, c, snap(5, "day-2", equityAt(t, a, 19_699)))
+	observeAccount(t, c, 5, "day-2", a, 19_699)
 	if c.State() != challenge.StateFailed {
 		t.Fatalf("state: got %v, want failed", c.State())
 	}
 }
 
-// Scenario: an unrealised gain passes an evaluation with no trade closed
-func TestUnrealisedGainPassesTheChallenge(t *testing.T) {
+// Scenario: an unrealised gain does not pass an evaluation, and realising it
+// does
+//
+//	Given an open long whose unrealised gain reaches the target level
+//	When it is observed while still open
+//	Then the challenge is still active, because a position that touches the
+//	  target for an instant and gives it back must not have bought an
+//	  irreversible approval
+//	And when the position is closed at that same price, the gain becomes
+//	  balance and the challenge passes.
+func TestAnUnrealisedGainDoesNotPassUntilItIsRealised(t *testing.T) {
 	a := mustAccount(t, 5_000_000, 0)
 	c := withTarget(t)
 
-	mustOpen(t, c, opened(1, "day-1", equityAt(t, a, 20_000)))
+	openAccount(t, c, 1, "day-1", a, 20_000)
 	mustFill(t, a, market.SideBuy, 10, 20_000)
 
-	mustObserve(t, c, snap(2, "day-1", equityAt(t, a, 20_199)))
+	// $1,000 up on the mark: the target level, on equity alone.
+	observeAccount(t, c, 2, "day-1", a, 20_200)
 	if c.State() != challenge.StateActive {
-		t.Fatalf("state: got %v, want active one tick short", c.State())
+		t.Fatalf("state: got %v, want active while the gain is unrealised", c.State())
 	}
-
-	mustObserve(t, c, snap(3, "day-1", equityAt(t, a, 20_200)))
-	if c.State() != challenge.StatePassed {
-		t.Fatalf("state: got %v, want passed", c.State())
-	}
-
 	if a.RealisedCts() != 0 {
-		t.Fatalf("realised: got %d, want 0 — the pass must be entirely unrealised", a.RealisedCts())
+		t.Fatalf("realised: got %d, want 0", a.RealisedCts())
 	}
 	if p, _ := a.Position(mnq); p.NetQty != 10 {
 		t.Fatalf("position: got %d, want the long still open", p.NetQty)
+	}
+
+	// Giving it all back changes nothing, because nothing had been passed.
+	observeAccount(t, c, 3, "day-1", a, 20_000)
+	if c.State() != challenge.StateActive {
+		t.Fatalf("state: got %v, want active after the gain was given back", c.State())
+	}
+
+	// Earning it again and closing turns it into balance.
+	mustFill(t, a, market.SideSell, 10, 20_200)
+	if a.RealisedCts() != 100_000 {
+		t.Fatalf("realised: got %d, want 100000", a.RealisedCts())
+	}
+
+	observeAccount(t, c, 4, "day-1", a, 20_200)
+	if c.State() != challenge.StatePassed {
+		t.Fatalf("state: got %v, want passed once the gain is realised", c.State())
 	}
 }
 
@@ -197,7 +237,7 @@ func TestCommissionsHoldTheChallengeBackFromTheTarget(t *testing.T) {
 	a := mustAccount(t, 5_000_000, 50)
 	c := withTarget(t)
 
-	mustOpen(t, c, opened(1, "day-1", equityAt(t, a, 20_000)))
+	openAccount(t, c, 1, "day-1", a, 20_000)
 
 	mustFill(t, a, market.SideBuy, 10, 20_000)
 	mustFill(t, a, market.SideSell, 10, 20_200)
@@ -209,7 +249,7 @@ func TestCommissionsHoldTheChallengeBackFromTheTarget(t *testing.T) {
 		t.Fatalf("fees: got %d, want 1000 for twenty contracts", a.FeesCts())
 	}
 
-	mustObserve(t, c, snap(2, "day-1", equityAt(t, a, 20_200)))
+	observeAccount(t, c, 2, "day-1", a, 20_200)
 	if c.State() != challenge.StateActive {
 		t.Fatalf("state: got %v, want active — fees leave it $10 short", c.State())
 	}
@@ -218,7 +258,7 @@ func TestCommissionsHoldTheChallengeBackFromTheTarget(t *testing.T) {
 	mustFill(t, a, market.SideBuy, 1, 20_000)
 	mustFill(t, a, market.SideSell, 1, 20_300)
 
-	mustObserve(t, c, snap(3, "day-1", equityAt(t, a, 20_300)))
+	observeAccount(t, c, 3, "day-1", a, 20_300)
 	if c.State() != challenge.StatePassed {
 		t.Fatalf("state: got %v, want passed", c.State())
 	}

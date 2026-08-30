@@ -84,8 +84,8 @@ func TestANewSessionDoesNotMoveTheProfitTarget(t *testing.T) {
 	}
 
 	mustOpen(t, c, opened(3, "day-2", 5_090_000))
-	if c.StartingEquityCts() != 5_000_000 {
-		t.Fatalf("starting equity moved to %d", c.StartingEquityCts())
+	if c.StartingBalanceCts() != 5_000_000 {
+		t.Fatalf("starting balance moved to %d", c.StartingBalanceCts())
 	}
 	if c.ReferenceEquityCts() != 5_090_000 {
 		t.Fatalf("session reference: got %d, want 5090000", c.ReferenceEquityCts())
@@ -214,5 +214,64 @@ func TestPropertyPassingReplayIsDeterministic(t *testing.T) {
 		if !reflect.DeepEqual(got, baseline) {
 			t.Fatalf("run %d diverged from the baseline run", run)
 		}
+	}
+}
+
+// Scenario: each rule reads the value it means
+//
+//	Given a snapshot whose balance and equity differ
+//	When the target is met on equity alone, the challenge stays active,
+//	  because only realised money counts toward passing
+//	And when the daily limit is breached on equity alone, it fails, because
+//	  an open loss must be able to end an evaluation immediately.
+func TestTheRulesReadDifferentValues(t *testing.T) {
+	t.Run("an open gain does not reach the target", func(t *testing.T) {
+		c := withTarget(t)
+		mustOpen(t, c, opened(1, "s1", 5_000_000))
+
+		mustObserve(t, c, snapAt(2, "s1", 5_000_000, 5_200_000))
+		if c.State() != challenge.StateActive {
+			t.Fatalf("state: got %v, want active — the gain is unrealised", c.State())
+		}
+	})
+
+	t.Run("realising that gain reaches the target", func(t *testing.T) {
+		c := withTarget(t)
+		mustOpen(t, c, opened(1, "s1", 5_000_000))
+		mustObserve(t, c, snapAt(2, "s1", 5_000_000, 5_200_000))
+
+		mustObserve(t, c, snap(3, "s1", 5_200_000))
+		if c.State() != challenge.StatePassed {
+			t.Fatalf("state: got %v, want passed once the gain is realised", c.State())
+		}
+	})
+
+	t.Run("an open loss breaches the daily limit", func(t *testing.T) {
+		c := withTarget(t)
+		mustOpen(t, c, opened(1, "s1", 5_000_000))
+
+		mustObserve(t, c, snapAt(2, "s1", 5_000_000, 4_899_999))
+		if c.State() != challenge.StateFailed {
+			t.Fatalf("state: got %v, want failed — the loss is unrealised but real", c.State())
+		}
+	})
+}
+
+// Scenario: a gain that is given back never passed in the first place
+//
+//	Given an open position whose unrealised gain passes the target level
+//	When the position gives the gain back without ever being closed
+//	Then the challenge was never passed. A momentary swing must not buy an
+//	  irreversible approval.
+func TestAnUnrealisedGainGivenBackNeverPasses(t *testing.T) {
+	c := withTarget(t)
+	mustOpen(t, c, opened(1, "s1", 5_000_000))
+
+	mustObserve(t, c, snapAt(2, "s1", 5_000_000, 5_300_000))
+	mustObserve(t, c, snapAt(3, "s1", 5_000_000, 5_150_000))
+	mustObserve(t, c, snapAt(4, "s1", 5_000_000, 5_000_000))
+
+	if c.State() != challenge.StateActive {
+		t.Fatalf("state: got %v, want active throughout", c.State())
 	}
 }
