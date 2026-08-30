@@ -3,7 +3,8 @@
 This is the normative source for product reasoning, settled domain decisions,
 and the roadmap. `AGENTS.md` contains the always-on working rules and wins if
 the documents conflict. `docs/PRAXIS_CONTEXT_ES.md` is a non-normative Spanish
-summary.
+summary, and `docs/learning/` is a non-normative introduction to the trading
+domain for a reader new to it, with a glossary.
 
 ## 1. Product thesis
 
@@ -118,6 +119,17 @@ changes OHLC and therefore changes which stops trigger. Provenance lives in the
 session and source configuration. See
 [`docs/adr/010-bars-are-adapter-supplied-observations.md`](adr/010-bars-are-adapter-supplied-observations.md)
 for the full decision, including bar semantics, ordering and gap rules.
+
+### ADR-011 — Session boundaries arrive as data
+
+The adapter stamps every observation with a `SessionID` and a change of
+identifier is a session boundary; the kernel compares identifiers for equality
+and never reads a clock, a calendar or a time zone. A session's reference
+equity is taken from the first snapshot of that session and includes unrealised
+P&L and fees, because the limit is measured on equity. Positions open across a
+boundary are not liquidated. Snapshots must be non-decreasing in
+`(LogicalTime, Sequence)` and a `SessionID` never returns. See
+[`docs/adr/011-session-boundaries.md`](adr/011-session-boundaries.md).
 
 ## 4. Domain rules
 
