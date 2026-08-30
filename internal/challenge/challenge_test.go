@@ -60,8 +60,8 @@ func mustObserve(t *testing.T, c *challenge.Challenge, s challenge.AccountSnapsh
 //
 //	Given a pending challenge
 //	When its first session opens with a reference equity
-//	Then the challenge is active, the reference is recorded, and both the
-//	  activation and the session start are reported.
+//	Then the challenge is active and both the activation and the reference
+//	  it established are reported.
 func TestOpeningTheFirstSessionActivatesTheChallenge(t *testing.T) {
 	c := newChallenge(t)
 	if c.State() != challenge.StatePending {
@@ -78,7 +78,7 @@ func TestOpeningTheFirstSessionActivatesTheChallenge(t *testing.T) {
 	}
 	want := []challenge.Event{
 		{Kind: challenge.ChallengeActivated, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", EquityCts: 5_000_000},
-		{Kind: challenge.SessionStarted, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", EquityCts: 5_000_000},
+		{Kind: challenge.SessionReferenceEstablished, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", EquityCts: 5_000_000},
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events\n got: %+v\nwant: %+v", events, want)

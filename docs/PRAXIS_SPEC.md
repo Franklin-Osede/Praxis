@@ -224,6 +224,21 @@ open already settled the order would put a false fact in the behavioural log.
 Only when the open sits between the levels and the bar later reaches both is
 the order of events unknowable. Then the stop wins.
 
+### A daily loss breach beats the profit target
+
+The daily loss limit is measured against the open session's reference; the
+profit target against the equity the evaluation began with, which no boundary
+moves. Because the two references differ, one snapshot can breach both: a
+session that opened after a large run-up can be far enough down on the day to
+fail while the evaluation is still far enough up to pass.
+
+That state is reachable with entirely coherent rules, so the precedence is
+decided rather than left undefined, and the loss wins. A simulator must never
+resolve an ambiguity in the trader's favour.
+
+Reaching the target exactly passes; losing exactly the daily limit does not
+fail. The asymmetry is deliberate and follows the same principle.
+
 ### A symbol is not an instrument
 
 Within one account a symbol names exactly one monetary specification. A fill or
@@ -400,25 +415,31 @@ domain failures.
 ## 10. Next smallest vertical slice
 
 Phases 0 and 1 are complete and hardened, and Phase 2 has begun. The challenge
-engine applies one rule: a static daily loss limit measured against a session
-reference that arrives with an explicit `SessionOpened`. Losing exactly the
-limit does not fail; a failed evaluation is terminal; a session identifier
-never returns; inputs are strictly increasing in `(LogicalTime, Sequence)`.
+engine applies two rules: a static daily loss limit measured against a session
+reference that arrives with an explicit `SessionOpened`, and a profit target
+measured against the equity the evaluation began with. The state machine is now
+terminal in both directions.
 
 The next rules, one slice at a time and in this order:
 
-1. **Profit target**, which is what first makes `Passed` reachable. `Passed` is
-   declared today and has no transition into it, deliberately.
-2. **Static maximum drawdown**, a fixed floor under the account.
-3. **Trailing drawdown**, which is where the real difficulty lives: the
+1. **Static maximum drawdown**, a fixed floor under the account.
+2. **Trailing drawdown**, which is where the real difficulty lives: the
    threshold rises with the high-water mark and never moves down, and
    unrealised equity can breach it with no trade closed.
-4. **Contract limit**, **minimum trading days**, **consistency rule**.
+3. **Contract limit**, **minimum trading days**, **consistency rule**.
 
 Known gaps to close when a slice needs them: commission is a flat per-contract
-figure on the account, not a schedule and not per instrument; nothing produces
-`AccountSnapshot` values yet, which is an adapter's job; and nothing records the
-behavioural context around a fill, which is Phase 3.
+figure on the account, not a schedule and not per instrument; nothing records
+the behavioural context around a fill, which is Phase 3.
+
+Nothing produces `AccountSnapshot` values, and that is deliberate. It belongs
+to none of the packages that exist: `portfolio` knows nothing of sessions,
+`challenge` must not reach into an account, and a market data adapter must not
+own one. It is composed by a future application layer—the sessionizer supplies
+`SessionID`, `Time` and `Sequence`, the account supplies `EquityCts`—and
+building that layer now would mean inventing orchestration before an event log
+or a CLI exists. Until then the integration tests compose it by hand, which
+documents the boundary honestly.
 
 ## 11. Statistical and commercial guardrails
 

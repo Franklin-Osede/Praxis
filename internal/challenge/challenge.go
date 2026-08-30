@@ -66,12 +66,21 @@ type Rules struct {
 	// measured against that session's reference equity. Losing exactly this
 	// much does not fail; losing more does.
 	MaxDailyLossCts market.Cents
+
+	// ProfitTargetCts is the gain that passes the evaluation, measured
+	// against the equity the evaluation began with and never against a
+	// session's reference. Reaching it exactly is enough. Zero means no
+	// target is configured and the evaluation can only be failed.
+	ProfitTargetCts market.Cents
 }
 
 // Validate reports why the rules are not a valid domain value, or nil.
 func (r Rules) Validate() error {
 	if r.MaxDailyLossCts <= 0 {
 		return ErrNonPositiveDailyLoss
+	}
+	if r.ProfitTargetCts < 0 {
+		return ErrNegativeProfitTarget
 	}
 	return nil
 }
@@ -97,19 +106,29 @@ type AccountSnapshot struct {
 type EventKind uint8
 
 const (
-	SessionStarted EventKind = iota + 1
-	ChallengeActivated
+	ChallengeActivated EventKind = iota + 1
+
+	// SessionReferenceEstablished is not the start of a session. Challenge
+	// does not start sessions; it reacts to a SessionOpened asserted by an
+	// adapter. The name SessionStarted is reserved for the global session
+	// event that carries provenance and the random seed, and both will be
+	// serialised into one behavioural log.
+	SessionReferenceEstablished
+
 	ChallengeFailed
+	ChallengePassed
 )
 
 func (k EventKind) String() string {
 	switch k {
-	case SessionStarted:
-		return "session started"
 	case ChallengeActivated:
 		return "challenge activated"
+	case SessionReferenceEstablished:
+		return "session reference established"
 	case ChallengeFailed:
 		return "challenge failed"
+	case ChallengePassed:
+		return "challenge passed"
 	default:
 		return "unspecified"
 	}
@@ -123,18 +142,23 @@ type Event struct {
 	Sequence  uint64
 	SessionID SessionID
 
-	// EquityCts is the session's reference on SessionStarted, and the observed
-	// equity on ChallengeFailed.
+	// EquityCts is the session's reference on SessionReferenceEstablished, and
+	// the observed equity on ChallengeFailed.
 	EquityCts market.Cents
 
 	// LossCts and Reason are set on ChallengeFailed only.
 	LossCts market.Cents
 	Reason  FailureReason
+
+	// GainCts is set on ChallengePassed only, measured from the equity the
+	// evaluation began with.
+	GainCts market.Cents
 }
 
 // Errors reported for input that cannot describe a real evaluation.
 var (
 	ErrNonPositiveDailyLoss = errors.New("challenge: daily loss limit is not positive")
+	ErrNegativeProfitTarget = errors.New("challenge: profit target is negative")
 	ErrEmptySessionID       = errors.New("challenge: session id is empty")
 	ErrOutOfOrder           = errors.New("challenge: input is not after the last accepted one")
 	ErrSessionReturned      = errors.New("challenge: session id has already been used")
@@ -151,7 +175,13 @@ type Challenge struct {
 	failure FailureReason
 
 	currentSessionID SessionID
-	referenceCts     market.Cents
+
+	// startingEquityCts is the equity the evaluation began with and is never
+	// re-based; referenceCts is the open session's and re-bases at every
+	// boundary. The profit target is measured against the first, the daily
+	// loss limit against the second.
+	startingEquityCts market.Cents
+	referenceCts      market.Cents
 
 	// seenSessions is an ordered slice and not a map: a session identifier
 	// never returns, and how that is checked must not depend on iteration
@@ -171,12 +201,11 @@ func New(rules Rules) (*Challenge, error) {
 	return &Challenge{rules: rules, state: StatePending}, nil
 }
 
-func (c *Challenge) State() State                 { return c.state }
-func (c *Challenge) FailureReason() FailureReason { return c.failure }
-func (c *Challenge) SessionID() SessionID         { return c.currentSessionID }
-func (c *Challenge) ReferenceEquityCts() market.Cents {
-	return c.referenceCts
-}
+func (c *Challenge) State() State                     { return c.state }
+func (c *Challenge) FailureReason() FailureReason     { return c.failure }
+func (c *Challenge) SessionID() SessionID             { return c.currentSessionID }
+func (c *Challenge) ReferenceEquityCts() market.Cents { return c.referenceCts }
+func (c *Challenge) StartingEquityCts() market.Cents  { return c.startingEquityCts }
 
 // OpenSession begins a trading session, activating a pending challenge.
 //
@@ -201,13 +230,14 @@ func (c *Challenge) OpenSession(o SessionOpened) ([]Event, error) {
 	var events []Event
 	if c.state == StatePending {
 		c.state = StateActive
+		c.startingEquityCts = o.ReferenceEquityCts
 		events = append(events, Event{
 			Kind: ChallengeActivated, Time: o.Time, Sequence: o.Sequence,
 			SessionID: o.SessionID, EquityCts: o.ReferenceEquityCts,
 		})
 	}
 	events = append(events, Event{
-		Kind: SessionStarted, Time: o.Time, Sequence: o.Sequence,
+		Kind: SessionReferenceEstablished, Time: o.Time, Sequence: o.Sequence,
 		SessionID: o.SessionID, EquityCts: o.ReferenceEquityCts,
 	})
 
@@ -223,6 +253,16 @@ func (c *Challenge) OpenSession(o SessionOpened) ([]Event, error) {
 // The loss is measured against the session's reference, so time passing—even
 // past a calendar day—changes nothing. Only a new session re-bases it. Losing
 // exactly the limit does not fail; losing more does.
+//
+// The profit target is measured against the equity the evaluation began with,
+// which no boundary moves. Reaching it exactly is enough.
+//
+// Both can breach on the same snapshot, because they are measured against
+// different references: a session that opened after a large run-up can be far
+// enough down on the day to fail while the evaluation is still far enough up
+// to pass. The rules are coherent and the state is reachable, so the
+// precedence is decided rather than left open, and the loss wins. A simulator
+// must never resolve an ambiguity in the trader's favour.
 func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 	if c.ended() {
 		return nil, fmt.Errorf("%w: %s", ErrTerminal, c.state)
@@ -243,14 +283,27 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 		return nil, err
 	}
 
+	gainCts, err := market.SubCents(snapshot.EquityCts, c.startingEquityCts)
+	if err != nil {
+		return nil, err
+	}
+
 	var events []Event
-	if lossCts > c.rules.MaxDailyLossCts {
+	switch {
+	case lossCts > c.rules.MaxDailyLossCts:
 		c.state = StateFailed
 		c.failure = FailureDailyLoss
 		events = append(events, Event{
 			Kind: ChallengeFailed, Time: snapshot.Time, Sequence: snapshot.Sequence,
 			SessionID: snapshot.SessionID, EquityCts: snapshot.EquityCts,
 			LossCts: lossCts, Reason: FailureDailyLoss,
+		})
+	case c.rules.ProfitTargetCts > 0 && gainCts >= c.rules.ProfitTargetCts:
+		c.state = StatePassed
+		events = append(events, Event{
+			Kind: ChallengePassed, Time: snapshot.Time, Sequence: snapshot.Sequence,
+			SessionID: snapshot.SessionID, EquityCts: snapshot.EquityCts,
+			GainCts: gainCts,
 		})
 	}
 

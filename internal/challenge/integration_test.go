@@ -160,3 +160,66 @@ func TestTheNewSessionReferenceIsMarkedToMarket(t *testing.T) {
 		t.Fatalf("state: got %v, want failed", c.State())
 	}
 }
+
+// Scenario: an unrealised gain passes an evaluation with no trade closed
+func TestUnrealisedGainPassesTheChallenge(t *testing.T) {
+	a := mustAccount(t, 5_000_000, 0)
+	c := withTarget(t)
+
+	mustOpen(t, c, opened(1, "day-1", equityAt(t, a, 20_000)))
+	mustFill(t, a, market.SideBuy, 10, 20_000)
+
+	mustObserve(t, c, snap(2, "day-1", equityAt(t, a, 20_199)))
+	if c.State() != challenge.StateActive {
+		t.Fatalf("state: got %v, want active one tick short", c.State())
+	}
+
+	mustObserve(t, c, snap(3, "day-1", equityAt(t, a, 20_200)))
+	if c.State() != challenge.StatePassed {
+		t.Fatalf("state: got %v, want passed", c.State())
+	}
+
+	if a.RealisedCts() != 0 {
+		t.Fatalf("realised: got %d, want 0 — the pass must be entirely unrealised", a.RealisedCts())
+	}
+	if p, _ := a.Position(mnq); p.NetQty != 10 {
+		t.Fatalf("position: got %d, want the long still open", p.NetQty)
+	}
+}
+
+// Scenario: commissions hold an evaluation back from its target
+//
+//	Given trades whose realised P&L is exactly the $1,000 target
+//	When commission is charged on every contract
+//	Then the evaluation has not passed, because it is measured on equity and
+//	  equity is net of fees.
+func TestCommissionsHoldTheChallengeBackFromTheTarget(t *testing.T) {
+	a := mustAccount(t, 5_000_000, 50)
+	c := withTarget(t)
+
+	mustOpen(t, c, opened(1, "day-1", equityAt(t, a, 20_000)))
+
+	mustFill(t, a, market.SideBuy, 10, 20_000)
+	mustFill(t, a, market.SideSell, 10, 20_200)
+
+	if a.RealisedCts() != profitTargetCts {
+		t.Fatalf("realised: got %d, want exactly the target %d", a.RealisedCts(), profitTargetCts)
+	}
+	if a.FeesCts() != 1_000 {
+		t.Fatalf("fees: got %d, want 1000 for twenty contracts", a.FeesCts())
+	}
+
+	mustObserve(t, c, snap(2, "day-1", equityAt(t, a, 20_200)))
+	if c.State() != challenge.StateActive {
+		t.Fatalf("state: got %v, want active — fees leave it $10 short", c.State())
+	}
+
+	// Earn more than the fees took.
+	mustFill(t, a, market.SideBuy, 1, 20_000)
+	mustFill(t, a, market.SideSell, 1, 20_300)
+
+	mustObserve(t, c, snap(3, "day-1", equityAt(t, a, 20_300)))
+	if c.State() != challenge.StatePassed {
+		t.Fatalf("state: got %v, want passed", c.State())
+	}
+}
