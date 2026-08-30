@@ -37,15 +37,14 @@ was never present in this repository.
 
 What exists now, built and verified here. `internal/market` holds the observed
 market vocabulary—`Ticks`, `Cents`, `Instrument` with its `CentsPerTick`,
-`Quote`, `Bar`, `Order`, `Fill`. `internal/execution` holds
-`ConservativeExecution`, which executes market, limit and stop orders against a
-top-of-book quote, and `WorstCaseIntrabar`, which resolves a completed bar
-against a protected position. `internal/portfolio` holds `Position` with an
-exact cost basis and `Account`, which applies fills, realises P&L on weighted
-average cost, charges a flat per-contract commission and reports equity.
+`Quote`, `Bar`, `Order`, `Fill`—and checked arithmetic. `internal/execution`
+holds `ConservativeExecution` for market, limit and stop orders on a quote, and
+`WorstCaseIntrabar` for a completed bar. `internal/portfolio` holds `Position`
+with an exact cost basis and `Account`, which applies fills and reports equity.
+`internal/challenge` holds a `Challenge` state machine applying a static daily
+loss limit across explicit session boundaries.
 
-There is no challenge engine, no event store, no aggregator, no generic market
-event and no adapter.
+There is no event store, no aggregator, no generic market event and no adapter.
 
 ## 3. Settled decisions
 
@@ -400,28 +399,26 @@ domain failures.
 
 ## 10. Next smallest vertical slice
 
-Phases 0 and 1 are complete and hardened. Quote execution covers market, limit
-and stop orders; worst-case intrabar resolution covers completed bars;
-`Account` applies fills exactly, rejects a symbol carried under two
-specifications, reports overflow instead of wrapping, and leaves itself
-untouched when it rejects anything.
+Phases 0 and 1 are complete and hardened, and Phase 2 has begun. The challenge
+engine applies one rule: a static daily loss limit measured against a session
+reference that arrives with an explicit `SessionOpened`. Losing exactly the
+limit does not fail; a failed evaluation is terminal; a session identifier
+never returns; inputs are strictly increasing in `(LogicalTime, Sequence)`.
 
-Before the challenge engine, ADR-011 must settle what a trading day is. The
-domain must not read a clock or hardcode a venue calendar, so the intended
-shape is: the adapter stamps every observation with a `SessionID`, a change of
-`SessionID` is a session boundary, and the kernel receives it as data. The ADR
-must resolve who assigns it, when the session's reference equity is taken, what
-happens to a position open across the boundary, and whether commissions and
-unrealised P&L count toward a daily limit.
+The next rules, one slice at a time and in this order:
 
-Only then the first challenge slice: a static daily loss limit, and nothing
-else. No trailing drawdown, no profit target, no minimum days, no provider
-rules, no time zones inside the domain, no liquidation.
+1. **Profit target**, which is what first makes `Passed` reachable. `Passed` is
+   declared today and has no transition into it, deliberately.
+2. **Static maximum drawdown**, a fixed floor under the account.
+3. **Trailing drawdown**, which is where the real difficulty lives: the
+   threshold rises with the high-water mark and never moves down, and
+   unrealised equity can breach it with no trade closed.
+4. **Contract limit**, **minimum trading days**, **consistency rule**.
 
 Known gaps to close when a slice needs them: commission is a flat per-contract
-figure on the account, not a schedule and not per instrument; `Account` has no
-notion of a session; and nothing yet records the behavioural context around a
-fill, which is Phase 3.
+figure on the account, not a schedule and not per instrument; nothing produces
+`AccountSnapshot` values yet, which is an adapter's job; and nothing records the
+behavioural context around a fill, which is Phase 3.
 
 ## 11. Statistical and commercial guardrails
 
