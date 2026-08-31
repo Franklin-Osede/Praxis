@@ -97,6 +97,7 @@ always find something.
 
 ## Where this is going
 
-None of the challenge engine exists yet. The next slice is the smallest rule
-that can fail an account: a static daily loss limit measured against equity.
-Trailing drawdown, profit targets and minimum days come after it, one at a time.
+Praxis now implements daily loss, a realised-balance profit target, static
+drawdown and equity-based trailing drawdown. The next slice connects scripted
+market input, execution, account valuation and challenge through one ordered
+in-memory event stream before richer rules are added.

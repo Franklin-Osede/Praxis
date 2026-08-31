@@ -52,6 +52,7 @@ const (
 	FailureNone FailureReason = iota
 	FailureDailyLoss
 	FailureStaticDrawdown
+	FailureTrailingDrawdown
 )
 
 func (r FailureReason) String() string {
@@ -60,6 +61,8 @@ func (r FailureReason) String() string {
 		return "daily loss limit"
 	case FailureStaticDrawdown:
 		return "static drawdown"
+	case FailureTrailingDrawdown:
+		return "trailing drawdown"
 	default:
 		return "none"
 	}
@@ -79,7 +82,7 @@ type Rules struct {
 	MaxDailyLossCts market.Cents
 
 	// ProfitTargetCts is the gain that passes the evaluation, measured
-	// against the equity the evaluation began with and never against a
+	// against the configured starting balance and never against a
 	// session's reference. Reaching it exactly is enough. Zero means no
 	// target is configured and the evaluation can only be failed.
 	ProfitTargetCts market.Cents
@@ -88,11 +91,17 @@ type Rules struct {
 	// evaluation tolerates, measured on equity and never re-based by a
 	// session or lifted by previous profit. Zero means no static floor.
 	MaxTotalLossCts market.Cents
+
+	// TrailingDrawdownCts is the permitted fall from the highest equity seen
+	// by the evaluation. The high-water mark includes unrealised P&L, never
+	// falls or resets at a session boundary, and trails until the evaluation
+	// ends. Zero disables the rule.
+	TrailingDrawdownCts market.Cents
 }
 
-// StaticFloorCts is the equity level below which the evaluation fails, or zero
-// when no static floor is configured. Validate reports an unrepresentable one.
-func (r Rules) StaticFloorCts() (market.Cents, error) {
+// staticFloorCts derives the configured static boundary. Its caller keeps
+// enablement separate because zero is also a valid boundary.
+func (r Rules) staticFloorCts() (market.Cents, error) {
 	if r.MaxTotalLossCts == 0 {
 		return 0, nil
 	}
@@ -113,7 +122,10 @@ func (r Rules) Validate() error {
 	if r.MaxTotalLossCts < 0 {
 		return ErrNegativeTotalLoss
 	}
-	if _, err := r.StaticFloorCts(); err != nil {
+	if r.TrailingDrawdownCts < 0 {
+		return ErrNegativeTrailingDrawdown
+	}
+	if _, err := r.staticFloorCts(); err != nil {
 		return err
 	}
 	return nil
@@ -212,6 +224,12 @@ type Event struct {
 	// GainCts is set on ChallengePassed only. It was measured on BalanceCts,
 	// against the balance the evaluation began with.
 	GainCts market.Cents
+
+	// HighWaterCts and ThresholdCts are set on a trailing-drawdown failure.
+	// They make the precise moving boundary that caused the decision
+	// recoverable from the event log.
+	HighWaterCts market.Cents
+	ThresholdCts market.Cents
 }
 
 // Errors reported for input that cannot describe a real evaluation.
@@ -220,6 +238,7 @@ var (
 	ErrNonPositiveDailyLoss       = errors.New("challenge: daily loss limit is not positive")
 	ErrNegativeProfitTarget       = errors.New("challenge: profit target is negative")
 	ErrNegativeTotalLoss          = errors.New("challenge: maximum total loss is negative")
+	ErrNegativeTrailingDrawdown   = errors.New("challenge: trailing drawdown is negative")
 
 	// ErrNotStartingValuation guards the activating valuation. It does not
 	// prove the account holds no position — a position at break-even has zero
@@ -251,6 +270,12 @@ type Challenge struct {
 	staticFloorCts market.Cents
 	referenceCts   market.Cents
 
+	// highWaterCts and trailingThresholdCts exist only when the trailing
+	// rule is configured. They are committed after an input has been fully
+	// validated and all checked arithmetic succeeds.
+	highWaterCts         market.Cents
+	trailingThresholdCts market.Cents
+
 	// seenSessions is an ordered slice and not a map: a session identifier
 	// never returns, and how that is checked must not depend on iteration
 	// order.
@@ -266,18 +291,45 @@ func New(rules Rules) (*Challenge, error) {
 	if err := rules.Validate(); err != nil {
 		return nil, err
 	}
-	floor, err := rules.StaticFloorCts()
+	floor, err := rules.staticFloorCts()
 	if err != nil {
 		return nil, err
 	}
-	return &Challenge{rules: rules, state: StatePending, staticFloorCts: floor}, nil
+	c := &Challenge{rules: rules, state: StatePending, staticFloorCts: floor}
+	if rules.TrailingDrawdownCts > 0 {
+		threshold, err := market.SubCents(rules.StartingBalanceCts, rules.TrailingDrawdownCts)
+		if err != nil {
+			return nil, err
+		}
+		c.highWaterCts = rules.StartingBalanceCts
+		c.trailingThresholdCts = threshold
+	}
+	return c, nil
 }
 
 func (c *Challenge) State() State                     { return c.state }
 func (c *Challenge) FailureReason() FailureReason     { return c.failure }
 func (c *Challenge) SessionID() SessionID             { return c.currentSessionID }
 func (c *Challenge) ReferenceEquityCts() market.Cents { return c.referenceCts }
-func (c *Challenge) StaticFloorCts() market.Cents     { return c.staticFloorCts }
+
+// StaticFloor returns the configured static floor and whether the rule is
+// enabled. The boolean is necessary because zero is both a valid floor and
+// the zero value of Cents.
+func (c *Challenge) StaticFloor() (market.Cents, bool) {
+	return c.staticFloorCts, c.rules.MaxTotalLossCts > 0
+}
+
+// HighWater returns the highest equity observed and whether trailing drawdown
+// is enabled. A monetary zero is never used to mean "not configured".
+func (c *Challenge) HighWater() (market.Cents, bool) {
+	return c.highWaterCts, c.rules.TrailingDrawdownCts > 0
+}
+
+// TrailingThresholdCts returns the current trailing floor and whether the
+// rule is enabled. A threshold of zero is not used as an absence sentinel.
+func (c *Challenge) TrailingThresholdCts() (market.Cents, bool) {
+	return c.trailingThresholdCts, c.rules.TrailingDrawdownCts > 0
+}
 func (c *Challenge) StartingBalanceCts() market.Cents {
 	return c.rules.StartingBalanceCts
 }
@@ -378,6 +430,26 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 		return nil, err
 	}
 
+	// Derive the complete trailing candidate before deciding or mutating.
+	// The current observation may establish a new high; the same equity is
+	// then evaluated against the threshold derived from that candidate.
+	candidateHighWaterCts := c.highWaterCts
+	candidateThresholdCts := c.trailingThresholdCts
+	var trailingLossCts market.Cents
+	if c.rules.TrailingDrawdownCts > 0 {
+		if snapshot.EquityCts > candidateHighWaterCts {
+			candidateHighWaterCts = snapshot.EquityCts
+		}
+		candidateThresholdCts, err = market.SubCents(candidateHighWaterCts, c.rules.TrailingDrawdownCts)
+		if err != nil {
+			return nil, err
+		}
+		trailingLossCts, err = market.SubCents(candidateHighWaterCts, snapshot.EquityCts)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	fail := func(reason FailureReason, amountCts market.Cents) []Event {
 		c.state = StateFailed
 		c.failure = reason
@@ -399,6 +471,10 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 			return nil, err
 		}
 		events = fail(FailureStaticDrawdown, totalLossCts)
+	case c.rules.TrailingDrawdownCts > 0 && snapshot.EquityCts < candidateThresholdCts:
+		events = fail(FailureTrailingDrawdown, trailingLossCts)
+		events[0].HighWaterCts = candidateHighWaterCts
+		events[0].ThresholdCts = candidateThresholdCts
 	case c.rules.ProfitTargetCts > 0 && gainCts >= c.rules.ProfitTargetCts:
 		c.state = StatePassed
 		events = append(events, Event{
@@ -409,6 +485,10 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 		})
 	}
 
+	if c.rules.TrailingDrawdownCts > 0 {
+		c.highWaterCts = candidateHighWaterCts
+		c.trailingThresholdCts = candidateThresholdCts
+	}
 	c.accept(snapshot.Time, snapshot.Sequence)
 	return events, nil
 }

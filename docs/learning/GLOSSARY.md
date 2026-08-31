@@ -71,8 +71,14 @@ proportional share of its cost basis, rather than tracking individual lots
 **Flip** — a fill that reduces past flat: a close and a new open, two facts,
 commission on both.
 
-**Equity** — `starting + realised − fees + unrealised`. What challenge rules are
-measured against.
+**Balance** (`Account.BalanceCts`) — settled account money: starting balance
+plus realised P&L, minus fees. Open gains and losses do not change it. Praxis
+uses balance for the profit target so a momentary open gain cannot produce an
+irreversible pass.
+
+**Equity** (`Account.EquityCts`) — balance plus unrealised P&L: what the account
+would be worth at the current mark. Loss and drawdown rules use equity so an
+open loss can fail an evaluation before a position is closed.
 
 **Flat** — a position of zero. It keeps existing; it is not deleted.
 
@@ -101,12 +107,18 @@ daily loss limit, drawdown, contract limits.
 **Daily loss limit** — lose more than this within one session and the evaluation
 fails.
 
-**Static drawdown** — a fixed floor under the account.
+**Static drawdown** — a fixed equity floor anchored to the configured starting
+balance. Starting at $50,000 with a $2,000 static drawdown gives a $48,000
+floor. Earlier profits and new sessions do not move it.
 
 **Trailing drawdown** — a floor that rises with the account's high-water mark
-and never falls. Where most evaluations actually end.
+and never falls. Praxis calculates `high-water mark − trailing amount`. Equity
+exactly at the floor survives; one cent below it fails.
 
-**High-water mark** — the highest equity the account has reached.
+**High-water mark** (`Challenge.HighWater`) — the highest equity reached,
+including unrealised P&L. With a $2,000 trailing amount, a new equity high of
+$53,000 raises the threshold to $51,000. A later decline moves neither value
+down.
 
 **Determinism** — the same data, actions, seed and configuration produce
 byte-identical results. Every other guarantee in Praxis depends on it.

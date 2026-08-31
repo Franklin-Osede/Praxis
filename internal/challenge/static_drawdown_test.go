@@ -12,6 +12,15 @@ import (
 
 const maxTotalLossCts = 200_000 // $2,000, so the floor is $48,000
 
+func mustStaticFloor(t *testing.T, c *challenge.Challenge) market.Cents {
+	t.Helper()
+	floor, ok := c.StaticFloor()
+	if !ok {
+		t.Fatal("static drawdown is not enabled")
+	}
+	return floor
+}
+
 func withFloor(t *testing.T, dailyLossCts market.Cents) *challenge.Challenge {
 	t.Helper()
 	c, err := challenge.New(challenge.Rules{
@@ -22,8 +31,8 @@ func withFloor(t *testing.T, dailyLossCts market.Cents) *challenge.Challenge {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if c.StaticFloorCts() != 4_800_000 {
-		t.Fatalf("floor: got %d, want 4800000", c.StaticFloorCts())
+	if floor := mustStaticFloor(t, c); floor != 4_800_000 {
+		t.Fatalf("floor: got %d, want 4800000", floor)
 	}
 	return c
 }
@@ -58,8 +67,8 @@ func TestStaticDrawdownFloor(t *testing.T) {
 			mustObserve(t, c, snap(4, "d2", 4_820_000))
 			mustOpen(t, c, opened(5, "d3", 4_820_000))
 
-			if c.StaticFloorCts() != 4_800_000 {
-				t.Fatalf("three sessions moved the floor to %d", c.StaticFloorCts())
+			if floor := mustStaticFloor(t, c); floor != 4_800_000 {
+				t.Fatalf("three sessions moved the floor to %d", floor)
 			}
 
 			events := mustObserve(t, c, snap(6, "d3", tc.equityCts))
@@ -96,8 +105,8 @@ func TestEarlierProfitDoesNotLiftTheFloor(t *testing.T) {
 	mustOpen(t, c, opened(1, "d1", 5_000_000))
 	mustObserve(t, c, snap(2, "d1", 5_500_000))
 
-	if c.StaticFloorCts() != 4_800_000 {
-		t.Fatalf("a profit lifted the floor to %d", c.StaticFloorCts())
+	if floor := mustStaticFloor(t, c); floor != 4_800_000 {
+		t.Fatalf("a profit lifted the floor to %d", floor)
 	}
 
 	mustObserve(t, c, snap(3, "d1", 4_799_999))
@@ -127,8 +136,8 @@ func TestDailyLossKeepsPrecedenceOverTheStaticFloor(t *testing.T) {
 // A zero maximum total loss configures no floor at all.
 func TestWithoutATotalLossThereIsNoFloor(t *testing.T) {
 	c := newChallenge(t)
-	if c.StaticFloorCts() != 0 {
-		t.Fatalf("floor: got %d, want none", c.StaticFloorCts())
+	if floor, ok := c.StaticFloor(); ok || floor != 0 {
+		t.Fatalf("floor: got %d enabled %v, want 0 false", floor, ok)
 	}
 	mustOpen(t, c, opened(1, "d1", 5_000_000))
 	mustObserve(t, c, snap(2, "d1", 4_950_000))
@@ -264,7 +273,7 @@ func TestPropertyStaticDrawdownReplayIsDeterministic(t *testing.T) {
 			}
 		}
 
-		got := outcome{c.State(), c.FailureReason(), c.StaticFloorCts(), events}
+		got := outcome{c.State(), c.FailureReason(), mustStaticFloor(t, c), events}
 		if run == 0 {
 			baseline = got
 			if got.reason != challenge.FailureStaticDrawdown {

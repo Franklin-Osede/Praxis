@@ -302,10 +302,14 @@ func TestUnrealisedLossCrossesTheStaticFloor(t *testing.T) {
 	}
 
 	balance, equity := valuationAt(t, a, 19_599)
-	if balance <= c.StaticFloorCts() {
+	floor, ok := c.StaticFloor()
+	if !ok {
+		t.Fatal("static drawdown is not enabled")
+	}
+	if balance <= floor {
 		t.Fatalf("balance %d is itself below the floor: the test proves nothing", balance)
 	}
-	if equity >= c.StaticFloorCts() {
+	if equity >= floor {
 		t.Fatalf("equity %d is not below the floor", equity)
 	}
 	if a.RealisedCts() != 0 {
@@ -347,5 +351,51 @@ func TestCommissionsAloneCrossTheStaticFloor(t *testing.T) {
 	}
 	if a.RealisedCts() != 0 {
 		t.Fatalf("realised: got %d, want 0 — every round trip closed at its entry price", a.RealisedCts())
+	}
+}
+
+// Scenario: unrealised equity raises and then breaches the trailing floor
+//
+// Given an open long whose unrealised gain establishes a new high-water mark
+// When the position gives back more than the configured trailing amount
+// Then the challenge fails although balance and realised P&L never moved and
+// the position remains open.
+func TestUnrealisedEquityRaisesAndBreachesTheTrailingFloor(t *testing.T) {
+	a := mustAccount(t, 5_000_000, 0)
+	c, err := challenge.New(challenge.Rules{
+		StartingBalanceCts:  5_000_000,
+		MaxDailyLossCts:     1_000_000,
+		TrailingDrawdownCts: 200_000,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	openAccount(t, c, 1, "d1", a, 20_000)
+	mustFill(t, a, market.SideBuy, 10, 20_000)
+
+	// 600 ticks * 10 contracts * 50 cents = $3,000 open gain.
+	observeAccount(t, c, 2, "d1", a, 20_600)
+	high, ok := c.HighWater()
+	if !ok || high != 5_300_000 {
+		t.Fatalf("high-water: got %d enabled %v, want 5300000 true", high, ok)
+	}
+	if threshold, ok := c.TrailingThresholdCts(); !ok || threshold != 5_100_000 {
+		t.Fatalf("threshold: got %d enabled %v, want 5100000 true", threshold, ok)
+	}
+
+	// The open gain is now $995, below the $51,000 trailing floor.
+	observeAccount(t, c, 3, "d1", a, 20_199)
+	if c.State() != challenge.StateFailed || c.FailureReason() != challenge.FailureTrailingDrawdown {
+		t.Fatalf("got %v %v, want failed on trailing drawdown", c.State(), c.FailureReason())
+	}
+	if a.RealisedCts() != 0 {
+		t.Fatalf("realised: got %d, want 0", a.RealisedCts())
+	}
+	if balance, err := a.BalanceCts(); err != nil || balance != 5_000_000 {
+		t.Fatalf("balance: got %d error %v, want 5000000", balance, err)
+	}
+	if p, _ := a.Position(mnq); p.NetQty != 10 {
+		t.Fatalf("position: got %d, want the long still open", p.NetQty)
 	}
 }

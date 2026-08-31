@@ -402,16 +402,14 @@ Required growing properties:
 
 ### Phase 0 — Execution kernel
 
-Implement conservative quote execution, worst-case intrabar resolution,
-determinism, and property tests. This phase is planned, not complete in the
-current repository.
+Complete. Conservative quote execution, worst-case intrabar resolution,
+determinism, and property tests are implemented.
 
 ### Phase 1 — Position and Account
 
-Implement exact cost basis, opening and adding both sides, partial and full
-closes, flips, realised and unrealised P&L, accumulated commissions, and account
-equity. Exit: 100 known fills produce the same state across 20 runs and match an
-independently calculated expected result.
+Complete. Exact cost basis, opening and adding both sides, partial and full
+closes, flips, realised and unrealised P&L, accumulated commissions, balance and
+equity are implemented with checked arithmetic and deterministic tests.
 
 ### Phase 2 — Challenge engine
 
@@ -465,22 +463,21 @@ domain failures.
 
 ## 10. Next smallest vertical slice
 
-Phases 0 and 1 are complete and hardened, and Phase 2 has begun. The challenge
-engine applies three rules: a daily loss limit against a session reference, a
-static drawdown floor anchored to the configured starting balance, and a profit
-target on realised balance. The state machine is terminal in both directions.
+Phases 0 and 1 are complete and hardened. Phase 2 now applies four equity
+rules: daily loss against a session reference, a static floor anchored to the
+configured starting balance, a profit target on realised balance, and trailing
+drawdown on total equity. The state machine is terminal in both directions.
 
-**Trailing drawdown** is next, and its policy is settled in advance. The
-high-water mark is total equity including unrealised P&L, because ignoring it
-would let a position run up, give everything back, and never raise the
-threshold—hiding exactly the risk the rule exists to measure. The threshold
-never falls, a new session does not reset it, and it does not freeze before the
-evaluation ends. Order within one snapshot must be explicit, because computing
-the breach before or after updating the high-water mark differs: validate,
-compute the candidate high-water mark from this equity, derive the candidate
-threshold, evaluate this same equity against it, then commit atomically.
+The trailing high-water mark includes unrealised P&L, never falls or resets at
+a session boundary, and does not freeze before the evaluation ends. Within one
+snapshot the engine validates first, computes the candidate high-water mark,
+derives its threshold, evaluates the same equity, and commits atomically. A
+zero configured amount disables static or trailing drawdown, but zero is also a
+valid floor, so public accessors return an explicit enabled boolean rather than
+using zero as an absence sentinel. Failure precedence is daily loss, static
+drawdown, trailing drawdown, then profit target.
 
-After trailing, stop adding rules. The next work is one thin end-to-end slice—
+Stop adding rules here. The next work is one thin end-to-end slice—
 scripted market input, execution, `ApplyFill`, an account valuation, the
 `SessionOpened` and `AccountSnapshot` values composed from it, the challenge,
 and an in-memory ordered event log that replays to an identical final state.
