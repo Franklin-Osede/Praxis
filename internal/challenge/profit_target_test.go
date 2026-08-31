@@ -58,9 +58,12 @@ func TestProfitTarget(t *testing.T) {
 				return
 			}
 			want := []challenge.Event{{
-				Kind: challenge.ChallengePassed, Time: 2_000_000_000, Sequence: 2,
-				SessionID: "s1", BalanceCts: tc.equityCts, EquityCts: tc.equityCts,
-				GainCts: tc.wantGain,
+				Time: 2_000_000_000, Sequence: 2,
+				Decision: challenge.Decision{
+					Kind: challenge.ChallengePassed, SessionID: "s1",
+					BalanceCts: tc.equityCts, EquityCts: tc.equityCts,
+					GainCts: tc.wantGain,
+				},
 			}}
 			if !reflect.DeepEqual(events, want) {
 				t.Fatalf("events\n got: %+v\nwant: %+v", events, want)

@@ -48,24 +48,24 @@ func script(t *testing.T) *session.Session {
 // Reconstruction consumes only the configuration, the fills, the boundaries
 // and the valuations. If it needed an observation or a decision, the log would
 // be describing state it does not contain.
-func TestASessionReconstructsFromItsJournal(t *testing.T) {
+func TestAccountAndChallengeReconstructFromTheJournal(t *testing.T) {
 	s := script(t)
 
-	account, eval, err := session.Replay(s.Journal().Events())
+	state, err := session.Replay(s.Events())
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
 
-	if !reflect.DeepEqual(account.Positions(), s.Account().Positions()) {
-		t.Fatalf("positions\n got: %+v\nwant: %+v", account.Positions(), s.Account().Positions())
+	if !reflect.DeepEqual(state.Account.Positions(), s.Account().Positions()) {
+		t.Fatalf("positions\n got: %+v\nwant: %+v", state.Account.Positions(), s.Account().Positions())
 	}
-	if account.RealisedCts() != s.Account().RealisedCts() {
-		t.Fatalf("realised: got %d, want %d", account.RealisedCts(), s.Account().RealisedCts())
+	if state.Account.RealisedCts() != s.Account().RealisedCts() {
+		t.Fatalf("realised: got %d, want %d", state.Account.RealisedCts(), s.Account().RealisedCts())
 	}
-	if account.FeesCts() != s.Account().FeesCts() {
-		t.Fatalf("fees: got %d, want %d", account.FeesCts(), s.Account().FeesCts())
+	if state.Account.FeesCts() != s.Account().FeesCts() {
+		t.Fatalf("fees: got %d, want %d", state.Account.FeesCts(), s.Account().FeesCts())
 	}
-	if got, want := describe(eval), describe(s.Challenge()); got != want {
+	if got, want := describe(state.Challenge), describe(s.Challenge()); got != want {
 		t.Fatalf("challenge\n got: %+v\nwant: %+v", got, want)
 	}
 }
@@ -104,14 +104,14 @@ func describe(c *challenge.Challenge) challengeState {
 // truths at once. This proves it holds one.
 func TestTheRecordedContextAgreesWithTheStream(t *testing.T) {
 	s := script(t)
-	if err := session.Verify(s.Journal().Events()); err != nil {
+	if err := session.Verify(s.Events()); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 }
 
 func TestVerifyCatchesAContradictoryContext(t *testing.T) {
 	s := script(t)
-	events := s.Journal().Events()
+	events := s.Events()
 
 	for n, e := range events {
 		if o, ok := e.(session.OrderSubmitted); ok {
@@ -131,28 +131,28 @@ func TestVerifyCatchesAContradictoryContext(t *testing.T) {
 func TestPropertyTheSameScriptReplaysIdentically(t *testing.T) {
 	const runs = 20
 
-	baseline := script(t).Journal().Events()
-	baselineAccount, baselineEval, err := session.Replay(baseline)
+	baseline := script(t).Events()
+	baselineState, err := session.Replay(baseline)
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
 
 	for run := 1; run < runs; run++ {
-		events := script(t).Journal().Events()
+		events := script(t).Events()
 		if !reflect.DeepEqual(events, baseline) {
 			t.Fatalf("run %d produced a different journal", run)
 		}
 
-		account, eval, err := session.Replay(events)
+		state, err := session.Replay(events)
 		if err != nil {
 			t.Fatalf("run %d Replay: %v", run, err)
 		}
-		if !reflect.DeepEqual(account.Positions(), baselineAccount.Positions()) ||
-			account.RealisedCts() != baselineAccount.RealisedCts() ||
-			account.FeesCts() != baselineAccount.FeesCts() {
+		if !reflect.DeepEqual(state.Account.Positions(), baselineState.Account.Positions()) ||
+			state.Account.RealisedCts() != baselineState.Account.RealisedCts() ||
+			state.Account.FeesCts() != baselineState.Account.FeesCts() {
 			t.Fatalf("run %d reconstructed a different account", run)
 		}
-		if describe(eval) != describe(baselineEval) {
+		if describe(state.Challenge) != describe(baselineState.Challenge) {
 			t.Fatalf("run %d reconstructed a different evaluation", run)
 		}
 	}
@@ -179,12 +179,12 @@ func TestTheJournalIsOneContiguousOrdering(t *testing.T) {
 	mustObserve(t, s, quote(3_000, 20_000, 20_001))
 	mustSubmit(t, s, order("o-1", market.SideBuy, 1))
 
-	for n, e := range s.Journal().Events() {
+	for n, e := range s.Events() {
 		if got, want := e.Header().Sequence, uint64(n+1); got != want {
 			t.Fatalf("event %d carries sequence %d: a rejected command left a gap", n, got)
 		}
 	}
-	if _, _, err := session.Replay(s.Journal().Events()); err != nil {
+	if _, err := session.Replay(s.Events()); err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
 }
@@ -192,10 +192,10 @@ func TestTheJournalIsOneContiguousOrdering(t *testing.T) {
 // A journal that does not begin with its configuration cannot be replayed.
 func TestReplayRequiresTheConfiguration(t *testing.T) {
 	s := script(t)
-	if _, _, err := session.Replay(s.Journal().Events()[1:]); !errors.Is(err, session.ErrNoSessionStarted) {
+	if _, err := session.Replay(s.Events()[1:]); !errors.Is(err, session.ErrNoSessionStarted) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrNoSessionStarted)
 	}
-	if _, _, err := session.Replay(nil); !errors.Is(err, session.ErrNoSessionStarted) {
+	if _, err := session.Replay(nil); !errors.Is(err, session.ErrNoSessionStarted) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrNoSessionStarted)
 	}
 }

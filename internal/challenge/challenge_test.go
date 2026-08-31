@@ -95,8 +95,14 @@ func TestOpeningTheFirstSessionActivatesTheChallenge(t *testing.T) {
 		t.Fatalf("reference: got %d, want 5000000", c.ReferenceEquityCts())
 	}
 	want := []challenge.Event{
-		{Kind: challenge.ChallengeActivated, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", BalanceCts: 5_000_000, EquityCts: 5_000_000},
-		{Kind: challenge.SessionReferenceEstablished, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", BalanceCts: 5_000_000, EquityCts: 5_000_000},
+		{Time: 1_000_000_000, Sequence: 1, Decision: challenge.Decision{
+			Kind: challenge.ChallengeActivated, SessionID: "2026-08-27",
+			BalanceCts: 5_000_000, EquityCts: 5_000_000,
+		}},
+		{Time: 1_000_000_000, Sequence: 1, Decision: challenge.Decision{
+			Kind: challenge.SessionReferenceEstablished, SessionID: "2026-08-27",
+			BalanceCts: 5_000_000, EquityCts: 5_000_000,
+		}},
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events\n got: %+v\nwant: %+v", events, want)
@@ -142,9 +148,12 @@ func TestDailyLossLimit(t *testing.T) {
 				return
 			}
 			want := []challenge.Event{{
-				Kind: challenge.ChallengeFailed, Time: 2_000_000_000, Sequence: 2,
-				SessionID: "s1", BalanceCts: tc.equityCts, EquityCts: tc.equityCts,
-				LossCts: tc.wantLoss, Reason: challenge.FailureDailyLoss,
+				Time: 2_000_000_000, Sequence: 2,
+				Decision: challenge.Decision{
+					Kind: challenge.ChallengeFailed, SessionID: "s1",
+					BalanceCts: tc.equityCts, EquityCts: tc.equityCts,
+					LossCts: tc.wantLoss, Reason: challenge.FailureDailyLoss,
+				},
 			}}
 			if !reflect.DeepEqual(events, want) {
 				t.Fatalf("events\n got: %+v\nwant: %+v", events, want)

@@ -122,9 +122,12 @@ type OrderContext struct {
 	BalanceCts market.Cents
 	EquityCts  market.Cents
 
-	// TradesThisSession counts the orders submitted in this trading session
-	// before this one.
-	TradesThisSession uint32
+	// OrdersSubmittedThisSession counts the orders submitted in this trading
+	// session before this one. It counts orders, not trades and not fills:
+	// an order may not execute, may fill partially, or may later be
+	// cancelled, and conflating the three would misreport behaviour as soon
+	// as any of those exist.
+	OrdersSubmittedThisSession uint32
 
 	// ConsecutiveLosses counts the closing legs that realised a loss in an
 	// unbroken run immediately before this order, within this session.
@@ -166,12 +169,16 @@ type AccountValued struct {
 	EquityCts  market.Cents
 }
 
-// ChallengeDecision wraps what the challenge engine decided. The inner event
-// keeps its own vocabulary rather than being flattened into four session event
-// types, so there is one definition of a challenge decision.
+// ChallengeDecision records what the challenge engine decided.
+//
+// The payload is a challenge.Decision and not a challenge.Event, because an
+// Event carries its own sequence — the position of the input that caused the
+// decision — and nesting it would put two different fields called Sequence in
+// one record. The causing position is named for what it is instead.
 type ChallengeDecision struct {
 	Envelope
-	Decision challenge.Event
+	CausedBySequence uint64
+	Decision         challenge.Decision
 }
 
 // SessionEnded closes a trading session. Reaching the end of a stream is not a

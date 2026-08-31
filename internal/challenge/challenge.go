@@ -202,12 +202,12 @@ func (k EventKind) String() string {
 	}
 }
 
-// Event is a decision the challenge engine made, at the position in the input
-// stream that caused it.
-type Event struct {
+// Decision is what the challenge engine decided, with no position in any
+// stream. It is kept separate from Event so that a log recording a decision
+// carries one sequence — its own — rather than two fields with the same name
+// meaning different things.
+type Decision struct {
 	Kind      EventKind
-	Time      market.LogicalTime
-	Sequence  uint64
 	SessionID SessionID
 
 	// BalanceCts and EquityCts carry the whole valuation that produced the
@@ -230,6 +230,13 @@ type Event struct {
 	// recoverable from the event log.
 	HighWaterCts market.Cents
 	ThresholdCts market.Cents
+}
+
+// Event is a Decision together with the position of the input that caused it.
+type Event struct {
+	Time     market.LogicalTime
+	Sequence uint64
+	Decision
 }
 
 // Errors reported for input that cannot describe a real evaluation.
@@ -364,13 +371,19 @@ func (c *Challenge) OpenSession(o SessionOpened) ([]Event, error) {
 	if c.state == StatePending {
 		c.state = StateActive
 		events = append(events, Event{
-			Kind: ChallengeActivated, Time: o.Time, Sequence: o.Sequence,
-			SessionID: o.SessionID, BalanceCts: o.BalanceCts, EquityCts: o.EquityCts,
+			Time: o.Time, Sequence: o.Sequence,
+			Decision: Decision{
+				Kind: ChallengeActivated, SessionID: o.SessionID,
+				BalanceCts: o.BalanceCts, EquityCts: o.EquityCts,
+			},
 		})
 	}
 	events = append(events, Event{
-		Kind: SessionReferenceEstablished, Time: o.Time, Sequence: o.Sequence,
-		SessionID: o.SessionID, BalanceCts: o.BalanceCts, EquityCts: o.EquityCts,
+		Time: o.Time, Sequence: o.Sequence,
+		Decision: Decision{
+			Kind: SessionReferenceEstablished, SessionID: o.SessionID,
+			BalanceCts: o.BalanceCts, EquityCts: o.EquityCts,
+		},
 	})
 
 	c.currentSessionID = o.SessionID
@@ -454,10 +467,12 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 		c.state = StateFailed
 		c.failure = reason
 		return []Event{{
-			Kind: ChallengeFailed, Time: snapshot.Time, Sequence: snapshot.Sequence,
-			SessionID:  snapshot.SessionID,
-			BalanceCts: snapshot.BalanceCts, EquityCts: snapshot.EquityCts,
-			LossCts: amountCts, Reason: reason,
+			Time: snapshot.Time, Sequence: snapshot.Sequence,
+			Decision: Decision{
+				Kind: ChallengeFailed, SessionID: snapshot.SessionID,
+				BalanceCts: snapshot.BalanceCts, EquityCts: snapshot.EquityCts,
+				LossCts: amountCts, Reason: reason,
+			},
 		}}
 	}
 
@@ -478,10 +493,12 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 	case c.rules.ProfitTargetCts > 0 && gainCts >= c.rules.ProfitTargetCts:
 		c.state = StatePassed
 		events = append(events, Event{
-			Kind: ChallengePassed, Time: snapshot.Time, Sequence: snapshot.Sequence,
-			SessionID:  snapshot.SessionID,
-			BalanceCts: snapshot.BalanceCts, EquityCts: snapshot.EquityCts,
-			GainCts: gainCts,
+			Time: snapshot.Time, Sequence: snapshot.Sequence,
+			Decision: Decision{
+				Kind: ChallengePassed, SessionID: snapshot.SessionID,
+				BalanceCts: snapshot.BalanceCts, EquityCts: snapshot.EquityCts,
+				GainCts: gainCts,
+			},
 		})
 	}
 

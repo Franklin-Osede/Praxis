@@ -50,9 +50,9 @@ func order(id string, side market.Side, qty market.Qty) market.Order {
 	return o
 }
 
-func kinds(j *session.Journal) []session.Kind {
+func kinds(events []session.Event) []session.Kind {
 	var out []session.Kind
-	for _, e := range j.Events() {
+	for _, e := range events {
 		out = append(out, e.Header().Kind)
 	}
 	return out
@@ -83,7 +83,7 @@ func mustSubmit(t *testing.T, s *session.Session, o market.Order) {
 func TestNewRecordsTheConfiguration(t *testing.T) {
 	s := newSession(t)
 
-	events := s.Journal().Events()
+	events := s.Events()
 	if len(events) != 1 {
 		t.Fatalf("events: got %d, want only the start", len(events))
 	}
@@ -117,7 +117,7 @@ func TestOpeningATradingSessionValuesTheAccountImmediately(t *testing.T) {
 		session.KindChallengeDecision, // session reference established
 		session.KindAccountValued,
 	}
-	got := kinds(s.Journal())
+	got := kinds(s.Events())
 	if len(got) != len(want) {
 		t.Fatalf("kinds: got %v, want %v", got, want)
 	}
@@ -137,8 +137,8 @@ func TestAnOrderBeforeASessionOpensIsRejected(t *testing.T) {
 	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1)); !errors.Is(err, ErrNoSessionOpenSentinel) {
 		t.Fatalf("error: got %v, want %v", err, ErrNoSessionOpenSentinel)
 	}
-	if s.Journal().Len() != 1 {
-		t.Fatalf("a rejected order was recorded: %v", kinds(s.Journal()))
+	if s.JournalLen() != 1 {
+		t.Fatalf("a rejected order was recorded: %v", kinds(s.Events()))
 	}
 }
 
@@ -164,7 +164,7 @@ func TestSubmittingAnOrderProducesTheWholeChain(t *testing.T) {
 	mustObserve(t, s, quote(3_000, 20_000, 20_001))
 	mustSubmit(t, s, order("o-1", market.SideBuy, 2))
 
-	got := kinds(s.Journal())
+	got := kinds(s.Events())
 	tail := got[len(got)-4:]
 	want := []session.Kind{
 		session.KindOrderSubmitted,
@@ -220,7 +220,7 @@ func TestPositionsAreMarkedAtTheExitSide(t *testing.T) {
 
 func lastValuation(t *testing.T, s *session.Session) session.AccountValued {
 	t.Helper()
-	events := s.Journal().Events()
+	events := s.Events()
 	for n := len(events) - 1; n >= 0; n-- {
 		if v, ok := events[n].(session.AccountValued); ok {
 			return v
@@ -242,8 +242,8 @@ func TestOrderSubmittedCarriesItsContext(t *testing.T) {
 	mustSubmit(t, s, order("o-3", market.SideBuy, 1))
 
 	third := orderContext(t, s, "o-3")
-	if third.TradesThisSession != 2 {
-		t.Fatalf("trades: got %d, want 2 before this one", third.TradesThisSession)
+	if third.OrdersSubmittedThisSession != 2 {
+		t.Fatalf("trades: got %d, want 2 before this one", third.OrdersSubmittedThisSession)
 	}
 	if third.ConsecutiveLosses != 1 {
 		t.Fatalf("consecutive losses: got %d, want 1", third.ConsecutiveLosses)
@@ -266,7 +266,7 @@ func TestOrderSubmittedCarriesItsContext(t *testing.T) {
 
 func orderContext(t *testing.T, s *session.Session, orderID string) session.OrderContext {
 	t.Helper()
-	for _, e := range s.Journal().Events() {
+	for _, e := range s.Events() {
 		if o, ok := e.(session.OrderSubmitted); ok && o.Order.ID == orderID {
 			return o.Context
 		}
@@ -292,9 +292,9 @@ func TestATerminalChallengeBlocksFurtherOrders(t *testing.T) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrChallengeEnded)
 	}
 
-	before := s.Journal().Len()
+	before := s.JournalLen()
 	mustObserve(t, s, quote(5_000, 19_700, 19_701))
-	if s.Journal().Len() != before+1 {
+	if s.JournalLen() != before+1 {
 		t.Fatalf("an observation after the end produced more than the observation itself")
 	}
 }
@@ -336,8 +336,8 @@ func TestTheSessionCountersResetAtABoundary(t *testing.T) {
 	mustSubmit(t, s, order("o-2", market.SideSell, 1))
 
 	ctx := orderContext(t, s, "o-2")
-	if ctx.TradesThisSession != 0 {
-		t.Fatalf("trades: got %d, want the counter reset", ctx.TradesThisSession)
+	if ctx.OrdersSubmittedThisSession != 0 {
+		t.Fatalf("trades: got %d, want the counter reset", ctx.OrdersSubmittedThisSession)
 	}
 	if ctx.SessionRealisedCts != 0 {
 		t.Fatalf("session realised: got %d, want the counter reset", ctx.SessionRealisedCts)

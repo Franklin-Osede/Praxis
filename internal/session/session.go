@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 
 	"praxis/internal/challenge"
 	"praxis/internal/execution"
@@ -16,6 +17,12 @@ var (
 	ErrChallengeEnded     = errors.New("session: the evaluation has ended")
 	ErrNoMarketObserved   = errors.New("session: no market observation yet")
 	ErrWrongInstrument    = errors.New("session: not the session's instrument")
+
+	// ErrInconsistentConfig guards two starting balances that must agree. The
+	// account and the evaluation are built from different fields, and a
+	// mismatch would only surface when the first session refused to open,
+	// after an invalid configuration had already been recorded.
+	ErrInconsistentConfig = errors.New("session: account and evaluation disagree about the starting balance")
 )
 
 // Session is one deterministic run: an account, an evaluation, an execution
@@ -25,7 +32,7 @@ type Session struct {
 	account *portfolio.Account
 	eval    *challenge.Challenge
 	policy  execution.ConservativeExecution
-	journal Journal
+	journal *Journal
 
 	// sequence is the session's one ordering. Every journal event takes the
 	// next value, and the challenge engine is fed the sequence of the event
@@ -39,7 +46,7 @@ type Session struct {
 	sessionOpen         bool
 	observedThisSession bool
 
-	tradesThisSession  uint32
+	ordersThisSession  uint32
 	consecutiveLosses  uint32
 	sessionRealisedCts market.Cents
 }
@@ -48,6 +55,10 @@ type Session struct {
 func New(cfg Config, at market.LogicalTime) (*Session, error) {
 	if err := cfg.Instrument.Validate(); err != nil {
 		return nil, err
+	}
+	if cfg.StartingBalanceCts != cfg.Rules.StartingBalanceCts {
+		return nil, fmt.Errorf("%w: account %d, evaluation %d",
+			ErrInconsistentConfig, cfg.StartingBalanceCts, cfg.Rules.StartingBalanceCts)
 	}
 	account, err := portfolio.NewAccount(cfg.StartingBalanceCts, cfg.CommissionPerContractCts)
 	if err != nil {
@@ -58,7 +69,7 @@ func New(cfg Config, at market.LogicalTime) (*Session, error) {
 		return nil, err
 	}
 
-	s := &Session{cfg: cfg, account: account, eval: eval}
+	s := &Session{cfg: cfg, account: account, eval: eval, journal: &Journal{}}
 	if err := s.record(at, KindSessionStarted, func(e Envelope) Event {
 		return SessionStarted{Envelope: e, Config: cfg}
 	}); err != nil {
@@ -148,7 +159,7 @@ func (s *Session) revalue(at market.LogicalTime) error {
 func (s *Session) appendDecisions(at market.LogicalTime, decisions []challenge.Event) error {
 	for _, d := range decisions {
 		if err := s.record(at, KindChallengeDecision, func(e Envelope) Event {
-			return ChallengeDecision{Envelope: e, Decision: d}
+			return ChallengeDecision{Envelope: e, CausedBySequence: d.Sequence, Decision: d.Decision}
 		}); err != nil {
 			return err
 		}
@@ -156,7 +167,14 @@ func (s *Session) appendDecisions(at market.LogicalTime, decisions []challenge.E
 	return nil
 }
 
-func (s *Session) Journal() *Journal                  { return &s.journal }
+// Events returns a copy of the journal. The journal itself is not exposed:
+// an outside Append would advance its ordering without advancing the session's
+// sequence, and the two would silently disagree from then on.
+func (s *Session) Events() []Event { return s.journal.Events() }
+
+// JournalLen is the number of events recorded so far.
+func (s *Session) JournalLen() int { return s.journal.Len() }
+
 func (s *Session) Account() *portfolio.Account        { return s.account }
 func (s *Session) Challenge() *challenge.Challenge    { return s.eval }
 func (s *Session) OpenSessionID() challenge.SessionID { return s.openSessionID }
@@ -169,6 +187,10 @@ func (s *Session) OpenTradingSession(at market.LogicalTime, id challenge.Session
 	}
 	if s.ended() {
 		return ErrChallengeEnded
+	}
+	// Nothing may decide before the journal has agreed to record the result.
+	if err := s.journal.ValidateNext(at, s.sequence+1); err != nil {
+		return err
 	}
 	balance, equity, err := s.value()
 	if err != nil {
@@ -194,7 +216,7 @@ func (s *Session) OpenTradingSession(at market.LogicalTime, id challenge.Session
 	}
 
 	s.openSessionID, s.sessionOpen, s.observedThisSession = id, true, false
-	s.tradesThisSession, s.consecutiveLosses, s.sessionRealisedCts = 0, 0, 0
+	s.ordersThisSession, s.consecutiveLosses, s.sessionRealisedCts = 0, 0, 0
 	return s.revalue(at)
 }
 
@@ -204,6 +226,9 @@ func (s *Session) Observe(q market.Quote) error {
 		return ErrWrongInstrument
 	}
 	if err := q.Validate(); err != nil {
+		return err
+	}
+	if err := s.journal.ValidateNext(q.Time, s.sequence+1); err != nil {
 		return err
 	}
 	if err := s.record(q.Time, KindMarketObserved, func(e Envelope) Event {
@@ -235,6 +260,10 @@ func (s *Session) SubmitOrder(o market.Order) error {
 	if !s.observedThisSession {
 		return ErrNoMarketObserved
 	}
+	at := s.lastQuote.Time
+	if err := s.journal.ValidateNext(at, s.sequence+1); err != nil {
+		return err
+	}
 
 	position, _ := s.account.Position(s.cfg.Instrument)
 	balance, equity, err := s.value()
@@ -242,37 +271,46 @@ func (s *Session) SubmitOrder(o market.Order) error {
 		return err
 	}
 	context := OrderContext{
-		BalanceCts:         balance,
-		EquityCts:          equity,
-		TradesThisSession:  s.tradesThisSession,
-		ConsecutiveLosses:  s.consecutiveLosses,
-		SessionRealisedCts: s.sessionRealisedCts,
-		PositionQtyBefore:  position.NetQty,
+		BalanceCts:                 balance,
+		EquityCts:                  equity,
+		OrdersSubmittedThisSession: s.ordersThisSession,
+		ConsecutiveLosses:          s.consecutiveLosses,
+		SessionRealisedCts:         s.sessionRealisedCts,
+		PositionQtyBefore:          position.NetQty,
 	}
 
-	at := s.lastQuote.Time
+	// Everything the command will do is computed and applied before any of it
+	// is recorded, so a refusal leaves no order in the log, no counter moved
+	// and no money changed. Execution against one quote yields at most one
+	// fill today; when a single order can produce several, this needs a real
+	// transaction boundary rather than the ordering of these lines.
+	fills, err := s.policy.ExecuteOnQuote(o, s.lastQuote)
+	if err != nil {
+		return err
+	}
+	applied := make([][]portfolio.PositionEvent, 0, len(fills))
+	for _, f := range fills {
+		changes, err := s.account.ApplyFill(f)
+		if err != nil {
+			return err
+		}
+		applied = append(applied, changes)
+	}
+
 	if err := s.record(at, KindOrderSubmitted, func(e Envelope) Event {
 		return OrderSubmitted{Envelope: e, Order: o, Context: context}
 	}); err != nil {
 		return err
 	}
-	s.tradesThisSession++
+	s.ordersThisSession++
 
-	fills, err := s.policy.ExecuteOnQuote(o, s.lastQuote)
-	if err != nil {
-		return err
-	}
-	for _, f := range fills {
+	for n, f := range fills {
 		if err := s.record(at, KindFillProduced, func(e Envelope) Event {
 			return FillProduced{Envelope: e, Fill: f}
 		}); err != nil {
 			return err
 		}
-		changes, err := s.account.ApplyFill(f)
-		if err != nil {
-			return err
-		}
-		for _, change := range changes {
+		for _, change := range applied[n] {
 			if err := s.record(at, KindPositionChanged, func(e Envelope) Event {
 				return PositionChanged{Envelope: e, Change: change}
 			}); err != nil {

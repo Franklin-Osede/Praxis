@@ -72,10 +72,13 @@ func TestTrailingDrawdownFollowsEquityHighWater(t *testing.T) {
 		t.Fatalf("got %v %v, want failed on trailing drawdown", c.State(), c.FailureReason())
 	}
 	want := []challenge.Event{{
-		Kind: challenge.ChallengeFailed, Time: 4_000_000_000, Sequence: 4,
-		SessionID: "d1", BalanceCts: 5_000_000, EquityCts: 5_099_999,
-		LossCts: 200_001, Reason: challenge.FailureTrailingDrawdown,
-		HighWaterCts: 5_300_000, ThresholdCts: 5_100_000,
+		Time: 4_000_000_000, Sequence: 4,
+		Decision: challenge.Decision{
+			Kind: challenge.ChallengeFailed, SessionID: "d1",
+			BalanceCts: 5_000_000, EquityCts: 5_099_999,
+			LossCts: 200_001, Reason: challenge.FailureTrailingDrawdown,
+			HighWaterCts: 5_300_000, ThresholdCts: 5_100_000,
+		},
 	}}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events\n got: %+v\nwant: %+v", events, want)

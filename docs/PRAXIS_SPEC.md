@@ -42,8 +42,8 @@ market vocabulary and checked arithmetic. `internal/execution` holds
 with an exact cost basis and `Account`. `internal/challenge` holds a state
 machine applying a daily loss limit, a static drawdown floor, a trailing
 drawdown and a profit target. `internal/session` composes all of them into one
-deterministic run with an ordered in-memory journal, and reconstructs an
-account and an evaluation from that journal alone.
+deterministic run with an ordered in-memory journal, and reconstructs and
+resumes a whole session from that journal alone.
 
 There is no persistence, no market data adapter, no CLI and no UI.
 
@@ -246,6 +246,47 @@ decision, never one field whose meaning depends on the event's kind. A
 persisted behavioural log must not have to reinterpret a value to know what it
 holds, and a reader must be able to see that a failure was decided on equity
 while a pass was decided on balance.
+
+### A command decides nothing before the journal has agreed to record it
+
+Every session command validates the journal's next position first, without
+mutating anything. Only then may an aggregate decide. An evaluation that
+accepted a session boundary the journal then refused would leave the challenge
+in one trading session and the log in another, with nothing able to reconcile
+them.
+
+For the same reason a command applies before it records: an order the account
+refuses leaves no order, no fill and no position change in the log, no counter
+moved and no money changed. Execution against one quote yields at most one fill
+today; when a single order can produce several, or when a journal can fail on
+I/O, this needs a real transaction boundary rather than the ordering of a few
+lines.
+
+### A log records one position per event, and names its cause
+
+An event carries its own sequence, which is its place in the journal. A
+challenge decision also has a cause — the input that produced it — and that is
+recorded as `CausedBySequence`, not as a second nested field also called
+`Sequence`. Two fields of the same name meaning different positions is a defect
+waiting for a serialiser.
+
+Counts in the log name what they count. `OrdersSubmittedThisSession` counts
+orders, not trades and not fills: an order may not execute, may fill partially,
+or may later be cancelled, and conflating the three misreports behaviour as
+soon as any of those exist.
+
+### Reconstruction restores a session, not only its aggregates
+
+`Replay` rebuilds everything needed to carry on: the account, the evaluation,
+the trading session's open state and identifier, the last book seen, whether
+this session has been observed, and the behavioural counters a decision's
+context is measured against. `Resume` continues from it, and the proof is that
+a run cut in half and resumed produces the same stream as one that was never
+interrupted.
+
+Verification of a log uses checked arithmetic throughout. A verifier that
+silently wrapped would accept a corrupt log for exactly the reason it exists to
+reject one.
 
 ### A position is marked at the price it could be closed at
 
@@ -513,7 +554,8 @@ Next, in order:
    a `SessionID` assigned, provenance preserved, quotes or bars but never both
    for execution. No Databento, no Binance.
 2. **An append-only event store**, in memory then file-backed, detecting
-   truncation and rejecting a repeated position.
+   truncation and rejecting a repeated position. This is where the transaction
+   boundary above stops being a matter of statement order.
 3. **A minimal replay CLI** driven by a scripted action file.
 4. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.

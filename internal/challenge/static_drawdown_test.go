@@ -83,9 +83,12 @@ func TestStaticDrawdownFloor(t *testing.T) {
 				return
 			}
 			want := []challenge.Event{{
-				Kind: challenge.ChallengeFailed, Time: 6_000_000_000, Sequence: 6,
-				SessionID: "d3", BalanceCts: tc.equityCts, EquityCts: tc.equityCts,
-				LossCts: tc.wantLoss, Reason: challenge.FailureStaticDrawdown,
+				Time: 6_000_000_000, Sequence: 6,
+				Decision: challenge.Decision{
+					Kind: challenge.ChallengeFailed, SessionID: "d3",
+					BalanceCts: tc.equityCts, EquityCts: tc.equityCts,
+					LossCts: tc.wantLoss, Reason: challenge.FailureStaticDrawdown,
+				},
 			}}
 			if !reflect.DeepEqual(events, want) {
 				t.Fatalf("events\n got: %+v\nwant: %+v", events, want)
