@@ -1,0 +1,3 @@
+praxis.market.v1,MNQ,50
+time,sequence,session_id,bid,ask,bid_size,ask_size
+3000,1,d1,20000,20001,10,10

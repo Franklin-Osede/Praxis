@@ -45,7 +45,10 @@ drawdown and a profit target. `internal/session` composes all of them into one
 deterministic run with an ordered in-memory journal, proves that journal
 against the aggregates that produced it, and resumes a whole session from it.
 
-There is no persistence, no market data adapter, no CLI and no UI.
+`internal/adapters/marketdata` reads a versioned canonical file into ordered
+observations and drives a session with them.
+
+There is no persistence, no CLI and no UI.
 
 ## 3. Settled decisions
 
@@ -283,6 +286,24 @@ this session has been observed, and the behavioural counters a decision's
 context is measured against. `Resume` continues from it, and the proof is that
 a run cut in half and resumed produces the same stream as one that was never
 interrupted.
+
+### A trading day is stated by the data, not derived from a calendar
+
+The canonical market file carries a `SessionID` on **every row**, not once at
+the top. That costs a little size and buys two things: the boundary the domain
+will consume is visible on the face of the file, so a misplaced row is
+detectable immediately; and reading a file depends on no time zone, no daylight
+saving rule, no holiday calendar and no version of an external calendar.
+
+Converting a provider's raw data into that format is a separate
+responsibility. A normalizer will need exactly those external rules, they
+change, and it should carry its own decision record:
+
+```text
+provider data -> normalizer (calendar, time zone) -> canonical file -> adapter -> session
+```
+
+An adapter reads a stream it can vouch for; it does not decide what a day is.
 
 ### A journal is not believed, it is proved
 
@@ -572,33 +593,29 @@ them, `Verify` proves the log does not hold two contradictory truths.
 
 Next, in order:
 
-1. **A file market data adapter.** The journal's integrity is now established,
-   so a format can be frozen without freezing one able to reconstruct false
-   histories.
-    One ordered MNQ fixture, validated ordering,
-   a `SessionID` assigned, provenance preserved, quotes or bars but never both
-   for execution. No Databento, no Binance.
-2. **An append-only event store**, in memory then file-backed, detecting
+1. **An append-only event store**, in memory then file-backed, detecting
    truncation and rejecting a repeated position. This is where the transaction
-   boundary above stops being a matter of statement order.
-3. **A minimal replay CLI** driven by a scripted action file.
-4. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
+   boundary described above stops being a matter of statement order.
+2. **A minimal replay CLI** driven by a scripted action file.
+3. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.
-5. **A power sensitivity table** across plausible effect sizes, conditioning
+4. **A power sensitivity table** across plausible effect sizes, conditioning
    rates, trades per session and dispersions, establishing under which
    assumptions the experiment is feasible at all. A definitive calculation now
    would be precise-looking arithmetic over invented inputs.
-6. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
+5. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
    used only to estimate those inputs. Then freeze the primary hypothesis, the
    minimum relevant effect, the analysis method, the power target, the sample
    size, the exclusion rules and the stopping rule.
-7. **The remaining challenge rules**—contract limits, minimum trading days, the
+6. **The remaining challenge rules**—contract limits, minimum trading days, the
    consistency rule, a session trading window—designed against what the
    orchestrator turns out to carry rather than guessed at now.
 
-Known gaps: commission is a flat per-contract figure, not a schedule; nothing
-persists a journal; and `AccountSnapshot` carries neither position size nor any
+Known gaps: commission is a flat per-contract figure, not a schedule; a
+provider normalizer that turns raw data into the canonical format does not
+exist, and needs its own decision record before it does; nothing persists a
+journal; and `AccountSnapshot` carries neither position size nor any
 notion of a session having been traded, which is why the rules needing them are
 deferred.
 
