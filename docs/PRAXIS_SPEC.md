@@ -36,15 +36,16 @@ At the time this specification was installed, the repository contained only
 was never present in this repository.
 
 What exists now, built and verified here. `internal/market` holds the observed
-market vocabulary—`Ticks`, `Cents`, `Instrument` with its `CentsPerTick`,
-`Quote`, `Bar`, `Order`, `Fill`—and checked arithmetic. `internal/execution`
-holds `ConservativeExecution` for market, limit and stop orders on a quote, and
+market vocabulary and checked arithmetic. `internal/execution` holds
+`ConservativeExecution` for market, limit and stop orders on a quote, and
 `WorstCaseIntrabar` for a completed bar. `internal/portfolio` holds `Position`
-with an exact cost basis and `Account`, which applies fills and reports equity.
-`internal/challenge` holds a `Challenge` state machine applying a static daily
-loss limit across explicit session boundaries.
+with an exact cost basis and `Account`. `internal/challenge` holds a state
+machine applying a daily loss limit, a static drawdown floor, a trailing
+drawdown and a profit target. `internal/session` composes all of them into one
+deterministic run with an ordered in-memory journal, and reconstructs an
+account and an evaluation from that journal alone.
 
-There is no event store, no aggregator, no generic market event and no adapter.
+There is no persistence, no market data adapter, no CLI and no UI.
 
 ## 3. Settled decisions
 
@@ -246,6 +247,18 @@ persisted behavioural log must not have to reinterpret a value to know what it
 holds, and a reader must be able to see that a failure was decided on equity
 while a pass was decided on balance.
 
+### A position is marked at the price it could be closed at
+
+A long is valued at the bid and a short at the ask, never at a midpoint and
+never at the side it was entered on. The exit side is what the position would
+actually fetch; anything else shows money that could not be realised. The
+session layer applies this, because it is the only place that knows both a
+position's direction and the current book.
+
+A consequence worth naming: a position is worth a spread less than it cost the
+instant it is opened, and that shows in equity immediately. That is correct,
+and it is the same conservatism as execution crossing the spread.
+
 ### Losses read equity, gains read balance
 
 An account valuation has two figures and the rules disagree about which they
@@ -357,6 +370,10 @@ type EventStorePort interface {
     Load(sessionID string) ([]DomainEvent, error)
 }
 
+// Reserved. Nothing in Praxis is random yet, so nothing implements this and
+// SessionStarted records no seed: an unread Seed: 0 would be less truthful
+// than its absence. When randomness first enters, an injected Randomizer and
+// an explicit recorded seed become required together.
 type Randomizer interface {
     Int63n(n int64) int64
     NormFloat64() float64 // sampling boundary only
@@ -477,19 +494,46 @@ valid floor, so public accessors return an explicit enabled boolean rather than
 using zero as an absence sentinel. Failure precedence is daily loss, static
 drawdown, trailing drawdown, then profit target.
 
-Stop adding rules here. The next work is one thin end-to-end slice—
-scripted market input, execution, `ApplyFill`, an account valuation, the
-`SessionOpened` and `AccountSnapshot` values composed from it, the challenge,
-and an in-memory ordered event log that replays to an identical final state.
-That forces the real producer of snapshots into existence and reveals what the
-event log must record, without introducing persistence. Then an append-only
-event store, reconstruction from events, a minimal CLI, and only then contract
-limits and minimum trading days—which need information no snapshot carries
-today, and should be designed against evidence rather than guessed at now.
+The first orchestration slice is complete. Scripted commands drive execution,
+fills reach the account, one atomic valuation reaches the evaluation, and every
+fact is appended to a journal that reconstructs both the account and the
+evaluation with nothing lost.
 
-Known gaps: commission is a flat per-contract figure on the account, not a
-schedule and not per instrument; nothing records the behavioural context around
-a fill.
+That journal records decisions, not only outcomes. `OrderSubmitted` carries the
+state the decision was taken in—balance, equity, orders so far this session,
+consecutive losing closes, session realised P&L, and the position it was
+submitted into. Every one is a fact the system knows at that instant; none is
+an interpretation, and naming a pattern is analytics that belongs nowhere near
+this package. Because those figures are also derivable from the events before
+them, `Verify` proves the log does not hold two contradictory truths.
+
+Next, in order:
+
+1. **A file market data adapter.** One ordered MNQ fixture, validated ordering,
+   a `SessionID` assigned, provenance preserved, quotes or bars but never both
+   for execution. No Databento, no Binance.
+2. **An append-only event store**, in memory then file-backed, detecting
+   truncation and rejecting a repeated position.
+3. **A minimal replay CLI** driven by a scripted action file.
+4. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
+   and target, position, balance and equity, and the evaluation's status.
+   Nothing else until ten sessions have been traded.
+5. **A power sensitivity table** across plausible effect sizes, conditioning
+   rates, trades per session and dispersions, establishing under which
+   assumptions the experiment is feasible at all. A definitive calculation now
+   would be precise-looking arithmetic over invented inputs.
+6. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
+   used only to estimate those inputs. Then freeze the primary hypothesis, the
+   minimum relevant effect, the analysis method, the power target, the sample
+   size, the exclusion rules and the stopping rule.
+7. **The remaining challenge rules**—contract limits, minimum trading days, the
+   consistency rule, a session trading window—designed against what the
+   orchestrator turns out to carry rather than guessed at now.
+
+Known gaps: commission is a flat per-contract figure, not a schedule; nothing
+persists a journal; and `AccountSnapshot` carries neither position size nor any
+notion of a session having been traded, which is why the rules needing them are
+deferred.
 
 ## 11. Statistical and commercial guardrails
 
