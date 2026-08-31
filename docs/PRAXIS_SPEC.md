@@ -137,15 +137,17 @@ a `SessionID` never returns. See
 
 ### ADR-012 — A command is the atomic unit of the event store
 
-The event store frames a whole command's events as one batch —
-`[length][payload][checksum]` — confirmed together or not at all, because
-per-event framing would leave a command cut in half looking perfectly intact.
-One writer per journal, a canonical versioned encoding, checksums for
-accidental corruption and not for tamper resistance, and a reader that accepts
-only complete, continuous batches and never repairs. Integrity and durability
-are separate properties with separate names. A command executes against a copy
-of the aggregates and the new state is published only after its batch is
-confirmed. See
+The event store frames a whole command's events as one batch — a fixed-width
+text header carrying the batch number, the payload's byte length, its first and
+last event sequence, its event count and a CRC32C, then a canonical text
+payload — confirmed together or not at all, because per-event framing would
+leave a command cut in half looking perfectly intact. One writer per journal,
+checksums for accidental corruption and not for tamper resistance, and a reader
+that accepts only complete, continuous batches and never repairs. Integrity and
+durability are separate properties with separate names. A failed write is
+ambiguous, so recovery discovers whether the batch landed and never re-executes
+the command; state is rebuilt from the confirmed batches rather than from a copy
+of the aggregates. See
 [`docs/adr/012-event-store-batches.md`](adr/012-event-store-batches.md).
 
 ## 4. Domain rules
