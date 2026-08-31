@@ -224,6 +224,28 @@ open already settled the order would put a false fact in the behavioural log.
 Only when the open sits between the levels and the bar later reaches both is
 the order of events unknowable. Then the stop wins.
 
+### An evaluation activates at its configured starting valuation
+
+`Rules.StartingBalanceCts` is the valuation an evaluation is contracted to
+begin at, and activation is rejected unless the opening balance and equity both
+equal it. The static drawdown floor and the profit target are anchored to that
+configured figure, so neither depends on a mark taken at the instant of
+activation—a floor derived from an incidental observation would be a permanent
+consequence of a momentary one.
+
+This does not prove the account holds no position: a position at break-even has
+zero unrealised P&L and satisfies the check. It proves only that the evaluation
+began where its rules say it began. The session layer must open a challenge
+immediately after creating the account and before accepting any order.
+
+### Events carry the whole valuation
+
+A domain event records both the balance and the equity that produced its
+decision, never one field whose meaning depends on the event's kind. A
+persisted behavioural log must not have to reinterpret a value to know what it
+holds, and a reader must be able to see that a failure was decided on equity
+while a pass was decided on balance.
+
 ### Losses read equity, gains read balance
 
 An account valuation has two figures and the rules disagree about which they
@@ -245,6 +267,13 @@ unmeasured.
 
 Commissions reduce progress toward the target because they are already in the
 balance; no separate rule is needed.
+
+### Loss rules precede the profit target, and the daily limit precedes the floor
+
+Both loss rules are evaluated before the target, and the daily limit before the
+static floor. When the daily limit and the floor breach together the outcome is
+identical either way, so the ordering exists only to keep a recorded reason
+stable rather than incidental.
 
 ### A daily loss breach beats the profit target
 
@@ -437,31 +466,33 @@ domain failures.
 ## 10. Next smallest vertical slice
 
 Phases 0 and 1 are complete and hardened, and Phase 2 has begun. The challenge
-engine applies two rules: a static daily loss limit measured against a session
-reference that arrives with an explicit `SessionOpened`, and a profit target
-measured on balance against the balance the evaluation began with. The state machine is now
-terminal in both directions.
+engine applies three rules: a daily loss limit against a session reference, a
+static drawdown floor anchored to the configured starting balance, and a profit
+target on realised balance. The state machine is terminal in both directions.
 
-The next rules, one slice at a time and in this order:
+**Trailing drawdown** is next, and its policy is settled in advance. The
+high-water mark is total equity including unrealised P&L, because ignoring it
+would let a position run up, give everything back, and never raise the
+threshold—hiding exactly the risk the rule exists to measure. The threshold
+never falls, a new session does not reset it, and it does not freeze before the
+evaluation ends. Order within one snapshot must be explicit, because computing
+the breach before or after updating the high-water mark differs: validate,
+compute the candidate high-water mark from this equity, derive the candidate
+threshold, evaluate this same equity against it, then commit atomically.
 
-1. **Static maximum drawdown**, a fixed floor under the account.
-2. **Trailing drawdown**, which is where the real difficulty lives: the
-   threshold rises with the high-water mark and never moves down, and
-   unrealised equity can breach it with no trade closed.
-3. **Contract limit**, **minimum trading days**, **consistency rule**.
+After trailing, stop adding rules. The next work is one thin end-to-end slice—
+scripted market input, execution, `ApplyFill`, an account valuation, the
+`SessionOpened` and `AccountSnapshot` values composed from it, the challenge,
+and an in-memory ordered event log that replays to an identical final state.
+That forces the real producer of snapshots into existence and reveals what the
+event log must record, without introducing persistence. Then an append-only
+event store, reconstruction from events, a minimal CLI, and only then contract
+limits and minimum trading days—which need information no snapshot carries
+today, and should be designed against evidence rather than guessed at now.
 
-Known gaps to close when a slice needs them: commission is a flat per-contract
-figure on the account, not a schedule and not per instrument; nothing records
-the behavioural context around a fill, which is Phase 3.
-
-Nothing produces `AccountSnapshot` values, and that is deliberate. It belongs
-to none of the packages that exist: `portfolio` knows nothing of sessions,
-`challenge` must not reach into an account, and a market data adapter must not
-own one. It is composed by a future application layer—the sessionizer supplies
-`SessionID`, `Time` and `Sequence`, the account supplies `EquityCts`—and
-building that layer now would mean inventing orchestration before an event log
-or a CLI exists. Until then the integration tests compose it by hand, which
-documents the boundary honestly.
+Known gaps: commission is a flat per-contract figure on the account, not a
+schedule and not per instrument; nothing records the behavioural context around
+a fill.
 
 ## 11. Statistical and commercial guardrails
 

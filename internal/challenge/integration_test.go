@@ -263,3 +263,89 @@ func TestCommissionsHoldTheChallengeBackFromTheTarget(t *testing.T) {
 		t.Fatalf("state: got %v, want passed", c.State())
 	}
 }
+
+func withAccountFloor(t *testing.T) *challenge.Challenge {
+	t.Helper()
+	c, err := challenge.New(challenge.Rules{
+		StartingBalanceCts: 5_000_000,
+		MaxDailyLossCts:    1_000_000, // large, so only the floor can fire
+		MaxTotalLossCts:    200_000,   // floor at $48,000
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return c
+}
+
+// Scenario: an unrealised loss crosses the static floor with nothing closed
+//
+//	Given a $50,000 evaluation with a floor at $48,000 and an open long
+//	When the mark falls far enough that equity is below the floor
+//	Then the challenge fails, although the balance has not moved at all —
+//	  which is what proves the floor is measured on equity and not on
+//	  settled money.
+func TestUnrealisedLossCrossesTheStaticFloor(t *testing.T) {
+	a := mustAccount(t, 5_000_000, 0)
+	c := withAccountFloor(t)
+
+	openAccount(t, c, 1, "d1", a, 20_000)
+	mustFill(t, a, market.SideBuy, 10, 20_000)
+
+	observeAccount(t, c, 2, "d1", a, 19_600)
+	if c.State() != challenge.StateActive {
+		t.Fatalf("state: got %v, want active exactly at the floor", c.State())
+	}
+
+	observeAccount(t, c, 3, "d1", a, 19_599)
+	if c.State() != challenge.StateFailed || c.FailureReason() != challenge.FailureStaticDrawdown {
+		t.Fatalf("got %v %v, want failed on static drawdown", c.State(), c.FailureReason())
+	}
+
+	balance, equity := valuationAt(t, a, 19_599)
+	if balance <= c.StaticFloorCts() {
+		t.Fatalf("balance %d is itself below the floor: the test proves nothing", balance)
+	}
+	if equity >= c.StaticFloorCts() {
+		t.Fatalf("equity %d is not below the floor", equity)
+	}
+	if a.RealisedCts() != 0 {
+		t.Fatalf("realised: got %d, want 0 — nothing was closed", a.RealisedCts())
+	}
+}
+
+// Scenario: commissions alone cross the static floor
+//
+//	Given round trips that open and close at the same price
+//	When accumulated commission takes equity below the floor
+//	Then the challenge fails on fees alone, with realised P&L still zero.
+func TestCommissionsAloneCrossTheStaticFloor(t *testing.T) {
+	a := mustAccount(t, 5_000_000, 50)
+	c := withAccountFloor(t)
+
+	openAccount(t, c, 1, "d1", a, 20_000)
+
+	// 4,000 contracts at 50 cents is exactly the $2,000 floor.
+	for i := 0; i < 2; i++ {
+		mustFill(t, a, market.SideBuy, 1_000, 20_000)
+		mustFill(t, a, market.SideSell, 1_000, 20_000)
+	}
+	if a.FeesCts() != 200_000 {
+		t.Fatalf("fees: got %d, want 200000", a.FeesCts())
+	}
+
+	observeAccount(t, c, 2, "d1", a, 20_000)
+	if c.State() != challenge.StateActive {
+		t.Fatalf("state: got %v, want active exactly at the floor", c.State())
+	}
+
+	mustFill(t, a, market.SideBuy, 1, 20_000)
+	mustFill(t, a, market.SideSell, 1, 20_000)
+
+	observeAccount(t, c, 3, "d1", a, 20_000)
+	if c.State() != challenge.StateFailed || c.FailureReason() != challenge.FailureStaticDrawdown {
+		t.Fatalf("got %v %v, want failed on static drawdown", c.State(), c.FailureReason())
+	}
+	if a.RealisedCts() != 0 {
+		t.Fatalf("realised: got %d, want 0 — every round trip closed at its entry price", a.RealisedCts())
+	}
+}

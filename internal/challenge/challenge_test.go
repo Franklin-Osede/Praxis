@@ -9,11 +9,17 @@ import (
 	"praxis/internal/market"
 )
 
-const dailyLossCts = 100_000 // $1,000
+const (
+	startingBalanceCts = 5_000_000 // $50,000
+	dailyLossCts       = 100_000   // $1,000
+)
 
 func newChallenge(t *testing.T) *challenge.Challenge {
 	t.Helper()
-	c, err := challenge.New(challenge.Rules{MaxDailyLossCts: dailyLossCts})
+	c, err := challenge.New(challenge.Rules{
+		StartingBalanceCts: startingBalanceCts,
+		MaxDailyLossCts:    dailyLossCts,
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -89,8 +95,8 @@ func TestOpeningTheFirstSessionActivatesTheChallenge(t *testing.T) {
 		t.Fatalf("reference: got %d, want 5000000", c.ReferenceEquityCts())
 	}
 	want := []challenge.Event{
-		{Kind: challenge.ChallengeActivated, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", EquityCts: 5_000_000},
-		{Kind: challenge.SessionReferenceEstablished, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", EquityCts: 5_000_000},
+		{Kind: challenge.ChallengeActivated, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", BalanceCts: 5_000_000, EquityCts: 5_000_000},
+		{Kind: challenge.SessionReferenceEstablished, Time: 1_000_000_000, Sequence: 1, SessionID: "2026-08-27", BalanceCts: 5_000_000, EquityCts: 5_000_000},
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events\n got: %+v\nwant: %+v", events, want)
@@ -137,8 +143,8 @@ func TestDailyLossLimit(t *testing.T) {
 			}
 			want := []challenge.Event{{
 				Kind: challenge.ChallengeFailed, Time: 2_000_000_000, Sequence: 2,
-				SessionID: "s1", EquityCts: tc.equityCts, LossCts: tc.wantLoss,
-				Reason: challenge.FailureDailyLoss,
+				SessionID: "s1", BalanceCts: tc.equityCts, EquityCts: tc.equityCts,
+				LossCts: tc.wantLoss, Reason: challenge.FailureDailyLoss,
 			}}
 			if !reflect.DeepEqual(events, want) {
 				t.Fatalf("events\n got: %+v\nwant: %+v", events, want)
@@ -227,7 +233,7 @@ func TestAFailedChallengeIsTerminal(t *testing.T) {
 // changes nothing
 func TestRejectsImpossibleInput(t *testing.T) {
 	t.Run("rules without a limit", func(t *testing.T) {
-		if _, err := challenge.New(challenge.Rules{}); !errors.Is(err, challenge.ErrNonPositiveDailyLoss) {
+		if _, err := challenge.New(challenge.Rules{StartingBalanceCts: startingBalanceCts}); !errors.Is(err, challenge.ErrNonPositiveDailyLoss) {
 			t.Fatalf("error: got %v, want %v", err, challenge.ErrNonPositiveDailyLoss)
 		}
 	})

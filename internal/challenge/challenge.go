@@ -51,17 +51,28 @@ type FailureReason uint8
 const (
 	FailureNone FailureReason = iota
 	FailureDailyLoss
+	FailureStaticDrawdown
 )
 
 func (r FailureReason) String() string {
-	if r == FailureDailyLoss {
+	switch r {
+	case FailureDailyLoss:
 		return "daily loss limit"
+	case FailureStaticDrawdown:
+		return "static drawdown"
+	default:
+		return "none"
 	}
-	return "none"
 }
 
-// Rules are an evaluation's configuration. One rule exists so far.
+// Rules are an evaluation's configuration.
 type Rules struct {
+	// StartingBalanceCts is the valuation the evaluation is contracted to
+	// begin at. The static drawdown floor and the profit target are both
+	// anchored to it, so neither depends on a mark taken at the instant of
+	// activation.
+	StartingBalanceCts market.Cents
+
 	// MaxDailyLossCts is the largest loss tolerated within one session,
 	// measured against that session's reference equity. Losing exactly this
 	// much does not fail; losing more does.
@@ -72,15 +83,38 @@ type Rules struct {
 	// session's reference. Reaching it exactly is enough. Zero means no
 	// target is configured and the evaluation can only be failed.
 	ProfitTargetCts market.Cents
+
+	// MaxTotalLossCts is the largest fall below the starting balance the
+	// evaluation tolerates, measured on equity and never re-based by a
+	// session or lifted by previous profit. Zero means no static floor.
+	MaxTotalLossCts market.Cents
+}
+
+// StaticFloorCts is the equity level below which the evaluation fails, or zero
+// when no static floor is configured. Validate reports an unrepresentable one.
+func (r Rules) StaticFloorCts() (market.Cents, error) {
+	if r.MaxTotalLossCts == 0 {
+		return 0, nil
+	}
+	return market.SubCents(r.StartingBalanceCts, r.MaxTotalLossCts)
 }
 
 // Validate reports why the rules are not a valid domain value, or nil.
 func (r Rules) Validate() error {
+	if r.StartingBalanceCts <= 0 {
+		return ErrNonPositiveStartingBalance
+	}
 	if r.MaxDailyLossCts <= 0 {
 		return ErrNonPositiveDailyLoss
 	}
 	if r.ProfitTargetCts < 0 {
 		return ErrNegativeProfitTarget
+	}
+	if r.MaxTotalLossCts < 0 {
+		return ErrNegativeTotalLoss
+	}
+	if _, err := r.StaticFloorCts(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -164,25 +198,36 @@ type Event struct {
 	Sequence  uint64
 	SessionID SessionID
 
-	// EquityCts is the session's equity reference on
-	// SessionReferenceEstablished, the observed equity on ChallengeFailed, and
-	// the observed balance on ChallengePassed — each rule reports the value it
-	// was decided on.
-	EquityCts market.Cents
+	// BalanceCts and EquityCts carry the whole valuation that produced the
+	// decision, never one figure whose meaning depends on Kind. A persisted
+	// log must not have to reinterpret a field to know what it holds.
+	BalanceCts market.Cents
+	EquityCts  market.Cents
 
-	// LossCts and Reason are set on ChallengeFailed only.
+	// LossCts and Reason are set on ChallengeFailed only. The loss was
+	// measured on EquityCts.
 	LossCts market.Cents
 	Reason  FailureReason
 
-	// GainCts is set on ChallengePassed only, measured on balance from the
-	// balance the evaluation began with.
+	// GainCts is set on ChallengePassed only. It was measured on BalanceCts,
+	// against the balance the evaluation began with.
 	GainCts market.Cents
 }
 
 // Errors reported for input that cannot describe a real evaluation.
 var (
-	ErrNonPositiveDailyLoss = errors.New("challenge: daily loss limit is not positive")
-	ErrNegativeProfitTarget = errors.New("challenge: profit target is negative")
+	ErrNonPositiveStartingBalance = errors.New("challenge: starting balance is not positive")
+	ErrNonPositiveDailyLoss       = errors.New("challenge: daily loss limit is not positive")
+	ErrNegativeProfitTarget       = errors.New("challenge: profit target is negative")
+	ErrNegativeTotalLoss          = errors.New("challenge: maximum total loss is negative")
+
+	// ErrNotStartingValuation guards the activating valuation. It does not
+	// prove the account holds no position — a position at break-even has zero
+	// unrealised P&L and would satisfy it too. It proves only that the
+	// evaluation began at the valuation it was contracted to begin at. The
+	// session layer must open a challenge immediately after creating the
+	// account and before accepting any order.
+	ErrNotStartingValuation = errors.New("challenge: does not activate at its configured starting valuation")
 	ErrEmptySessionID       = errors.New("challenge: session id is empty")
 	ErrOutOfOrder           = errors.New("challenge: input is not after the last accepted one")
 	ErrSessionReturned      = errors.New("challenge: session id has already been used")
@@ -200,12 +245,11 @@ type Challenge struct {
 
 	currentSessionID SessionID
 
-	// startingBalanceCts is the balance the evaluation began with and is never
-	// re-based; referenceCts is the open session's equity reference and
-	// re-bases at every boundary. The profit target is measured against the
-	// first, the daily loss limit against the second.
-	startingBalanceCts market.Cents
-	referenceCts       market.Cents
+	// staticFloorCts is derived from the rules once and never moves.
+	// referenceCts is the open session's equity reference and re-bases at
+	// every boundary.
+	staticFloorCts market.Cents
+	referenceCts   market.Cents
 
 	// seenSessions is an ordered slice and not a map: a session identifier
 	// never returns, and how that is checked must not depend on iteration
@@ -222,14 +266,21 @@ func New(rules Rules) (*Challenge, error) {
 	if err := rules.Validate(); err != nil {
 		return nil, err
 	}
-	return &Challenge{rules: rules, state: StatePending}, nil
+	floor, err := rules.StaticFloorCts()
+	if err != nil {
+		return nil, err
+	}
+	return &Challenge{rules: rules, state: StatePending, staticFloorCts: floor}, nil
 }
 
 func (c *Challenge) State() State                     { return c.state }
 func (c *Challenge) FailureReason() FailureReason     { return c.failure }
 func (c *Challenge) SessionID() SessionID             { return c.currentSessionID }
 func (c *Challenge) ReferenceEquityCts() market.Cents { return c.referenceCts }
-func (c *Challenge) StartingBalanceCts() market.Cents { return c.startingBalanceCts }
+func (c *Challenge) StaticFloorCts() market.Cents     { return c.staticFloorCts }
+func (c *Challenge) StartingBalanceCts() market.Cents {
+	return c.rules.StartingBalanceCts
+}
 
 // OpenSession begins a trading session, activating a pending challenge.
 //
@@ -251,18 +302,23 @@ func (c *Challenge) OpenSession(o SessionOpened) ([]Event, error) {
 		return nil, fmt.Errorf("%w: %s", ErrSessionReturned, o.SessionID)
 	}
 
+	if c.state == StatePending &&
+		(o.BalanceCts != c.rules.StartingBalanceCts || o.EquityCts != c.rules.StartingBalanceCts) {
+		return nil, fmt.Errorf("%w: opened at balance %d equity %d, configured %d",
+			ErrNotStartingValuation, o.BalanceCts, o.EquityCts, c.rules.StartingBalanceCts)
+	}
+
 	var events []Event
 	if c.state == StatePending {
 		c.state = StateActive
-		c.startingBalanceCts = o.BalanceCts
 		events = append(events, Event{
 			Kind: ChallengeActivated, Time: o.Time, Sequence: o.Sequence,
-			SessionID: o.SessionID, EquityCts: o.EquityCts,
+			SessionID: o.SessionID, BalanceCts: o.BalanceCts, EquityCts: o.EquityCts,
 		})
 	}
 	events = append(events, Event{
 		Kind: SessionReferenceEstablished, Time: o.Time, Sequence: o.Sequence,
-		SessionID: o.SessionID, EquityCts: o.EquityCts,
+		SessionID: o.SessionID, BalanceCts: o.BalanceCts, EquityCts: o.EquityCts,
 	})
 
 	c.currentSessionID = o.SessionID
@@ -291,6 +347,12 @@ func (c *Challenge) OpenSession(o SessionOpened) ([]Event, error) {
 // to pass. The rules are coherent and the state is reachable, so the
 // precedence is decided rather than left open, and the loss wins. A simulator
 // must never resolve an ambiguity in the trader's favour.
+//
+// The static drawdown floor is anchored to the configured starting balance, so
+// no session re-bases it and no earlier profit lifts it. Equity exactly at the
+// floor is still active; below it is not. When it breaches together with the
+// daily limit, the daily limit is reported: the outcome is identical and
+// keeping the older rule first leaves recorded reasons stable.
 func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 	if c.ended() {
 		return nil, fmt.Errorf("%w: %s", ErrTerminal, c.state)
@@ -311,26 +373,38 @@ func (c *Challenge) Observe(snapshot AccountSnapshot) ([]Event, error) {
 		return nil, err
 	}
 
-	gainCts, err := market.SubCents(snapshot.BalanceCts, c.startingBalanceCts)
+	gainCts, err := market.SubCents(snapshot.BalanceCts, c.rules.StartingBalanceCts)
 	if err != nil {
 		return nil, err
+	}
+
+	fail := func(reason FailureReason, amountCts market.Cents) []Event {
+		c.state = StateFailed
+		c.failure = reason
+		return []Event{{
+			Kind: ChallengeFailed, Time: snapshot.Time, Sequence: snapshot.Sequence,
+			SessionID:  snapshot.SessionID,
+			BalanceCts: snapshot.BalanceCts, EquityCts: snapshot.EquityCts,
+			LossCts: amountCts, Reason: reason,
+		}}
 	}
 
 	var events []Event
 	switch {
 	case lossCts > c.rules.MaxDailyLossCts:
-		c.state = StateFailed
-		c.failure = FailureDailyLoss
-		events = append(events, Event{
-			Kind: ChallengeFailed, Time: snapshot.Time, Sequence: snapshot.Sequence,
-			SessionID: snapshot.SessionID, EquityCts: snapshot.EquityCts,
-			LossCts: lossCts, Reason: FailureDailyLoss,
-		})
+		events = fail(FailureDailyLoss, lossCts)
+	case c.rules.MaxTotalLossCts > 0 && snapshot.EquityCts < c.staticFloorCts:
+		totalLossCts, err := market.SubCents(c.rules.StartingBalanceCts, snapshot.EquityCts)
+		if err != nil {
+			return nil, err
+		}
+		events = fail(FailureStaticDrawdown, totalLossCts)
 	case c.rules.ProfitTargetCts > 0 && gainCts >= c.rules.ProfitTargetCts:
 		c.state = StatePassed
 		events = append(events, Event{
 			Kind: ChallengePassed, Time: snapshot.Time, Sequence: snapshot.Sequence,
-			SessionID: snapshot.SessionID, EquityCts: snapshot.BalanceCts,
+			SessionID:  snapshot.SessionID,
+			BalanceCts: snapshot.BalanceCts, EquityCts: snapshot.EquityCts,
 			GainCts: gainCts,
 		})
 	}

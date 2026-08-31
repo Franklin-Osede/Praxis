@@ -14,8 +14,9 @@ const profitTargetCts = 100_000 // $1,000
 func withTarget(t *testing.T) *challenge.Challenge {
 	t.Helper()
 	c, err := challenge.New(challenge.Rules{
-		MaxDailyLossCts: dailyLossCts,
-		ProfitTargetCts: profitTargetCts,
+		StartingBalanceCts: startingBalanceCts,
+		MaxDailyLossCts:    dailyLossCts,
+		ProfitTargetCts:    profitTargetCts,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -58,7 +59,8 @@ func TestProfitTarget(t *testing.T) {
 			}
 			want := []challenge.Event{{
 				Kind: challenge.ChallengePassed, Time: 2_000_000_000, Sequence: 2,
-				SessionID: "s1", EquityCts: tc.equityCts, GainCts: tc.wantGain,
+				SessionID: "s1", BalanceCts: tc.equityCts, EquityCts: tc.equityCts,
+				GainCts: tc.wantGain,
 			}}
 			if !reflect.DeepEqual(events, want) {
 				t.Fatalf("events\n got: %+v\nwant: %+v", events, want)
@@ -161,7 +163,9 @@ func TestWithoutATargetTheChallengeNeverPasses(t *testing.T) {
 }
 
 func TestRejectsANegativeProfitTarget(t *testing.T) {
-	_, err := challenge.New(challenge.Rules{MaxDailyLossCts: dailyLossCts, ProfitTargetCts: -1})
+	_, err := challenge.New(challenge.Rules{
+		StartingBalanceCts: startingBalanceCts, MaxDailyLossCts: dailyLossCts, ProfitTargetCts: -1,
+	})
 	if !errors.Is(err, challenge.ErrNegativeProfitTarget) {
 		t.Fatalf("error: got %v, want %v", err, challenge.ErrNegativeProfitTarget)
 	}
