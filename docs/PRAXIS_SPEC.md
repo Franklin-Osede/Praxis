@@ -135,6 +135,19 @@ liquidated. Inputs must be strictly increasing in `(LogicalTime, Sequence)` and
 a `SessionID` never returns. See
 [`docs/adr/011-session-boundaries.md`](adr/011-session-boundaries.md).
 
+### ADR-012 — A command is the atomic unit of the event store
+
+The event store frames a whole command's events as one batch —
+`[length][payload][checksum]` — confirmed together or not at all, because
+per-event framing would leave a command cut in half looking perfectly intact.
+One writer per journal, a canonical versioned encoding, checksums for
+accidental corruption and not for tamper resistance, and a reader that accepts
+only complete, continuous batches and never repairs. Integrity and durability
+are separate properties with separate names. A command executes against a copy
+of the aggregates and the new state is published only after its batch is
+confirmed. See
+[`docs/adr/012-event-store-batches.md`](adr/012-event-store-batches.md).
+
 ## 4. Domain rules
 
 ### Exact cost basis
@@ -593,9 +606,12 @@ them, `Verify` proves the log does not hold two contradictory truths.
 
 Next, in order:
 
-1. **An append-only event store**, in memory then file-backed, detecting
-   truncation and rejecting a repeated position. This is where the transaction
-   boundary described above stops being a matter of statement order.
+1. **An append-only event store** under ADR-012: a deterministic versioned
+   codec, a strict reader that repairs nothing, batch appends under a single
+   writer, and the transactional integration with `Session`. Adversarial tests
+   for a crash after every byte, a wrong checksum, a valid batch with a broken
+   sequence, an unknown event, two writers and a failed sync. Then an explicit
+   inspect-and-repair command.
 2. **A minimal replay CLI** driven by a scripted action file.
 3. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
