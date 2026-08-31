@@ -42,8 +42,8 @@ market vocabulary and checked arithmetic. `internal/execution` holds
 with an exact cost basis and `Account`. `internal/challenge` holds a state
 machine applying a daily loss limit, a static drawdown floor, a trailing
 drawdown and a profit target. `internal/session` composes all of them into one
-deterministic run with an ordered in-memory journal, and reconstructs and
-resumes a whole session from that journal alone.
+deterministic run with an ordered in-memory journal, proves that journal
+against the aggregates that produced it, and resumes a whole session from it.
 
 There is no persistence, no market data adapter, no CLI and no UI.
 
@@ -284,9 +284,31 @@ context is measured against. `Resume` continues from it, and the proof is that
 a run cut in half and resumed produces the same stream as one that was never
 interrupted.
 
-Verification of a log uses checked arithmetic throughout. A verifier that
-silently wrapped would accept a corrupt log for exactly the reason it exists to
-reject one.
+### A journal is not believed, it is proved
+
+A log is not a source of truth because it is well formed. Every derived fact in
+it is rebuilt during replay from the facts that caused it, and compared
+exactly:
+
+- an account valuation against the account and the last book, marked by the
+  same rule a live session marks with;
+- a position change against what applying that fill actually produced;
+- a challenge decision, and the input it names as its cause, against what the
+  evaluation actually decided.
+
+Replay also refuses a log that does not describe a session: an event whose kind
+contradicts its type, time running backwards, a non-contiguous sequence, or a
+trading session opened, valued or ended out of turn.
+
+Checking a log against itself is not enough, and the difference is testable. A
+forged realised amount can be made internally coherent by adjusting every
+context after it; `Verify` accepts that log and `Replay` refuses it, because
+the account that produced the fill never realised that amount.
+
+Verification uses checked arithmetic throughout, and a live session uses the
+same arithmetic on the same counters. A verifier that silently wrapped would
+accept a corrupt log for exactly the reason it exists to reject one, and two
+implementations of one increment would eventually disagree.
 
 ### A position is marked at the price it could be closed at
 
@@ -550,7 +572,10 @@ them, `Verify` proves the log does not hold two contradictory truths.
 
 Next, in order:
 
-1. **A file market data adapter.** One ordered MNQ fixture, validated ordering,
+1. **A file market data adapter.** The journal's integrity is now established,
+   so a format can be frozen without freezing one able to reconstruct false
+   histories.
+    One ordered MNQ fixture, validated ordering,
    a `SessionID` assigned, provenance preserved, quotes or bars but never both
    for execution. No Databento, no Binance.
 2. **An append-only event store**, in memory then file-backed, detecting

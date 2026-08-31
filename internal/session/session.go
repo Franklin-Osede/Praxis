@@ -95,39 +95,54 @@ func (s *Session) ended() bool {
 	return state == challenge.StateFailed || state == challenge.StatePassed
 }
 
-// marks values an open position at the price it could actually be closed at:
-// a long at the bid, a short at the ask. A midpoint or the entry side would
-// show money the position could not realise.
 func (s *Session) marks() ([]portfolio.Mark, error) {
-	p, ok := s.account.Position(s.cfg.Instrument)
-	if !ok || p.IsFlat() {
+	p, _ := s.account.Position(s.cfg.Instrument)
+	return marksFor(s.cfg.Instrument, p, s.lastQuote, s.hasQuote)
+}
+
+// marksFor values an open position at the price it could actually be closed
+// at: a long at the bid, a short at the ask. A midpoint or the entry side
+// would show money the position could not realise.
+//
+// It is a free function because replay must value an account the same way a
+// live session did. Two implementations of this rule would let a journal
+// record a valuation no session could have produced.
+func marksFor(i market.Instrument, p portfolio.Position, q market.Quote, hasQuote bool) ([]portfolio.Mark, error) {
+	if p.IsFlat() {
 		return nil, nil
 	}
-	if !s.hasQuote {
+	if !hasQuote {
 		return nil, ErrNoMarketObserved
 	}
-	price := s.lastQuote.Bid
+	price := q.Bid
 	if p.IsShort() {
-		price = s.lastQuote.Ask
+		price = q.Ask
 	}
-	return []portfolio.Mark{{Instrument: s.cfg.Instrument, Price: price}}, nil
+	return []portfolio.Mark{{Instrument: i, Price: price}}, nil
+}
+
+// valueAccount is the one way an account becomes a pair of figures, used by a
+// live session and by replay alike.
+func valueAccount(a *portfolio.Account, i market.Instrument, q market.Quote, hasQuote bool) (balanceCts, equityCts market.Cents, err error) {
+	if balanceCts, err = a.BalanceCts(); err != nil {
+		return 0, 0, err
+	}
+	p, _ := a.Position(i)
+	marks, err := marksFor(i, p, q, hasQuote)
+	if err != nil {
+		return 0, 0, err
+	}
+	if equityCts, err = a.EquityCts(marks); err != nil {
+		return 0, 0, err
+	}
+	return balanceCts, equityCts, nil
 }
 
 // value takes both figures from one account valuation at one set of marks, so
 // a rule reading balance and a rule reading equity cannot disagree about when
 // they were measured.
 func (s *Session) value() (balanceCts, equityCts market.Cents, err error) {
-	if balanceCts, err = s.account.BalanceCts(); err != nil {
-		return 0, 0, err
-	}
-	marks, err := s.marks()
-	if err != nil {
-		return 0, 0, err
-	}
-	if equityCts, err = s.account.EquityCts(marks); err != nil {
-		return 0, 0, err
-	}
-	return balanceCts, equityCts, nil
+	return valueAccount(s.account, s.cfg.Instrument, s.lastQuote, s.hasQuote)
 }
 
 // revalue values the account and feeds the evaluation. It is called after
@@ -302,7 +317,9 @@ func (s *Session) SubmitOrder(o market.Order) error {
 	}); err != nil {
 		return err
 	}
-	s.ordersThisSession++
+	if s.ordersThisSession, err = addOrders(s.ordersThisSession, 1); err != nil {
+		return err
+	}
 
 	for n, f := range fills {
 		if err := s.record(at, KindFillProduced, func(e Envelope) Event {
@@ -336,7 +353,9 @@ func (s *Session) countClose(change portfolio.PositionEvent) error {
 	}
 	s.sessionRealisedCts = total
 	if change.RealisedCts < 0 {
-		s.consecutiveLosses++
+		if s.consecutiveLosses, err = addOrders(s.consecutiveLosses, 1); err != nil {
+			return err
+		}
 	} else {
 		s.consecutiveLosses = 0
 	}
