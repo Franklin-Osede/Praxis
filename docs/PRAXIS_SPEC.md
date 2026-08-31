@@ -46,9 +46,11 @@ deterministic run with an ordered in-memory journal, proves that journal
 against the aggregates that produced it, and resumes a whole session from it.
 
 `internal/adapters/marketdata` reads a versioned canonical file into ordered
-observations and drives a session with them.
+observations and drives a session with them, and
+`internal/adapters/persistence` encodes a journal as canonical text and reads
+it back, pinned by golden bytes.
 
-There is no persistence, no CLI and no UI.
+There is no event store, no CLI and no UI.
 
 ## 3. Settled decisions
 
@@ -137,8 +139,8 @@ a `SessionID` never returns. See
 
 ### ADR-012 — A command is the atomic unit of the event store
 
-The event store frames a whole command's events as one batch — a fixed-width
-text header carrying the batch number, the payload's byte length, its first and
+The event store frames a whole command's events as one batch — a text header of
+fixed-width twenty-digit fields carrying the batch number, the payload's byte length, its first and
 last event sequence, its event count and a CRC32C, then a canonical text
 payload — confirmed together or not at all, because per-event framing would
 leave a command cut in half looking perfectly intact. One writer per journal,
@@ -608,9 +610,10 @@ them, `Verify` proves the log does not hold two contradictory truths.
 
 Next, in order:
 
-1. **An append-only event store** under ADR-012: a deterministic versioned
-   codec, a strict reader that repairs nothing, batch appends under a single
-   writer, and the transactional integration with `Session`. Adversarial tests
+1. **An append-only event store** under ADR-012, continuing from the codec:
+   the frame and its checksum, a strict reader that repairs nothing, batch
+   appends under a single writer, recovery from an ambiguous write, and the
+   transactional integration with `Session`. Adversarial tests
    for a crash after every byte, a wrong checksum, a valid batch with a broken
    sequence, an unknown event, two writers and a failed sync. Then an explicit
    inspect-and-repair command.

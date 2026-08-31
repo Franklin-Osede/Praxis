@@ -35,21 +35,26 @@ A journal is a text file with a version line and then one frame per batch:
 
 ```text
 PRAXIS-EVENT-STORE 1
-BATCH 0000000001 0000000000000427 0000000000000002 0000000000000006 0000000000000005 CRC32C:8a31f902
+BATCH 00000000000000000001 00000000000000000427 00000000000000000002 00000000000000000006 00000000000000000005 CRC32C:8a31f902
 <exactly 427 bytes of canonical event text>
 ```
 
 The header line is, in order: the literal `BATCH`, the batch's monotonic
 number, the payload's length **in bytes**, the sequence of its first event, the
-sequence of its last, the number of events, and the CRC32C of the payload in
-lowercase hexadecimal. Fields are separated by a single space and the line ends
-with `\n`. The payload follows immediately and is exactly as many bytes as the
-header states.
+sequence of its last, and the number of events — each an unsigned 64-bit value
+written in exactly **20 digits**, zero-padded — then the CRC32C of the payload
+in exactly eight lowercase hexadecimal digits. Fields are separated by a single
+space, exactly one, and the line ends with `\n`. The payload follows
+immediately and is exactly as many bytes as the header states.
 
-Each header field is fixed-width, zero-padded decimal. That is deliberately
-*not* the payload's integer rule, and the reason is that a header of constant
-length is either wholly present or visibly not, which a variable-length one
-cannot be.
+Twenty digits is what a `uint64` needs. A narrower field would impose a limit
+the types do not have, and a format that silently cannot represent a value its
+own types can is a defect waiting to be discovered by the one journal large
+enough to find it.
+
+The fixed width is deliberately *not* the payload's integer rule. A header of
+constant length is either wholly present or visibly not, which a
+variable-length one cannot be.
 
 Length is counted in bytes, never in lines, so a payload truncated anywhere is
 detected without hunting for a newline that may not exist. The checksum covers
