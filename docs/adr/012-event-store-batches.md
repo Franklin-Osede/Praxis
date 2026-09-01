@@ -112,9 +112,28 @@ are solvable, and none of which buys anything for nine closed event types.
 
 ## Fixed decisions
 
-**One writer per journal.** Concurrent appends are not serialised by this
-design and must not be attempted. A second writer is a defect, and the store
-should refuse to open a journal it does not hold exclusively.
+**One writer per journal, held by an advisory lock on the journal itself.**
+`flock` is chosen over a file holding a process id, because the kernel releases
+it when the descriptor closes — including when the process dies — so no lock is
+ever orphaned and nothing has to check whether a recorded process is still
+alive or whether its id has been reused.
+
+The contract is stated with its limits, not implied:
+
+- It is **advisory**. A process that ignores this protocol can still write to
+  the file. It excludes cooperating writers, which is the real case, and
+  nothing else.
+- Local POSIX filesystems only. NFS and other remote filesystems are outside
+  what this supports.
+- It is not distributed coordination. If a journal ever lives on shared
+  storage, this lock is not improved: another implementation with its own
+  coordination goes behind a port.
+- It is taken **once, from open to close**, not per batch. A window between two
+  batches in which another process could append would defeat the point of
+  holding it at all.
+- Acquisition is exclusive and non-blocking. A journal that already has a
+  writer is refused immediately with a typed error, never waited on.
+- Repair requires the same exclusive lock.
 
 **A canonical, versioned encoding.** The same events encode to exactly the same
 bytes, on every run and every machine. Without that, replay equality is a
@@ -155,10 +174,24 @@ are the bytes that were written.
 dying. Without an explicit sync, an append returning no error means only that
 the operating system accepted the bytes — not that they reached the disk.
 
-The store therefore carries an explicit durability policy. Only one exists
-initially, `DurableEveryBatch`, which syncs before a batch is reported
-confirmed. Others may be added when a measured cost justifies one; until then
-the guarantee is stated rather than assumed.
+The store therefore carries an explicit durability policy. Only one exists,
+`DurableEveryBatch`: a batch is confirmed when it has been validated against
+the last confirmed batch, all of its bytes have been written, and the file has
+been synced — and not before. A buffered mode would be added when a measured
+cost calls for one, not in advance of a consumer.
+
+A file created while opening also needs its **directory** synced, or the file
+can survive while its name does not. That belongs to creation, not to every
+batch.
+
+**After any partial write or failed sync the writer is poisoned.** It accepts
+no further batch and does not try to carry on from where it thinks it was: the
+result on disk may be a complete batch or a partial one, and only reading the
+journal can tell. It must be closed and the journal read back.
+
+For the same reason a writer refuses to open a journal that does not end on a
+batch boundary. Seeking back over an unconfirmed tail and writing on top of it
+would be a repair, and repair is explicit.
 
 ## The consequence for Session
 

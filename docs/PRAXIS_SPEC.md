@@ -48,9 +48,11 @@ against the aggregates that produced it, and resumes a whole session from it.
 `internal/adapters/marketdata` reads a versioned canonical file into ordered
 observations and drives a session with them, and
 `internal/adapters/persistence` encodes a journal as canonical text, frames it
-into checksummed batches and reads it back, pinned by golden bytes.
+into checksummed batches, reads it back, and appends to it under an exclusive
+advisory lock with an explicit durability policy.
 
-There is no writer, no recovery, no CLI and no UI.
+There is no recovery from an ambiguous write, no transactional integration with
+`Session`, no CLI and no UI.
 
 ## 3. Settled decisions
 
@@ -612,10 +614,10 @@ them, `Verify` proves the log does not hold two contradictory truths.
 
 Next, in order:
 
-1. **An append-only event store** under ADR-012, continuing from the codec and
-   the frame: batch appends under a single writer with an explicit durability
-   policy, recovery from an ambiguous write, and the transactional integration
-   with `Session`. Adversarial tests
+1. **Recovery and transactional integration** under ADR-012: rebuilding from
+   the confirmed batches after an ambiguous write, discovering whether a batch
+   landed rather than re-executing the command, and `Session` writing a batch
+   per command. Then an explicit inspect-and-repair operation. Adversarial tests
    for a crash after every byte, a wrong checksum, a valid batch with a broken
    sequence, an unknown event, two writers and a failed sync. Then an explicit
    inspect-and-repair command.
