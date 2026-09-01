@@ -111,7 +111,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 			MaxTotalLossCts:    200_000,
 		},
 	}
-	s, err := session.New(cfg, 1_000)
+	s, err := session.New(cfg, 1_000, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

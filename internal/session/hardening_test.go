@@ -161,7 +161,7 @@ func TestNewRejectsTwoDisagreeingStartingBalances(t *testing.T) {
 	cfg := config()
 	cfg.Rules.StartingBalanceCts = cfg.StartingBalanceCts + 1
 
-	if _, err := session.New(cfg, 1_000); !errors.Is(err, session.ErrInconsistentConfig) {
+	if _, err := session.New(cfg, 1_000, nil); !errors.Is(err, session.ErrInconsistentConfig) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrInconsistentConfig)
 	}
 }
@@ -246,7 +246,7 @@ func TestAResumedSessionProducesTheSameStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
-	resumed, err := session.Resume(state)
+	resumed, err := session.Resume(state, nil)
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestResumeCarriesTheBehaviouralCounters(t *testing.T) {
 		t.Fatalf("state: got %+v, want the trading session still open and observed", state)
 	}
 
-	resumed, err := session.Resume(state)
+	resumed, err := session.Resume(state, nil)
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
@@ -300,5 +300,108 @@ func TestResumeCarriesTheBehaviouralCounters(t *testing.T) {
 	}
 	if err := session.Verify(resumed.Events()); err != nil {
 		t.Fatalf("Verify: %v", err)
+	}
+}
+
+// failOnce is a committer that refuses exactly one batch and then works. It
+// exists so that a stopped session can be shown to refuse a command the store
+// would have accepted, which a committer that stayed broken could not prove.
+type failOnce struct {
+	failAt    int
+	committed int
+	batches   [][]session.Event
+}
+
+func (c *failOnce) Commit(events []session.Event) error {
+	c.committed++
+	if c.committed == c.failAt {
+		return errors.New("injected commit failure")
+	}
+	c.batches = append(c.batches, events)
+	return nil
+}
+
+// Scenario: a session that failed to commit is finished, even when the store
+// has recovered
+//
+//	Given a store that failed one batch and would accept the next
+//	When another command is issued
+//	Then the session still refuses. Nothing inside it can know what reached
+//	  the disk, so carrying on would be guessing; it is replaced by one
+//	  rebuilt from the confirmed batches, never healed.
+func TestAStoppedSessionRefusesEvenWhenTheStoreRecovers(t *testing.T) {
+	committer := &failOnce{failAt: 2}
+
+	s, err := session.New(config(), 1_000, committer)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if committer.committed != 1 {
+		t.Fatalf("starting a session committed %d batches, want 1", committer.committed)
+	}
+
+	err = s.OpenTradingSession(2_000, "d1")
+	if !errors.Is(err, session.ErrSessionNeedsRecovery) {
+		t.Fatalf("error: got %v, want %v", err, session.ErrSessionNeedsRecovery)
+	}
+	if s.NeedsRecovery() == nil {
+		t.Fatal("the session does not report that it needs recovery")
+	}
+
+	before := committer.committed
+	for _, attempt := range []struct {
+		name string
+		run  func() error
+	}{
+		{"opening a session", func() error { return s.OpenTradingSession(3_000, "d2") }},
+		{"observing", func() error {
+			return s.Observe(market.Quote{Instrument: mnq, Time: 3_000, Bid: 20_000, Ask: 20_001, BidSize: 1, AskSize: 1})
+		}},
+		{"ending a session", func() error { return s.EndTradingSession(4_000) }},
+	} {
+		if err := attempt.run(); !errors.Is(err, session.ErrSessionNeedsRecovery) {
+			t.Fatalf("%s: got %v, want %v", attempt.name, err, session.ErrSessionNeedsRecovery)
+		}
+	}
+	if committer.committed != before {
+		t.Fatalf("a stopped session attempted %d further commits", committer.committed-before)
+	}
+}
+
+// Scenario: one command is one batch
+//
+// Every event a command produced is committed together, and a command that
+// produced none commits nothing.
+func TestOneCommandCommitsExactlyOneBatch(t *testing.T) {
+	committer := &failOnce{failAt: -1}
+
+	s, err := session.New(config(), 1_000, committer)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, quote(3_000, 20_000, 20_001))
+	mustSubmit(t, s, order("o-1", market.SideBuy, 2))
+
+	if len(committer.batches) != 4 {
+		t.Fatalf("batches: got %d, want one per command", len(committer.batches))
+	}
+
+	// The batches, laid end to end, are the journal exactly once.
+	var flattened []session.Event
+	for _, b := range committer.batches {
+		flattened = append(flattened, b...)
+	}
+	if !reflect.DeepEqual(flattened, s.Events()) {
+		t.Fatal("the committed batches do not add up to the journal")
+	}
+
+	// A refused command commits nothing at all.
+	before := len(committer.batches)
+	if err := s.OpenTradingSession(4_000, "d2"); err == nil {
+		t.Fatal("opening a second session was accepted")
+	}
+	if len(committer.batches) != before {
+		t.Fatal("a refused command was committed")
 	}
 }

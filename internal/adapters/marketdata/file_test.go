@@ -211,7 +211,7 @@ func drive(t *testing.T, path string) *session.Session {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	s, err := session.New(config(), 1_000)
+	s, err := session.New(config(), 1_000, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

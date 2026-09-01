@@ -216,3 +216,39 @@ func (w *Writer) abandon() {
 	w.closed = true
 	w.file.Close()
 }
+
+// Commit satisfies session.BatchCommitter. The session hands over one
+// command's events; batch numbers, checksums and durability stay here.
+func (w *Writer) Commit(events []session.Event) error {
+	_, err := w.Append(events)
+	return err
+}
+
+// Recover reads a journal's confirmed batches and rebuilds the session state
+// they describe.
+//
+// It answers the question a failed commit leaves open. If the batch reached
+// the disk, the command committed and the recovered state contains it; if it
+// did not, the state is the one before the command. Either way the command is
+// never run again — a duplicate would be indistinguishable from a decision the
+// trader made twice.
+//
+// An unconfirmed or damaged tail is reported, not repaired, so a caller can
+// tell an interrupted append from a healthy journal.
+func Recover(path string) (*session.ReplayedState, *Journal, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+
+	journal, err := ReadJournal(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	state, err := session.Replay(journal.Events())
+	if err != nil {
+		return nil, journal, err
+	}
+	return state, journal, nil
+}

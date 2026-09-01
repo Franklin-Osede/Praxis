@@ -23,7 +23,26 @@ var (
 	// mismatch would only surface when the first session refused to open,
 	// after an invalid configuration had already been recorded.
 	ErrInconsistentConfig = errors.New("session: account and evaluation disagree about the starting balance")
+
+	// ErrSessionNeedsRecovery is terminal. A commit that failed leaves the
+	// outcome unknown — the batch may be whole on disk, or partial, or absent
+	// — and only reading the journal can say which. The session therefore
+	// stops rather than guessing, and is replaced by one rebuilt from the
+	// confirmed batches. It is never healed in place and its last command is
+	// never re-executed automatically.
+	ErrSessionNeedsRecovery = errors.New("session: requires recovery")
 )
+
+// BatchCommitter durably records the events one command produced.
+//
+// Commit means the whole batch is durably confirmed. Any error means the
+// outcome is unknown until recovery examines the store, so the caller must not
+// retry it. Batch numbers, checksums, paths and durability policy belong to
+// the store: a session knows only that one command produced one ordered group
+// of events.
+type BatchCommitter interface {
+	Commit(events []Event) error
+}
 
 // Session is one deterministic run: an account, an evaluation, an execution
 // policy and the journal of everything they did.
@@ -49,10 +68,19 @@ type Session struct {
 	ordersThisSession  uint32
 	consecutiveLosses  uint32
 	sessionRealisedCts market.Cents
+
+	// committer is optional. A session without one keeps its journal in
+	// memory and nothing else.
+	committer BatchCommitter
+
+	// needsRecovery holds the failure that made this session unusable. It
+	// never clears.
+	needsRecovery error
 }
 
-// New starts a session and records its configuration.
-func New(cfg Config, at market.LogicalTime) (*Session, error) {
+// New starts a session and records its configuration. A nil committer keeps
+// the journal in memory only.
+func New(cfg Config, at market.LogicalTime, committer BatchCommitter) (*Session, error) {
 	if err := cfg.Instrument.Validate(); err != nil {
 		return nil, err
 	}
@@ -69,13 +97,54 @@ func New(cfg Config, at market.LogicalTime) (*Session, error) {
 		return nil, err
 	}
 
-	s := &Session{cfg: cfg, account: account, eval: eval, journal: &Journal{}}
-	if err := s.record(at, KindSessionStarted, func(e Envelope) Event {
-		return SessionStarted{Envelope: e, Config: cfg}
+	s := &Session{cfg: cfg, account: account, eval: eval, journal: &Journal{}, committer: committer}
+	if err := s.command(func() error {
+		return s.record(at, KindSessionStarted, func(e Envelope) Event {
+			return SessionStarted{Envelope: e, Config: cfg}
+		})
 	}); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// NeedsRecovery reports the failure that made this session unusable, or nil.
+func (s *Session) NeedsRecovery() error { return s.needsRecovery }
+
+// command runs one public command as a single boundary: the events it produced
+// are committed together, or the session stops.
+//
+// The aggregates mutate before the commit is attempted. That is the accepted
+// shape from ADR-012 — a copy of the state would be a second representation
+// whose only consumer is the transaction, and whose bugs would be silent — and
+// it is why a failed commit is terminal rather than something to retry.
+func (s *Session) command(run func() error) error {
+	if s.needsRecovery != nil {
+		return fmt.Errorf("%w: %v", ErrSessionNeedsRecovery, s.needsRecovery)
+	}
+
+	start := s.journal.Len()
+	err := run()
+	produced := s.journal.Events()[start:]
+
+	if err != nil {
+		// A command that refused before recording anything leaves the session
+		// usable. One that failed after recording has already moved memory
+		// past the disk.
+		if len(produced) > 0 {
+			s.needsRecovery = err
+			return fmt.Errorf("%w: %v", ErrSessionNeedsRecovery, err)
+		}
+		return err
+	}
+	if s.committer == nil || len(produced) == 0 {
+		return nil
+	}
+	if err := s.committer.Commit(produced); err != nil {
+		s.needsRecovery = err
+		return fmt.Errorf("%w: %v", ErrSessionNeedsRecovery, err)
+	}
+	return nil
 }
 
 // record appends one event at the next position in the session's single
@@ -197,6 +266,10 @@ func (s *Session) OpenSessionID() challenge.SessionID { return s.openSessionID }
 // OpenTradingSession asserts a session boundary and immediately values the
 // account into it.
 func (s *Session) OpenTradingSession(at market.LogicalTime, id challenge.SessionID) error {
+	return s.command(func() error { return s.openTradingSession(at, id) })
+}
+
+func (s *Session) openTradingSession(at market.LogicalTime, id challenge.SessionID) error {
 	if s.sessionOpen {
 		return ErrSessionAlreadyOpen
 	}
@@ -237,6 +310,10 @@ func (s *Session) OpenTradingSession(at market.LogicalTime, id challenge.Session
 
 // Observe accepts a market observation and revalues the account against it.
 func (s *Session) Observe(q market.Quote) error {
+	return s.command(func() error { return s.observe(q) })
+}
+
+func (s *Session) observe(q market.Quote) error {
 	if q.Instrument != s.cfg.Instrument {
 		return ErrWrongInstrument
 	}
@@ -257,6 +334,10 @@ func (s *Session) Observe(q market.Quote) error {
 
 // SubmitOrder records a decision, executes it, applies its fills and revalues.
 func (s *Session) SubmitOrder(o market.Order) error {
+	return s.command(func() error { return s.submitOrder(o) })
+}
+
+func (s *Session) submitOrder(o market.Order) error {
 	if !s.sessionOpen {
 		return ErrNoSessionOpen
 	}
@@ -364,6 +445,10 @@ func (s *Session) countClose(change portfolio.PositionEvent) error {
 
 // EndTradingSession closes the open trading session.
 func (s *Session) EndTradingSession(at market.LogicalTime) error {
+	return s.command(func() error { return s.endTradingSession(at) })
+}
+
+func (s *Session) endTradingSession(at market.LogicalTime) error {
 	if !s.sessionOpen {
 		return ErrNoSessionOpen
 	}

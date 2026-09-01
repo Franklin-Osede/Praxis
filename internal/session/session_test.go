@@ -28,7 +28,7 @@ func config() session.Config {
 
 func newSession(t *testing.T) *session.Session {
 	t.Helper()
-	s, err := session.New(config(), 1_000)
+	s, err := session.New(config(), 1_000, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

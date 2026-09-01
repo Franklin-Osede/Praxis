@@ -48,11 +48,12 @@ against the aggregates that produced it, and resumes a whole session from it.
 `internal/adapters/marketdata` reads a versioned canonical file into ordered
 observations and drives a session with them, and
 `internal/adapters/persistence` encodes a journal as canonical text, frames it
-into checksummed batches, reads it back, and appends to it under an exclusive
-advisory lock with an explicit durability policy.
+into checksummed batches, reads it back, appends to it under an exclusive
+advisory lock with an explicit durability policy, and recovers the session
+state its confirmed batches describe. A session commits one batch per command
+through a narrow port and stops for good if a commit fails.
 
-There is no recovery from an ambiguous write, no transactional integration with
-`Session`, no CLI and no UI.
+There is no repair command, no CLI and no UI.
 
 ## 3. Settled decisions
 
@@ -326,6 +327,26 @@ provider data -> normalizer (calendar, time zone) -> canonical file -> adapter -
 
 An adapter reads a stream it can vouch for; it does not decide what a day is.
 
+### A failed commit stops the session for good
+
+A command executes in memory and its events are then committed as one batch. If
+that commit fails, the session is finished: every later command is refused, no
+further mutation or write is attempted, and the failure is reported as
+`ErrSessionNeedsRecovery`.
+
+It is not healed in place. Recovery builds a **new** session from the confirmed
+batches, and the original command is never re-executed automatically. That is
+what answers the ambiguity: if recovery finds the batch, the command committed;
+if it does not, the command did not. Re-running it would duplicate a decision,
+and a duplicated decision is indistinguishable from one the trader really made
+twice — which in a system built to measure behaviour corrupts the measurement
+itself.
+
+The aggregates mutate before the commit is attempted. That is deliberate: a
+copy of the state would be a second representation whose only consumer is the
+transaction, and a field forgotten in a copy function fails silently, whereas
+rebuilding reuses `Replay`, which already proves what it reconstructs.
+
 ### A journal is not believed, it is proved
 
 A log is not a source of truth because it is well formed. Every derived fact in
@@ -470,9 +491,13 @@ type IntrabarResolutionPolicy interface {
     Resolve(bar Bar, pos Position, lv ProtectiveLevels) (IntrabarResult, error)
 }
 
-type EventStorePort interface {
-    Append(sessionID string, events []DomainEvent) error
-    Load(sessionID string) ([]DomainEvent, error)
+// A session knows only that one command produced one ordered group of events.
+// Commit means the whole batch is durably confirmed; any error means the
+// outcome is unknown until recovery examines the store, so it must not be
+// retried. Batch numbers, checksums, paths and durability policy belong to the
+// store and never cross this boundary. See ADR-012.
+type BatchCommitter interface {
+    Commit(events []Event) error
 }
 
 // Reserved. Nothing in Praxis is random yet, so nothing implements this and
@@ -614,28 +639,29 @@ them, `Verify` proves the log does not hold two contradictory truths.
 
 Next, in order:
 
-1. **Recovery and transactional integration** under ADR-012: rebuilding from
-   the confirmed batches after an ambiguous write, discovering whether a batch
-   landed rather than re-executing the command, and `Session` writing a batch
-   per command. Then an explicit inspect-and-repair operation. Adversarial tests
-   for a crash after every byte, a wrong checksum, a valid batch with a broken
-   sequence, an unknown event, two writers and a failed sync. Then an explicit
-   inspect-and-repair command.
-2. **A minimal replay CLI** driven by a scripted action file.
-3. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
+1. **An explicit inspect-and-repair command**, which reports what a damaged
+   tail contains and truncates it only when asked, after a backup or with an
+   exact account of the bytes discarded.
+2. **A minimal replay CLI** driven by a market file and a scripted action file.
+   This is where the lifecycle loop belongs — open the store, recover, resume,
+   feed, close — and it waits until here because only here does it have a real
+   job.
+3. **A power sensitivity table** across plausible effect sizes, conditioning
+   rates, trades per session and dispersions, establishing under which
+   assumptions the experiment is feasible at all. It comes before the UI
+   because it needs assumptions rather than data, and its answer can change
+   what the UI must record.
+4. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.
-4. **A power sensitivity table** across plausible effect sizes, conditioning
-   rates, trades per session and dispersions, establishing under which
-   assumptions the experiment is feasible at all. A definitive calculation now
-   would be precise-looking arithmetic over invented inputs.
 5. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
-   used only to estimate those inputs. Then freeze the primary hypothesis, the
-   minimum relevant effect, the analysis method, the power target, the sample
-   size, the exclusion rules and the stopping rule.
-6. **The remaining challenge rules**—contract limits, minimum trading days, the
-   consistency rule, a session trading window—designed against what the
-   orchestrator turns out to carry rather than guessed at now.
+   used only to estimate the inputs the sensitivity table left open.
+6. **Freeze the experiment**: the primary hypothesis, the minimum relevant
+   effect, the analysis method, the power target, the sample size, the
+   exclusion rules and the stopping rule.
+7. **Only the challenge rules the frozen protocol requires.** Contract limits,
+   minimum trading days, the consistency rule and a session window are built if
+   the experiment needs them, not because the list exists.
 
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not

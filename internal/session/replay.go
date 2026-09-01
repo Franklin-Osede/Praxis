@@ -263,7 +263,11 @@ func checkValuation(a *portfolio.Account, i market.Instrument, state *ReplayedSt
 
 // Resume continues a replayed session, so that the next command produces the
 // same event a session that was never interrupted would have produced.
-func Resume(state *ReplayedState) (*Session, error) {
+//
+// It builds a new session rather than healing one: a session that failed to
+// commit is discarded, never repaired, because nothing inside it can know what
+// reached the disk.
+func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 	journal, err := newJournalFrom(state.Events)
 	if err != nil {
 		return nil, err
@@ -282,6 +286,7 @@ func Resume(state *ReplayedState) (*Session, error) {
 		ordersThisSession:   state.OrdersThisSession,
 		consecutiveLosses:   state.ConsecutiveLosses,
 		sessionRealisedCts:  state.SessionRealisedCts,
+		committer:           committer,
 	}, nil
 }
 
