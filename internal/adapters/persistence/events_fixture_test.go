@@ -3,6 +3,7 @@ package persistence_test
 import (
 	"testing"
 
+	"praxis/internal/adapters/persistence"
 	"praxis/internal/challenge"
 	"praxis/internal/market"
 	"praxis/internal/portfolio"
@@ -143,4 +144,18 @@ func realSessionEvents(t *testing.T) []session.Event {
 		t.Fatalf("EndTradingSession: %v", err)
 	}
 	return s.Events()
+}
+
+// journalBytes frames a set of events as one batch inside a complete file.
+func journalBytes(t *testing.T, batches ...[]session.Event) []byte {
+	t.Helper()
+	out := persistence.Header()
+	for n, events := range batches {
+		framed, err := persistence.EncodeBatch(uint64(n+1), events)
+		if err != nil {
+			t.Fatalf("EncodeBatch: %v", err)
+		}
+		out = append(out, framed...)
+	}
+	return out
 }

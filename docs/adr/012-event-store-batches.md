@@ -34,18 +34,32 @@ invalid.
 A journal is a text file with a version line and then one frame per batch:
 
 ```text
-PRAXIS-EVENT-STORE 1
+PRAXIS-EVENT-STORE 1 praxis.event.v1
 BATCH 00000000000000000001 00000000000000000427 00000000000000000002 00000000000000000006 00000000000000000005 CRC32C:8a31f902
 <exactly 427 bytes of canonical event text>
 ```
 
+## Two versions, because two things change for different reasons
+
+The first line carries the **container version** and the **payload version**,
+separately. A frame can change its checksum, its field widths, its compression
+or its recovery strategy without any event changing; a payload can add a new
+event schema without changing how batches are delimited or verified. One number
+for both would force a bump on the half that did not move.
+
+The version is not repeated inside an event. The store holds an explicit table
+of compatible combinations and refuses any pair it does not know — a recognised
+container with an unrecognised payload included, and the reverse.
+
+## The frame
+
 The header line is, in order: the literal `BATCH`, the batch's monotonic
 number, the payload's length **in bytes**, the sequence of its first event, the
 sequence of its last, and the number of events — each an unsigned 64-bit value
-written in exactly **20 digits**, zero-padded — then the CRC32C of the payload
-in exactly eight lowercase hexadecimal digits. Fields are separated by a single
-space, exactly one, and the line ends with `\n`. The payload follows
-immediately and is exactly as many bytes as the header states.
+written in exactly **20 digits**, zero-padded — then the CRC32C in exactly
+eight lowercase hexadecimal digits. Fields are separated by a single space,
+exactly one, and the line ends with `\n`. The payload follows immediately and
+is exactly as many bytes as the header states.
 
 Twenty digits is what a `uint64` needs. A narrower field would impose a limit
 the types do not have, and a format that silently cannot represent a value its
@@ -56,14 +70,23 @@ The fixed width is deliberately *not* the payload's integer rule. A header of
 constant length is either wholly present or visibly not, which a
 variable-length one cannot be.
 
-Length is counted in bytes, never in lines, so a payload truncated anywhere is
-detected without hunting for a newline that may not exist. The checksum covers
-exactly the persisted payload bytes, its own newlines included.
+## The checksum covers the metadata too
 
-The metadata is not decoration. It is what lets recovery answer whether a
-command was confirmed without re-running it: a batch whose event count,
-first sequence or last sequence contradicts its payload is corrupt even though
-its checksum matches the bytes present.
+A CRC over the payload alone would leave the header unprotected, so corruption
+could change a batch number or a sequence range and still verify. The checksum
+is therefore computed over an exact construction of both:
+
+```text
+crc input = "%020d %020d %020d %020d %020d\n" of
+            batch number, length, first sequence, last sequence, event count
+          + the payload bytes, exactly as persisted
+```
+
+Single spaces, one trailing newline after the metadata, and nothing else. The
+CRC field itself is the only thing excluded, because it cannot cover itself.
+The metadata bytes in that construction are byte-identical to the ones on the
+header line; the line adds only the `BATCH ` prefix and the ` CRC32C:` suffix
+around them.
 
 ## The payload grammar
 
@@ -192,6 +215,29 @@ After a failed write:
 - **Reconstruction itself fails.** The session is unusable and says so. It never
   continues with memory and disk diverged, which is the one outcome that would
   make every later guarantee meaningless.
+
+## Five endings, and they do not mean the same thing
+
+A reader must distinguish them, because treating them alike would either hide a
+defect or refuse a file that is merely unfinished.
+
+- **The last batch is cut short by end of file.** An unconfirmed tail. This is
+  the ordinary shape of a process killed mid-append. It is discarded, and the
+  number of bytes discarded is reported.
+- **The last batch is complete but its checksum is wrong.** Reading falls back
+  to the batch before it, and reports **corruption**. It is not an unfinished
+  write and must not be reported as one: something damaged bytes that were
+  fully written.
+- **A batch fails and more data follows it.** Fatal. The reader stops and
+  refuses the journal. Skipping the batch would produce a state with a hole in
+  it, and continuity — the one property the batch numbering and sequence ranges
+  exist to prove — can no longer be demonstrated.
+- **The metadata is syntactically valid but disagrees with the payload.** An
+  error, even when the checksum matches. A matching checksum over disagreeing
+  numbers means the file was written wrong, not damaged, and a writer that can
+  do that is a worse problem than a bad sector.
+- **A stated length exceeds the configured maximum, or the bytes actually
+  available.** Refused before any memory is reserved for it.
 
 ## Consequences
 

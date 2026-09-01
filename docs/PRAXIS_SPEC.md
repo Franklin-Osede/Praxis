@@ -47,10 +47,10 @@ against the aggregates that produced it, and resumes a whole session from it.
 
 `internal/adapters/marketdata` reads a versioned canonical file into ordered
 observations and drives a session with them, and
-`internal/adapters/persistence` encodes a journal as canonical text and reads
-it back, pinned by golden bytes.
+`internal/adapters/persistence` encodes a journal as canonical text, frames it
+into checksummed batches and reads it back, pinned by golden bytes.
 
-There is no event store, no CLI and no UI.
+There is no writer, no recovery, no CLI and no UI.
 
 ## 3. Settled decisions
 
@@ -141,8 +141,10 @@ a `SessionID` never returns. See
 
 The event store frames a whole command's events as one batch — a text header of
 fixed-width twenty-digit fields carrying the batch number, the payload's byte length, its first and
-last event sequence, its event count and a CRC32C, then a canonical text
-payload — confirmed together or not at all, because per-event framing would
+last event sequence and its event count, a CRC32C computed over that metadata
+as well as the payload, then a canonical text payload; the file names its
+container and payload versions separately, because they change for different
+reasons — confirmed together or not at all, because per-event framing would
 leave a command cut in half looking perfectly intact. One writer per journal,
 checksums for accidental corruption and not for tamper resistance, and a reader
 that accepts only complete, continuous batches and never repairs. Integrity and
@@ -610,10 +612,10 @@ them, `Verify` proves the log does not hold two contradictory truths.
 
 Next, in order:
 
-1. **An append-only event store** under ADR-012, continuing from the codec:
-   the frame and its checksum, a strict reader that repairs nothing, batch
-   appends under a single writer, recovery from an ambiguous write, and the
-   transactional integration with `Session`. Adversarial tests
+1. **An append-only event store** under ADR-012, continuing from the codec and
+   the frame: batch appends under a single writer with an explicit durability
+   policy, recovery from an ambiguous write, and the transactional integration
+   with `Session`. Adversarial tests
    for a crash after every byte, a wrong checksum, a valid batch with a broken
    sequence, an unknown event, two writers and a failed sync. Then an explicit
    inspect-and-repair command.
