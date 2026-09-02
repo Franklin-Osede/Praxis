@@ -83,9 +83,19 @@ Not frozen. The point of this table is the right-hand column.
 | E | Position size in contracts is larger after a loss than after a win | trade | order quantity, preceding realised P&L | Yes |
 | F | A rule is breached more often on days already down | session | challenge decisions, valuations | Yes |
 
-Four of the six — B, C, E and F — are answerable from what `OrderSubmitted`,
-`PositionChanged` and `ChallengeDecision` already record. Two are not, and they
-are the two the original hypotheses in the specification were written around.
+Three of the six — B, C and F — are answerable from what `OrderSubmitted`,
+`PositionChanged` and `ChallengeDecision` already record, because each is
+measured at the level of a close leg or a session, neither of which needs a
+trade to be defined.
+
+E is marked yes above and that is too generous. It needs to know which *trade*
+lost, and a trade is not modelled: it can be inferred where a position opens and
+closes cleanly, but partial closes, additions and flips make the inference
+ambiguous, and those are exactly what a trader under pressure does. See
+[`hypotheses-candidates.md`](hypotheses-candidates.md), candidate 3.
+
+A and D are not answerable at all. All of A, D and E need the same first thing:
+a trade identity.
 
 **What is missing, precisely.** To express any outcome in R, or to say anything
 about stops, the log would need: a trade's identity across its entry and exit,

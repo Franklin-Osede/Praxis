@@ -696,27 +696,35 @@ Next, in order:
    64% jointly, and 80% jointly needs 2.63 times the single-sample figure. Which
    of the two the protocol means must be said before it is frozen.
 
-2. **Decide the exact comparison the primary hypothesis makes**, because it
-   decides what has to be recorded. A rate needs a denominator: "stops are
-   widened on 30% of occasions" requires knowing how many occasions there were,
-   which is a reconstructible state rather than an event. Two of six candidates
-   cannot be answered at all today and both need the same missing thing — a
-   trade's planned risk and its protective levels — but whether three events
-   suffice, or the log also needs explicit relations between a trade's entry,
-   its protection and its exit, follows from the comparison rather than
-   preceding it.
-3. **Protective levels as domain facts**, scoped by that decision: placing,
-   moving and cancelling a stop or target, and the levels being executed rather
-   than merely noted.
-4. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
+2. ~~Decide the exact comparison the primary hypothesis makes.~~ Done:
+   [`docs/experiment/hypotheses-candidates.md`](experiment/hypotheses-candidates.md).
+   Three candidates, with numerator, denominator and exclusions; the
+   provisional primary is the rate at which a stop is widened among trades
+   opened after two consecutive losing closes, compared against trades that
+   were not. It is a comparison of two observed proportions, so its power uses
+   that shape and not the cheaper one-sample form. All three candidates need a
+   trade identity, which is not modelled.
+3. **Define a trade's identity and its ending.** Partial closes, additions and
+   flips are what make it hard, and they are the cases that matter.
+4. **Resting orders, and keeping a partially filled remainder.** This precedes
+   protection rather than following it: a stop is an order that waits for later
+   observations, and modelling protection on a kernel that cannot hold a
+   waiting order would record decisions the engine does not honour. The
+   remainder `ExecuteOnQuote` documents as "the caller's to carry", and that its
+   only caller drops, is the same defect and is fixed here.
+5. **The life of a protective level**: place, replace, cancel, trigger. Cancel
+   and replace must be distinguishable, or a log will show intervals without
+   protection that the trader never intended.
+6. **Carry those into the journal, the codec and `Replay`.**
+7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.
-5. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
+8. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
    used only to estimate the inputs the sensitivity table left open.
-6. **Freeze the experiment**: the primary hypothesis, the minimum relevant
+9. **Freeze the experiment**: the primary hypothesis, the minimum relevant
    effect, the analysis method, the power target, the sample size, the
    exclusion rules and the stopping rule.
-7. **Only the challenge rules the frozen protocol requires.**
+10. **Only the challenge rules the frozen protocol requires.**
 
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not
