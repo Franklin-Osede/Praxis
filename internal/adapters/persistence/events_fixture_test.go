@@ -53,6 +53,7 @@ func everyEventType() []session.Event {
 				Instrument: mnq, Time: 3_000,
 				Bid: 20_000, Ask: 20_001, BidSize: 10, AskSize: 12,
 			},
+			SourceSequence: 4,
 		},
 		session.OrderSubmitted{
 			Envelope: session.Envelope{Time: 3_000, Sequence: 6, Kind: session.KindOrderSubmitted},
@@ -119,7 +120,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 		t.Fatalf("OpenTradingSession: %v", err)
 	}
 	q := market.Quote{Instrument: mnq, Time: 3_000, Bid: 20_000, Ask: 20_001, BidSize: 50, AskSize: 50}
-	if err := s.Observe(q); err != nil {
+	if err := s.Observe(q, 1); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 	buy, err := market.NewMarketOrder("o-1", mnq, market.SideBuy, 3)
@@ -130,7 +131,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
 	q2 := market.Quote{Instrument: mnq, Time: 4_000, Bid: 19_990, Ask: 19_991, BidSize: 50, AskSize: 50}
-	if err := s.Observe(q2); err != nil {
+	if err := s.Observe(q2, 1); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 	sell, err := market.NewMarketOrder("o-2", mnq, market.SideSell, 3)

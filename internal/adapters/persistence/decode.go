@@ -61,13 +61,12 @@ func decodeEvent(line string) (session.Event, error) {
 
 	case typeMarketObserved:
 		kind = session.KindMarketObserved
-		event = session.MarketObserved{
-			Envelope: envelope(at, sequence, kind),
-			Quote: market.Quote{
-				Instrument: r.instrument(), Time: r.logicalTime(),
-				Bid: r.ticks(), Ask: r.ticks(), BidSize: r.qty(), AskSize: r.qty(),
-			},
-		}
+		observed := session.MarketObserved{Envelope: envelope(at, sequence, kind)}
+		observed.Quote.Instrument, observed.Quote.Time = r.instrument(), r.logicalTime()
+		observed.SourceSequence = r.uint()
+		observed.Quote.Bid, observed.Quote.Ask = r.ticks(), r.ticks()
+		observed.Quote.BidSize, observed.Quote.AskSize = r.qty(), r.qty()
+		event = observed
 
 	case typeOrderSubmitted:
 		kind = session.KindOrderSubmitted

@@ -215,7 +215,7 @@ func drive(t *testing.T, path string) *session.Session {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := marketdata.Drive(s, feed); err != nil {
+	if err := marketdata.Drive(s, feed, 0); err != nil {
 		t.Fatalf("Drive: %v", err)
 	}
 	return s

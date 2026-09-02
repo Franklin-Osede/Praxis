@@ -108,6 +108,13 @@ type SessionOpened struct {
 type MarketObserved struct {
 	Envelope
 	Quote market.Quote
+
+	// SourceSequence is the position the source gave this observation, which
+	// with its logical time is what orders it (ADR-010). Two observations at
+	// the same instant differ only in this, so without it a journal could not
+	// tell one from the other, and a source file whose same-time rows had been
+	// swapped would verify against a journal that did not describe it.
+	SourceSequence uint64
 }
 
 // OrderContext is what the account looked like at the instant an order was

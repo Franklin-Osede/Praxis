@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"praxis/internal/adapters/persistence"
 )
@@ -42,6 +43,8 @@ func run(args []string, out, errOut *os.File) int {
 	switch args[0] {
 	case "store":
 		return storeCommand(args[1:], out, errOut)
+	case "replay":
+		return replayCommand(args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "praxis: unknown command %q\n", args[0])
 		usage(errOut)
@@ -69,7 +72,7 @@ func storeCommand(args []string, out, errOut *os.File) int {
 func inspect(args []string, out, errOut *os.File) int {
 	fs := flag.NewFlagSet("praxis store inspect", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	flags, operands := splitArgs(args)
+	flags, operands := splitArgs(fs, args)
 	if err := fs.Parse(flags); err != nil || len(operands) != 1 {
 		fmt.Fprintln(errOut, "usage: praxis store inspect <journal>")
 		return exitFatal
@@ -92,7 +95,7 @@ func repair(args []string, out, errOut *os.File) int {
 	apply := fs.Bool("apply", false, "perform the repair; without it this is a dry run")
 	discard := fs.Bool("discard-corrupt-batch", false,
 		"consent to discarding a batch that was fully written and may have been confirmed")
-	flags, operands := splitArgs(args)
+	flags, operands := splitArgs(fs, args)
 	if err := fs.Parse(flags); err != nil || len(operands) != 1 {
 		fmt.Fprintln(errOut, "usage: praxis store repair <journal> [--apply] [--discard-corrupt-batch]")
 		return exitFatal
@@ -128,16 +131,35 @@ func repair(args []string, out, errOut *os.File) int {
 
 // splitArgs separates flags from operands so that a journal path may come
 // before its flags. Go's flag package stops at the first operand, which would
-// make "repair journal --apply" silently a dry run — the one misreading this
-// command must not have. Every flag here is a boolean, so no value can be
-// mistaken for a path.
-func splitArgs(args []string) (flags, operands []string) {
-	for _, a := range args {
-		if len(a) > 1 && a[0] == '-' {
-			flags = append(flags, a)
+// make "repair journal --apply" silently a dry run — the one misreading these
+// commands must not have.
+//
+// It asks the flag set whether each flag takes a value, rather than assuming.
+// An earlier version assumed every flag was a boolean, which was true of the
+// store commands and false the moment replay arrived: "--commission 50" lost
+// its value and 50 became a second path.
+func splitArgs(fs *flag.FlagSet, args []string) (flags, operands []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if len(arg) < 2 || arg[0] != '-' {
+			operands = append(operands, arg)
 			continue
 		}
-		operands = append(operands, a)
+		flags = append(flags, arg)
+		if strings.Contains(arg, "=") {
+			continue
+		}
+		defined := fs.Lookup(strings.TrimLeft(arg, "-"))
+		if defined == nil {
+			continue
+		}
+		if b, ok := defined.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
 	}
 	return flags, operands
 }
@@ -187,6 +209,7 @@ func printReport(out *os.File, r *persistence.Report) {
 
 func usage(out *os.File) {
 	fmt.Fprintln(out, "usage:")
+	fmt.Fprintln(out, "  praxis replay <market-file> --journal <journal> [configuration]")
 	fmt.Fprintln(out, "  praxis store inspect <journal>")
 	fmt.Fprintln(out, "  praxis store repair  <journal> [--apply] [--discard-corrupt-batch]")
 }

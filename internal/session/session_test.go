@@ -67,7 +67,7 @@ func mustOpen(t *testing.T, s *session.Session, at market.LogicalTime, id challe
 
 func mustObserve(t *testing.T, s *session.Session, q market.Quote) {
 	t.Helper()
-	if err := s.Observe(q); err != nil {
+	if err := s.Observe(q, 1); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 }
@@ -354,7 +354,7 @@ func TestRejectsAnObservationForAnotherInstrument(t *testing.T) {
 
 	other := quote(3_000, 20_000, 20_001)
 	other.Instrument = market.Instrument{Symbol: "MES", CentsPerTick: 125}
-	if err := s.Observe(other); !errors.Is(err, session.ErrWrongInstrument) {
+	if err := s.Observe(other, 1); !errors.Is(err, session.ErrWrongInstrument) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrWrongInstrument)
 	}
 }

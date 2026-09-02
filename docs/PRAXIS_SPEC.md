@@ -53,10 +53,12 @@ advisory lock with an explicit durability policy, and recovers the session
 state its confirmed batches describe. A session commits one batch per command
 through a narrow port and stops for good if a commit fails.
 
-`cmd/praxis` is the command: `praxis store inspect` and `praxis store repair`,
-with exit codes meant to be automated against.
+`cmd/praxis` is the command: `praxis replay` runs or resumes a simulation over
+a market file, and `praxis store inspect` and `praxis store repair` examine and
+mend the history one leaves behind. Exit codes are meant to be automated
+against.
 
-There is no replay loop and no UI.
+There is no UI.
 
 ## 3. Settled decisions
 
@@ -350,6 +352,29 @@ copy of the state would be a second representation whose only consumer is the
 transaction, and a field forgotten in a copy function fails silently, whereas
 rebuilding reuses `Replay`, which already proves what it reconstructs.
 
+### Resuming verifies the market, it does not count it
+
+A run continues a journal by matching every observation the journal holds
+against the row in the same position of the market file — instrument, logical
+time, source sequence, trading session, both sides of the book and their sizes
+— and carries on from the first row that is not there. Skipping a count of rows
+would replay a file that had changed as though it were the one that produced
+the journal, and the resulting history would describe a market that never
+happened.
+
+That is why an observation records the source sequence it was given. Two rows
+at the same instant differ only in that, so without it a file whose same-time
+rows had been swapped would verify against a journal that did not describe it.
+
+A journal's configuration comes from its own `SessionStarted` and never from a
+flag: an account and an evaluation already have a history under the rules they
+started with. The instrument is checked even when the journal holds no
+observation to compare, because a run interrupted straight after committing its
+configuration would otherwise resume against anything at all.
+
+Running the same file twice appends nothing. A damaged tail is not repaired in
+passing: the command says to run `praxis store repair`.
+
 ### A journal is not believed, it is proved
 
 A log is not a source of truth because it is well formed. Every derived fact in
@@ -640,29 +665,26 @@ an interpretation, and naming a pattern is analytics that belongs nowhere near
 this package. Because those figures are also derivable from the events before
 them, `Verify` proves the log does not hold two contradictory truths.
 
+Praxis now has a full operational path: a market file, a deterministic session,
+durable batches, a crash, an explicit repair, and a resumed run that produces
+byte for byte the journal an uninterrupted one would have.
+
 Next, in order:
 
-1. **A minimal replay CLI**, `praxis replay <market-file> --journal <journal>`,
-   joining the existing command rather than becoming a second binary. This is
-   where the lifecycle loop belongs — open the store, recover, resume, feed,
-   close — and it waited until here because only here does it have a real job.
-   With it, Praxis has a full operational path for the first time: a market
-   file, a deterministic session, durable batches, a crash, recovery, and a
-   verifiable replay.
-2. **A power sensitivity table** across plausible effect sizes, conditioning
+1. **A power sensitivity table** across plausible effect sizes, conditioning
    rates, trades per session and dispersions, establishing under which
    assumptions the experiment is feasible at all. It comes before the UI
    because it needs assumptions rather than data, and its answer can change
    what the UI must record.
-3. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
+2. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.
-4. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
+3. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
    used only to estimate the inputs the sensitivity table left open.
-5. **Freeze the experiment**: the primary hypothesis, the minimum relevant
+4. **Freeze the experiment**: the primary hypothesis, the minimum relevant
    effect, the analysis method, the power target, the sample size, the
    exclusion rules and the stopping rule.
-6. **Only the challenge rules the frozen protocol requires.**
+5. **Only the challenge rules the frozen protocol requires.**
 
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not

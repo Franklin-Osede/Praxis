@@ -43,7 +43,7 @@ func openSessionOnDisk(t *testing.T, path string) (*session.Session, *Writer) {
 		t.Fatalf("OpenTradingSession: %v", err)
 	}
 	q := market.Quote{Instrument: mnqInstrument(), Time: 3_000, Bid: 20_000, Ask: 20_001, BidSize: 50, AskSize: 50}
-	if err := s.Observe(q); err != nil {
+	if err := s.Observe(q, 1); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 	return s, w
@@ -107,7 +107,7 @@ func TestACommitFailingAtEveryByteOffset(t *testing.T) {
 			if !errors.Is(err, session.ErrSessionNeedsRecovery) {
 				t.Fatalf("offset %d: got %v, want %v", offset, err, session.ErrSessionNeedsRecovery)
 			}
-			if err := s.Observe(market.Quote{Instrument: mnqInstrument(), Time: 10_000, Bid: 1, Ask: 2, BidSize: 1, AskSize: 1}); !errors.Is(err, session.ErrSessionNeedsRecovery) {
+			if err := s.Observe(market.Quote{Instrument: mnqInstrument(), Time: 10_000, Bid: 1, Ask: 2, BidSize: 1, AskSize: 1}, 1); !errors.Is(err, session.ErrSessionNeedsRecovery) {
 				t.Fatalf("offset %d: a stopped session accepted a command: %v", offset, err)
 			}
 

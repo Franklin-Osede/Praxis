@@ -315,11 +315,14 @@ func (s *Session) openTradingSession(at market.LogicalTime, id challenge.Session
 }
 
 // Observe accepts a market observation and revalues the account against it.
-func (s *Session) Observe(q market.Quote) error {
-	return s.command(func() error { return s.observe(q) })
+// Observe accepts a market observation and revalues the account against it.
+// sourceSequence is the position the source gave it; with the observation's
+// logical time it is what orders the stream.
+func (s *Session) Observe(q market.Quote, sourceSequence uint64) error {
+	return s.command(func() error { return s.observe(q, sourceSequence) })
 }
 
-func (s *Session) observe(q market.Quote) error {
+func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 	if q.Instrument != s.cfg.Instrument {
 		return ErrWrongInstrument
 	}
@@ -330,7 +333,7 @@ func (s *Session) observe(q market.Quote) error {
 		return err
 	}
 	if err := s.record(q.Time, KindMarketObserved, func(e Envelope) Event {
-		return MarketObserved{Envelope: e, Quote: q}
+		return MarketObserved{Envelope: e, Quote: q, SourceSequence: sourceSequence}
 	}); err != nil {
 		return err
 	}

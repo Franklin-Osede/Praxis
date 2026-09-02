@@ -325,7 +325,7 @@ func TestARepairedJournalStillDrivesASession(t *testing.T) {
 	}
 	if err := resumed.Observe(market.Quote{
 		Instrument: mnqInstrument(), Time: 20_000, Bid: 20_000, Ask: 20_001, BidSize: 1, AskSize: 1,
-	}); err != nil && !errors.Is(err, session.ErrNoSessionOpen) {
+	}, 1); err != nil && !errors.Is(err, session.ErrNoSessionOpen) {
 		t.Fatalf("the recovered session is unusable: %v", err)
 	}
 }

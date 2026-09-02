@@ -172,7 +172,7 @@ func TestTheJournalIsOneContiguousOrdering(t *testing.T) {
 	}
 	other := quote(3_000, 20_000, 20_001)
 	other.Instrument = market.Instrument{Symbol: "MES", CentsPerTick: 125}
-	if err := s.Observe(other); err == nil {
+	if err := s.Observe(other, 1); err == nil {
 		t.Fatal("an observation for another instrument was accepted")
 	}
 

@@ -355,7 +355,7 @@ func TestAStoppedSessionRefusesEvenWhenTheStoreRecovers(t *testing.T) {
 	}{
 		{"opening a session", func() error { return s.OpenTradingSession(3_000, "d2") }},
 		{"observing", func() error {
-			return s.Observe(market.Quote{Instrument: mnq, Time: 3_000, Bid: 20_000, Ask: 20_001, BidSize: 1, AskSize: 1})
+			return s.Observe(market.Quote{Instrument: mnq, Time: 3_000, Bid: 20_000, Ask: 20_001, BidSize: 1, AskSize: 1}, 1)
 		}},
 		{"ending a session", func() error { return s.EndTradingSession(4_000) }},
 	} {

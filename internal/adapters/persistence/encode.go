@@ -75,7 +75,7 @@ func encodeEvent(e session.Event) (string, error) {
 			return "", ErrKindMismatch
 		}
 		f.name(typeMarketObserved).at(header)
-		f.instrument(v.Quote.Instrument).int(int64(v.Quote.Time))
+		f.instrument(v.Quote.Instrument).int(int64(v.Quote.Time)).uint(v.SourceSequence)
 		f.int(int64(v.Quote.Bid)).int(int64(v.Quote.Ask))
 		f.int(int64(v.Quote.BidSize)).int(int64(v.Quote.AskSize))
 

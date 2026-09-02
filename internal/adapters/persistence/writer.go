@@ -62,6 +62,11 @@ type Writer struct {
 	nextNumber   uint64
 	nextSequence uint64
 
+	// recovered is the journal this writer read while opening. It is kept so
+	// that recovery and appending share one lock: reopening to read would
+	// leave a window in which another process could take it.
+	recovered *Journal
+
 	// poisoned records a failure that left the file in a state this writer
 	// cannot reason about. It never clears.
 	poisoned error
@@ -87,7 +92,8 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 		return nil, err
 	}
 
-	w := &Writer{file: file, path: path, policy: policy, nextNumber: 1, nextSequence: 1}
+	w := &Writer{file: file, path: path, policy: policy, nextNumber: 1, nextSequence: 1,
+		recovered: &Journal{ContainerVersion: ContainerVersion, PayloadVersion: EventVersion}}
 
 	info, err := file.Stat()
 	if err != nil {
@@ -127,6 +133,7 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 		w.abandon()
 		return nil, fmt.Errorf("%w: %v tail of %d bytes", ErrUnconfirmedTail, journal.Tail, journal.DiscardedBytes)
 	}
+	w.recovered = journal
 	if n := len(journal.Batches); n > 0 {
 		w.nextNumber = journal.Batches[n-1].Number + 1
 		w.nextSequence = journal.Batches[n-1].LastSequence + 1
@@ -137,6 +144,10 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 	}
 	return w, nil
 }
+
+// Recovered is the journal this writer found when it opened, read under the
+// same lock it still holds.
+func (w *Writer) Recovered() *Journal { return w.recovered }
 
 func (w *Writer) NextBatchNumber() uint64 { return w.nextNumber }
 func (w *Writer) NextSequence() uint64    { return w.nextSequence }
