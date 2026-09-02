@@ -176,6 +176,28 @@ the command; state is rebuilt from the confirmed batches rather than from a copy
 of the aggregates. See
 [`docs/adr/012-event-store-batches.md`](adr/012-event-store-batches.md).
 
+### ADR-013 — A trade is a position episode
+
+A trade is the span during which the net position in one instrument stays
+non-zero and keeps its direction; additions and partial exits belong to it, a
+flip ends one and opens another, and neither a session boundary nor the end of
+the data nor a terminal challenge ends it. Its identifier is the journal
+sequence of the `PositionChanged` event that opened it — deterministic, and
+needing no registry. Its result is realised P&L minus every leg's commission,
+and break-even includes fees, because an episode that gave back its gain in
+commission was not economically flat. An open episode has no result at all.
+
+One trade per entry order was rejected: weighted average cost means the system
+does not know which entry an exit closed, and choosing FIFO or pro rata would
+invent that knowledge. A user-declared campaign was rejected as a primary unit
+because it can be relabelled after the fact.
+
+`OrderContext.ConsecutiveLosses` counts closing legs and is not renamed —
+that would change what already-written journals say about their own past. A
+hypothesis about losing streaks needs `ConsecutiveLosingTrades`, a second
+counter advanced only when an episode ends. See
+[`docs/adr/013-position-episodes.md`](adr/013-position-episodes.md).
+
 ## 4. Domain rules
 
 ### Exact cost basis
@@ -716,16 +738,23 @@ Next, in order:
    `opened` and `closed`, entries by `Order.ID` — so the only thing missing is
    the reference from a level to the entry that placed it. Three protection
    events suffice; no relation table is needed.
-4. **Resting orders, and keeping a partially filled remainder.** This precedes
+4. **Design the protection events and the one new counter together**, because
+   they are the last change `praxis.event.v1` gets. Its golden bytes have
+   already moved once, for the source sequence; a version whose meaning shifts
+   a third time is not a version. `ProtectionPlaced`, `ProtectionReplaced`,
+   `ProtectionCancelled` — each referencing the entry's order id — plus
+   `ConsecutiveLosingTrades` on `order_submitted`. After this, `v1` is fixed and
+   anything further is `v2`.
+5. **Resting orders, and keeping a partially filled remainder.** This precedes
    protection rather than following it: a stop is an order that waits for later
    observations, and modelling protection on a kernel that cannot hold a
    waiting order would record decisions the engine does not honour. The
    remainder `ExecuteOnQuote` documents as "the caller's to carry", and that its
    only caller drops, is the same defect and is fixed here.
-5. **The life of a protective level**: place, replace, cancel, trigger. Cancel
+6. **The life of a protective level**: place, replace, cancel, trigger. Cancel
    and replace must be distinguishable, or a log will show intervals without
-   protection that the trader never intended.
-6. **Carry those into the journal, the codec and `Replay`.**
+   protection that the trader never intended. Carried into the journal, the
+   codec and `Replay` in the same slice.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.

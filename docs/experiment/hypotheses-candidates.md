@@ -25,15 +25,15 @@ markets, no interpretation of intent, and it happens at the moment the plan is
 being abandoned rather than afterwards. If Praxis measures one thing, this is
 the strongest candidate for it.
 
-> Is the proportion of trades whose stop is widened higher among trades opened
-> after two consecutive losing closes?
+> Is the proportion of entries whose stop is widened higher among entries
+> opened after two consecutive completed losing trades?
 
 | | |
 |---|---|
 | **Unit** | one closed or terminated trade |
 | **Denominator** | trades that began with a valid stop |
 | **Numerator** | eligible trades whose stop moved away from the entry at least once |
-| **Conditioned group** | trades opened after at least two consecutive losing closes |
+| **Conditioned group** | entries opened after at least two consecutive losing **episodes** |
 | **Control group** | trades opened without that condition |
 | **Shape** | two observed proportions (question (b) of `power-sensitivity.md` §5) |
 
@@ -50,9 +50,12 @@ would describe a single trade rather than a habit.
 zero in it: there was nothing to widen. A stop moved *toward* the entry is not
 a widening and is not counted as one either way.
 
-**Needs recorded:** a trade identity, the initial stop, every modification with
-its direction, the position's direction, the moment of opening, and the
-behavioural context at that moment.
+**Needs recorded:** the initial stop, every modification with its direction, and
+a count of consecutive losing **episodes** at the moment of the entry. The
+existing `ConsecutiveLosses` counts closing legs and is the wrong unit — scaling
+out of one bad position in two reductions is one trade abandoned in pieces, not
+a streak. ADR-013 adds `ConsecutiveLosingTrades` beside it rather than renaming
+it.
 
 ---
 
