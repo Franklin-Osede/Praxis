@@ -593,10 +593,11 @@ unrepresentable. Rules are configuration. Cover static and trailing drawdown,
 unrealised breaches, high-water marks, session-boundary resets, positions across
 boundaries, time zones, contract limits, minimum days, and consistency rules.
 
-### Phase 3 — Behavioural event log
+### Phase 3 — Behavioural event log ✅ Done
 
-Add append-only persistence and a minimal replay CLI. Exit: reconstruct a full
-session from its event log without information loss. No web UI.
+Append-only persistence and a minimal replay CLI. A full session reconstructs
+from its journal without information loss, and every derived fact in it is
+proved against the aggregates that produced it. See ADR-012 and section 10.
 
 ### Phase 4 — Personal experiment
 
@@ -671,14 +672,25 @@ byte for byte the journal an uninterrupted one would have.
 
 Next, in order:
 
-1. **A power sensitivity table** across plausible effect sizes, conditioning
-   rates, trades per session and dispersions, establishing under which
-   assumptions the experiment is feasible at all. It comes before the UI
-   because it needs assumptions rather than data, and its answer can change
-   what the UI must record.
-2. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
-   and target, position, balance and equity, and the evaluation's status.
-   Nothing else until ten sessions have been traded.
+1. ~~A power sensitivity table.~~ Done:
+   [`docs/experiment/power-sensitivity.md`](experiment/power-sensitivity.md).
+   Its answer changes the plan. A hundred sessions can answer roughly one
+   plausible scenario in eleven for an effect measured in R, so the primary
+   hypothesis should be a **frequency** rather than an effect size — a question
+   one to two orders of magnitude cheaper, and answerable at the sample a
+   personal experiment can realistically reach. Effect-size questions become
+   exploratory, reported with intervals and never claimed as findings. The
+   split-half rule doubles whatever the figure is.
+
+2. **A minimal local UI**, scoped by that document rather than by intuition.
+   Two of six candidate hypotheses cannot be answered at all today, and both
+   need the same missing thing: a trade's planned risk and its protective
+   levels. Recording a stop when it is placed and again when it is moved is
+   worth more than anything else on the list — it makes the behavioural
+   question possible, makes R computable, and is the cheap kind of question.
+   Beyond that: chart, replay controls, buy and sell, quantity, stop and
+   target, position, balance and equity, and the evaluation's status. Nothing
+   else until ten sessions have been traded.
 3. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
    used only to estimate the inputs the sensitivity table left open.
 4. **Freeze the experiment**: the primary hypothesis, the minimum relevant
@@ -688,17 +700,25 @@ Next, in order:
 
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not
-exist, and needs its own decision record before it does; nothing persists a
-journal; and `AccountSnapshot` carries neither position size nor any
-notion of a session having been traded, which is why the rules needing them are
-deferred.
+exist, and needs its own decision record before it does; `AccountSnapshot`
+carries neither position size nor any notion of a session having been traded,
+which is why the rules needing them are deferred; and the journal records no
+planned risk and no protective levels, which is what
+[`docs/experiment/power-sensitivity.md`](experiment/power-sensitivity.md)
+identifies as the scope of the interface.
 
 ## 11. Statistical and commercial guardrails
 
 Freeze hypotheses before collecting sessions; do not rewrite them during data
 collection. An underpowered study fails to reject for lack of data, not for
 absence of effect: a kill criterion evaluated without a prior power
-calculation can retire a true thesis. With a small sample, exploratory patterns are hypotheses, not
+calculation can retire a true thesis. That calculation now exists in outline —
+see [`docs/experiment/power-sensitivity.md`](experiment/power-sensitivity.md) —
+and it says the original figure of 50 to 100 sessions was chosen by feel and is
+not a sample for an effect measured in R.
+
+Statistical work may use floating point. That is an analytical boundary in the
+sense of ADR-002, and it may never reach execution, P&L or challenge code. With a small sample, exploratory patterns are hypotheses, not
 findings. Stability across two halves is a minimum guardrail, not proof of
 causality or transfer to real-money trading.
 
