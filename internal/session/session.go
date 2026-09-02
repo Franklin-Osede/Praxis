@@ -131,6 +131,12 @@ func (s *Session) command(run func() error) error {
 		// A command that refused before recording anything leaves the session
 		// usable. One that failed after recording has already moved memory
 		// past the disk.
+		//
+		// NOT COVERED BY A TEST. No public command can currently fail after
+		// recording an event: every one of them either refuses before touching
+		// the journal or runs to completion. The guard is here because that is
+		// a property of today's commands rather than of the design. If a
+		// change ever opens that path, its test belongs in the same commit.
 		if len(produced) > 0 {
 			s.needsRecovery = err
 			return fmt.Errorf("%w: %v", ErrSessionNeedsRecovery, err)

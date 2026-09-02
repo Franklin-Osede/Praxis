@@ -23,3 +23,13 @@ func lockExclusive(f *os.File) error {
 	}
 	return err
 }
+
+// lockShared takes an advisory shared lock, without waiting. A reader can hold
+// it alongside other readers, and never alongside a writer.
+func lockShared(f *os.File) error {
+	err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return ErrLocked
+	}
+	return err
+}

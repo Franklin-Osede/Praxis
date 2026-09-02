@@ -84,6 +84,18 @@ func (t TailStatus) String() string {
 	}
 }
 
+// TailBatch is the header of a batch that was whole on disk but failed its
+// checksum. Repair reports it, because discarding it is not the same as
+// discarding an unfinished write: these bytes were fully written and the
+// command that produced them may have been reported as confirmed.
+type TailBatch struct {
+	Number        uint64
+	Length        uint64
+	FirstSequence uint64
+	LastSequence  uint64
+	EventCount    uint64
+}
+
 // Journal is what a reader recovered, and what it refused.
 type Journal struct {
 	ContainerVersion string
@@ -94,6 +106,13 @@ type Journal struct {
 	// repairs: it reports what it disregarded and leaves the bytes alone.
 	Tail           TailStatus
 	DiscardedBytes int64
+
+	// ConfirmedBytes is the offset just past the last confirmed batch, which
+	// is where a repair would truncate.
+	ConfirmedBytes int64
+
+	// TailBatch is set when Tail is TailCorrupt.
+	TailBatch *TailBatch
 }
 
 // Events flattens the recovered batches in order.
@@ -165,13 +184,15 @@ func ReadJournal(r io.Reader) (*Journal, error) {
 	}
 
 	j := &Journal{ContainerVersion: container, PayloadVersion: payloadVersion}
+	j.ConfirmedBytes = int64(len(raw) - len(rest))
+
 	var (
 		expectedNumber   uint64 = 1
 		expectedSequence uint64 = 1
 	)
 
 	for len(rest) > 0 {
-		batch, consumed, status, err := readBatch(rest, expectedNumber, expectedSequence)
+		batch, consumed, status, header, err := readBatch(rest, expectedNumber, expectedSequence)
 		if err != nil {
 			return nil, err
 		}
@@ -183,66 +204,71 @@ func ReadJournal(r io.Reader) (*Journal, error) {
 				return nil, fmt.Errorf("%w: batch %d", ErrCorruptMidFile, expectedNumber)
 			}
 			j.Tail, j.DiscardedBytes = status, int64(len(rest))
+			if status == TailCorrupt {
+				j.TailBatch = header
+			}
 			return j, nil
 		}
 		j.Batches = append(j.Batches, batch)
 		expectedNumber++
 		expectedSequence = batch.LastSequence + 1
 		rest = rest[consumed:]
+		j.ConfirmedBytes += int64(consumed)
 	}
 	return j, nil
 }
 
 // readBatch reads one frame. It reports a tail status rather than an error for
 // the two endings that are recoverable, and an error for the ones that are not.
-func readBatch(raw []byte, wantNumber, wantSequence uint64) (Batch, int, TailStatus, error) {
+func readBatch(raw []byte, wantNumber, wantSequence uint64) (Batch, int, TailStatus, *TailBatch, error) {
 	line, rest, ok := splitLine(raw)
 	if !ok {
-		return Batch{}, 0, TailIncomplete, nil
+		return Batch{}, 0, TailIncomplete, nil, nil
 	}
 	number, length, first, last, count, sum, err := parseBatchHeader(line)
 	if err != nil {
-		return Batch{}, 0, TailComplete, err
+		return Batch{}, 0, TailComplete, nil, err
 	}
 	if length > MaxPayloadBytes {
-		return Batch{}, 0, TailComplete, fmt.Errorf("%w: batch %d claims %d bytes", ErrTooLarge, number, length)
+		return Batch{}, 0, TailComplete, nil, fmt.Errorf("%w: batch %d claims %d bytes", ErrTooLarge, number, length)
 	}
 	if uint64(len(rest)) < length {
-		return Batch{}, 0, TailIncomplete, nil
+		return Batch{}, 0, TailIncomplete, nil, nil
 	}
 	payload := rest[:length]
 
 	metadata := formatMetadata(number, length, first, last, count)
 	if crc32.Checksum(append([]byte(metadata+"\n"), payload...), castagnoli) != sum {
-		return Batch{}, len(line) + 1 + int(length), TailCorrupt, nil
+		return Batch{}, len(line) + 1 + int(length), TailCorrupt,
+			&TailBatch{Number: number, Length: length, FirstSequence: first, LastSequence: last, EventCount: count}, nil
 	}
 
 	if number != wantNumber {
-		return Batch{}, 0, TailComplete, fmt.Errorf("%w: batch numbered %d, want %d", ErrDiscontinuous, number, wantNumber)
+		return Batch{}, 0, TailComplete, nil, fmt.Errorf("%w: batch numbered %d, want %d", ErrDiscontinuous, number, wantNumber)
 	}
 	if first != wantSequence {
-		return Batch{}, 0, TailComplete, fmt.Errorf("%w: batch %d starts at %d, want %d", ErrDiscontinuous, number, first, wantSequence)
+		return Batch{}, 0, TailComplete, nil, fmt.Errorf("%w: batch %d starts at %d, want %d", ErrDiscontinuous, number, first, wantSequence)
 	}
 
 	events, err := DecodeEvents(payload)
 	if err != nil {
-		return Batch{}, 0, TailComplete, err
+		return Batch{}, 0, TailComplete, nil, err
 	}
 	if len(events) == 0 {
-		return Batch{}, 0, TailComplete, fmt.Errorf("%w: batch %d", ErrEmptyBatch, number)
+		return Batch{}, 0, TailComplete, nil, fmt.Errorf("%w: batch %d", ErrEmptyBatch, number)
 	}
 	// A matching checksum over disagreeing numbers means the file was written
 	// wrong rather than damaged, which is the worse problem of the two.
 	if uint64(len(events)) != count {
-		return Batch{}, 0, TailComplete, fmt.Errorf("%w: batch %d claims %d events, carries %d", ErrMetadataMismatch, number, count, len(events))
+		return Batch{}, 0, TailComplete, nil, fmt.Errorf("%w: batch %d claims %d events, carries %d", ErrMetadataMismatch, number, count, len(events))
 	}
 	if events[0].Header().Sequence != first || events[len(events)-1].Header().Sequence != last {
-		return Batch{}, 0, TailComplete, fmt.Errorf("%w: batch %d claims sequences %d..%d, carries %d..%d",
+		return Batch{}, 0, TailComplete, nil, fmt.Errorf("%w: batch %d claims sequences %d..%d, carries %d..%d",
 			ErrMetadataMismatch, number, first, last, events[0].Header().Sequence, events[len(events)-1].Header().Sequence)
 	}
 
 	return Batch{Number: number, FirstSequence: first, LastSequence: last, Events: events},
-		len(line) + 1 + int(length), TailComplete, nil
+		len(line) + 1 + int(length), TailComplete, nil, nil
 }
 
 func parseVersionLine(line string) (container, payload string, err error) {

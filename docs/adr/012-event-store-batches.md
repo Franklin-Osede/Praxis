@@ -158,10 +158,39 @@ disregarded. It does not write. A truncated tail is the expected shape of a
 process killed mid-append and must not be silently erased by everything that
 opens the file.
 
-**Repair is an explicit operation.** Truncating a damaged tail happens only
-when asked for, and only after a backup, or with an exact report of the bytes
-discarded. A tool that repairs by default destroys the evidence of the defect
-that caused the damage.
+**Repair is an explicit operation**, and a conservative one.
+
+`inspect` takes a shared lock and never modifies anything. `repair` takes an
+exclusive lock even as a dry run, so what it reports describes a journal nobody
+is writing to. Both refuse a journal a writer holds: reading confirmed batches
+alongside an appending writer is perfectly safe, since they are append-only and
+never change, but the tail is exactly what is moving, and a report about it
+would describe a photograph of something mid-flight.
+
+**Discarding an unfinished tail and discarding a fully written batch are not
+the same act.** An incomplete tail was never confirmed — the command that
+produced it returned an error and its session stopped — so ordinary consent is
+enough. A batch that is whole on disk but fails its checksum may have been
+reported as confirmed and the session may have carried on, so discarding it can
+lose a command the system considered done. It requires its own explicit
+consent, and the report names the batch, its sequence range and the bytes at
+risk.
+
+**Evidence is preserved, not copied.** What is worth keeping is the discarded
+bytes, not a duplicate of a journal that is intact up to its last confirmed
+batch. They are written beside it as `<journal>.tail-<offset>-<crc>`, created
+exclusively: identical evidence from an earlier attempt is reused, differing
+evidence stops the repair, and nothing already there is ever replaced.
+
+The order is: create the sidecar, write it, sync it, sync the directory,
+truncate the journal, sync the journal, then read the result back and validate
+it whole before declaring success. A crash before the truncation leaves the
+bytes in two places, which repeating the repair resolves; a crash after a
+truncation that had not preserved them would leave them nowhere.
+
+**A repair never skips a batch inside the journal.** Only a final tail is
+repairable. Damage with confirmed data behind it is refused, because continuity
+could no longer be shown.
 
 ## Durability is not integrity
 

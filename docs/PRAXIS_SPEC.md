@@ -53,7 +53,10 @@ advisory lock with an explicit durability policy, and recovers the session
 state its confirmed batches describe. A session commits one batch per command
 through a narrow port and stops for good if a commit fails.
 
-There is no repair command, no CLI and no UI.
+`cmd/praxis` is the command: `praxis store inspect` and `praxis store repair`,
+with exit codes meant to be automated against.
+
+There is no replay loop and no UI.
 
 ## 3. Settled decisions
 
@@ -639,29 +642,27 @@ them, `Verify` proves the log does not hold two contradictory truths.
 
 Next, in order:
 
-1. **An explicit inspect-and-repair command**, which reports what a damaged
-   tail contains and truncates it only when asked, after a backup or with an
-   exact account of the bytes discarded.
-2. **A minimal replay CLI** driven by a market file and a scripted action file.
-   This is where the lifecycle loop belongs — open the store, recover, resume,
-   feed, close — and it waits until here because only here does it have a real
-   job.
-3. **A power sensitivity table** across plausible effect sizes, conditioning
+1. **A minimal replay CLI**, `praxis replay <market-file> --journal <journal>`,
+   joining the existing command rather than becoming a second binary. This is
+   where the lifecycle loop belongs — open the store, recover, resume, feed,
+   close — and it waited until here because only here does it have a real job.
+   With it, Praxis has a full operational path for the first time: a market
+   file, a deterministic session, durable batches, a crash, recovery, and a
+   verifiable replay.
+2. **A power sensitivity table** across plausible effect sizes, conditioning
    rates, trades per session and dispersions, establishing under which
    assumptions the experiment is feasible at all. It comes before the UI
    because it needs assumptions rather than data, and its answer can change
    what the UI must record.
-4. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
+3. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.
-5. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
+4. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
    used only to estimate the inputs the sensitivity table left open.
-6. **Freeze the experiment**: the primary hypothesis, the minimum relevant
+5. **Freeze the experiment**: the primary hypothesis, the minimum relevant
    effect, the analysis method, the power target, the sample size, the
    exclusion rules and the stopping rule.
-7. **Only the challenge rules the frozen protocol requires.** Contract limits,
-   minimum trading days, the consistency rule and a session window are built if
-   the experiment needs them, not because the list exists.
+6. **Only the challenge rules the frozen protocol requires.**
 
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not
