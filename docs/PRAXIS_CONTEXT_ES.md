@@ -35,13 +35,20 @@ después de validarlo con uso personal.
 
 ## Estado real del repositorio
 
-Al instalar estos documentos, el repositorio solo contenía `README.md`. La
-descripción anterior de `domain/` y de 24 tests verdes era un objetivo o
-baseline procedente de otro contexto, no un resultado verificado aquí.
+Las fases 0, 1 y 3 están hechas. La 2 aplica cuatro de sus once reglas y difiere
+el resto a propósito. `cmd/praxis` reproduce un fichero de mercado dentro de una
+sesión, escribe un journal duradero, sobrevive a una caída, se repara con un
+comando explícito y reanuda produciendo los mismos bytes.
 
-Por ello la siguiente porción vertical es la mínima de la Fase 0: definir los
-tipos necesarios para ejecutar conservadoramente una orden de mercado sobre una
-cotización, escribir primero sus invariantes y añadir casos incrementalmente.
+Lo que todavía **no** puede hacer, y es lo que importa: **enviar una orden**.
+`SubmitOrder` no tiene ningún llamador fuera de los tests, así que hoy se puede
+producir el journal de un mercado y de su evaluación, pero no el journal de una
+decisión — que es el único que necesita el experimento. Tampoco hay órdenes en
+reposo, ni niveles de protección registrados, ni interfaz.
+
+La lista ordenada de lo que falta vive en la sección 10 de
+`docs/PRAXIS_SPEC.md`, que es la fuente normativa; este documento no la duplica
+para no quedarse atrás de ella.
 
 ## Reglas de dominio relevantes
 
@@ -68,7 +75,12 @@ normalizan determinísticamente datos desordenados.
 2. Posición y cuenta con coste exacto, cierres, flips, P&L y comisiones.
 3. Challenge como máquina de estados, con drawdown y fronteras de sesión.
 4. Log conductual append-only y CLI mínima de replay.
-5. Experimento personal de 50–100 sesiones con hipótesis pre-registradas.
+5. Experimento personal con hipótesis pre-registradas y un tamaño de muestra
+   derivado de un cálculo de potencia, no elegido a ojo. La cifra de 50–100
+   sesiones que figuraba aquí fue retirada:
+   `docs/experiment/power-sensitivity.md` muestra que para un efecto medido en
+   R no es una muestra, y que la hipótesis primaria será probablemente una
+   frecuencia.
 6. Solo con evidencia favorable: generador calibrado, entrenamiento adaptativo
    y live paper.
 

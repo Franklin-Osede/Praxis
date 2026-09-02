@@ -40,19 +40,29 @@ one ordered stream:
 
 ```go
 type SessionOpened struct {
-    Time               market.LogicalTime
-    Sequence           uint64
-    SessionID          SessionID
-    ReferenceEquityCts market.Cents
+    Time       market.LogicalTime
+    Sequence   uint64
+    SessionID  SessionID
+    BalanceCts market.Cents
+    EquityCts  market.Cents
 }
 
 type AccountSnapshot struct {
-    Time      market.LogicalTime
-    Sequence  uint64
-    SessionID SessionID
-    EquityCts market.Cents
+    Time       market.LogicalTime
+    Sequence   uint64
+    SessionID  SessionID
+    BalanceCts market.Cents
+    EquityCts  market.Cents
 }
 ```
+
+Both inputs carry the whole valuation, because the rules disagree about which
+figure they mean: loss rules read equity so an open loss can end an evaluation
+immediately, and the profit target reads balance so an open gain that is given
+back cannot buy an irreversible approval. See "Losses read equity, gains read
+balance" in the specification. This sketch originally carried a single
+`ReferenceEquityCts`; that was superseded and the ADR is corrected here rather
+than left to be discovered from the code.
 
 This keeps the dependency one-way. Portfolio produces values; challenge applies
 rules to them and decides consequences.

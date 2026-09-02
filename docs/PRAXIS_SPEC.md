@@ -58,6 +58,20 @@ a market file, and `praxis store inspect` and `praxis store repair` examine and
 mend the history one leaves behind. Exit codes are meant to be automated
 against.
 
+**What that path does not yet include.** `praxis replay` feeds observations and
+nothing else: no order can be submitted except from Go code, `SubmitOrder` has
+no caller outside tests, and the byte-identical resume proof runs over a
+fixture containing no orders at all. A human can therefore produce a journal of
+a market and its evaluation, and cannot yet produce a journal of a decision —
+which is the only kind Phase 4 needs.
+
+Two further gaps follow from that. An order that does not fill against the
+current observation is dropped rather than rested, so the unfilled remainder
+`ExecuteOnQuote` documents as "the caller's to carry" is not carried by its only
+caller. And `WorstCaseIntrabar` and `Bar` are complete and tested but reachable
+from nothing outside `internal/execution`, because no adapter supplies a bar —
+correct under ADR-010, and not a capability.
+
 There is no UI.
 
 ## 3. Settled decisions
