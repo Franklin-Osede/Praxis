@@ -18,6 +18,13 @@ would validate nothing.
 
 ## Candidate 1 — Widening a stop after a losing run *(provisional primary)*
 
+**Why this question matters.** A stop is the one number a trader fixes while
+calm and has to honour while not. Moving it away is the plainest possible
+instance of failing to execute one's own plan — it needs no theory about
+markets, no interpretation of intent, and it happens at the moment the plan is
+being abandoned rather than afterwards. If Praxis measures one thing, this is
+the strongest candidate for it.
+
 > Is the proportion of trades whose stop is widened higher among trades opened
 > after two consecutive losing closes?
 
@@ -51,6 +58,10 @@ behavioural context at that moment.
 
 ## Candidate 2 — Removing protection while losing
 
+**Why this question matters.** It is the same failure as candidate 1 in its
+most complete form: not moving the line but erasing it. Rarer, and therefore
+more expensive to measure, but it is the behaviour that ends accounts.
+
 > Is the proportion of trades higher in which a stop is cancelled without
 > replacement while the position is showing an unrealised loss?
 
@@ -77,6 +88,10 @@ replacing.
 
 ## Candidate 3 — Increasing size after a loss
 
+**Why this question matters.** Recovering a loss by risking more is the
+mechanism by which a bad afternoon becomes a blown account. It is central, and
+it is the one candidate whose data the journal very nearly holds already.
+
 > Is the next entry more likely to be larger than the previous one after a
 > losing trade than after a non-losing one?
 
@@ -87,40 +102,53 @@ replacing.
 | **Numerator** | transitions where the later entry's quantity exceeds the earlier one's |
 | **Groups** | the preceding trade's outcome: losing or not |
 
-**`power-sensitivity.md` §3 marked this answerable. That was too generous**, and
-this document corrects it. A *trade* is not modelled. It can be inferred where
-a position opens and closes cleanly, but partial closes, additions and flips
-make the inference ambiguous — and the ambiguity is not rare, it is exactly
-what a trader under pressure does. It is not answerable until a trade's
-identity and its ending are defined.
+**This was called unanswerable and it is not**, once the unit is right. See
+[`trade-identity.md`](trade-identity.md): "after a losing trade" has no meaning
+if a trade is an entry, because weighted average cost gives an entry no P&L of
+its own. Read as "the first entry after an **episode** that closed at a loss",
+every term is already in the journal — episode boundaries are `PositionChanged`
+with kind `opened` and `closed`, and an episode's realised P&L is the sum over
+its closing legs.
 
-**Needs recorded:** a trade identity, which entry belongs to it, its initial
-quantity and its terminal outcome.
+**Needs recorded:** nothing new.
 
 ---
+
+## The denominator, before anything else
+
+A rate is only as real as what it divides by, and a denominator is a
+*reconstructible state*, not an event. If it cannot be rebuilt from the journal,
+the candidate is not viable however good the question sounds.
+
+| candidate | denominator | is it a state the journal can rebuild? |
+|---|---|---|
+| 1 | entries that placed a stop | Yes, once `ProtectionPlaced` exists. Counting them needs nothing else |
+| 2 | entries whose stop existed and whose episode was at some point losing | Yes: protection events for the first half, and `AccountValued`, which is already recorded after every observation, for the second |
+| 3 | transitions from a closed episode to the next entry | Yes today. `PositionChanged` already marks both ends |
+
+None of the three needs a state the journal cannot hold. Candidate 2's is the
+most demanding, because "at some point losing" is a property of the whole
+interval and has to be evaluated against every valuation inside it rather than
+at one instant.
 
 ## What each candidate needs that the journal does not hold
 
-| | trade identity | initial stop | stop changes | replace vs cancel | valuation at the change |
+| | entry identity | initial stop | stop changes | replace vs cancel | valuation at the change |
 |---|---|---|---|---|---|
-| 1 | required | required | required | not required | not required |
-| 2 | required | required | required | **required** | required |
-| 3 | required | — | — | — | — |
+| 1 | already there | required | required | not required | not required |
+| 2 | already there | required | required | **required** | already there |
+| 3 | already there | — | — | — | — |
 
-All three need a trade identity. Candidate 1 needs the least beyond it, which
-is one of the reasons it is provisionally first.
+**Three events suffice for all three candidates.** `ProtectionPlaced`,
+`ProtectionReplaced` and `ProtectionCancelled`, each referencing the entry's
+order id — plus `ProtectionTriggered` when a level fires, which is a fill and
+not a new kind of fact.
 
-### The correction this forces upstream
-
-`power-sensitivity.md` §3 counted four of six candidates answerable today. Three
-of those are — B (time to the next order after a losing close), C (order
-frequency once the day is down) and F (a rule breached on a day already down) —
-because each is measured at the level of a close leg or a session, neither of
-which needs a trade to be defined. The fourth, E (size after a loss versus after
-a win), is candidate 3 here and is **not** answerable until trade identity
-exists.
-
----
+No entry↔protection↔exit relation table is needed, because both units the
+candidates measure on are already delimited in the journal: an episode by
+`PositionChanged` kinds `opened` and `closed`, an entry by `Order.ID`. The only
+thing missing is the reference from a level to the entry that placed it, and
+that is one field. [`trade-identity.md`](trade-identity.md) is the argument.
 
 ## What candidate 1 costs
 
@@ -160,8 +188,14 @@ trades a session, a condition firing on three trades in ten, a rate moving from
 | both halves, each at 80% (joint ≈ 64%) | 257 |
 | both halves, joint 80% | 336 |
 
-Which of the last two the protocol means is still open, and has to be settled
-before freezing.
+**The protocol will mean joint 80%** — 2.63 times the single-sample figure. The
+rule exists to stop noise being reported as a finding, and the halves are
+advertised as the evidence. If passing it is only 64% likely when the effect is
+real, then a true effect is retired one time in three, which is precisely the
+"failed for lack of data, not for absence of effect" failure the sensitivity
+table was written to prevent. The number is larger and it is the honest one;
+whether it is reachable at all is what the pilots are for, and if it is not, the
+answer is a different hypothesis rather than a weaker rule.
 
 ---
 

@@ -704,8 +704,18 @@ Next, in order:
    were not. It is a comparison of two observed proportions, so its power uses
    that shape and not the cheaper one-sample form. All three candidates need a
    trade identity, which is not modelled.
-3. **Define a trade's identity and its ending.** Partial closes, additions and
-   flips are what make it hard, and they are the cases that matter.
+3. ~~Define a trade's identity and its ending.~~ Done:
+   [`docs/experiment/trade-identity.md`](experiment/trade-identity.md). A trade
+   is not one thing. An **episode** is flat-to-flat and is where money lives,
+   because it is the only span over which weighted average cost gives an
+   unambiguous P&L. An **entry** is one exposure-increasing decision and is
+   where behaviour lives; it has no P&L of its own, and asking for one is what
+   leads to FIFO lot tracking and a second accounting contradicting section 4.
+   Protective levels attach to a decision, not to inventory. Both units are
+   already delimited in the journal — episodes by `PositionChanged` kinds
+   `opened` and `closed`, entries by `Order.ID` — so the only thing missing is
+   the reference from a level to the entry that placed it. Three protection
+   events suffice; no relation table is needed.
 4. **Resting orders, and keeping a partially filled remainder.** This precedes
    protection rather than following it: a stop is an order that waits for later
    observations, and modelling protection on a kernel that cannot hold a

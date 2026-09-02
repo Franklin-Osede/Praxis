@@ -11,6 +11,15 @@ import (
 // The exit codes are the command's contract with anything that automates it,
 // so they are tested by running the built binary rather than by calling
 // functions that return them.
+//
+// This package therefore reports 0% coverage, and that is deliberate rather
+// than a gap. Instrumented coverage of a subprocess is obtainable — `go build
+// -cover`, GOCOVERDIR and `go tool covdata` since Go 1.20 — so the zero is a
+// choice and not a limitation. It stays because instrumenting the binary to
+// make a number move would buy nothing while the contract remains the exit
+// codes, and because two interface defects escaped every in-process test and
+// were caught only here: `repair journal --apply` silently running as a dry
+// run, and `--commission 50` losing its value to a path.
 func buildPraxis(t *testing.T) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "praxis")
