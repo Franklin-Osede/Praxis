@@ -83,9 +83,9 @@ Not frozen. The point of this table is the right-hand column.
 | E | Position size in contracts is larger after a loss than after a win | trade | order quantity, preceding realised P&L | Yes |
 | F | A rule is breached more often on days already down | session | challenge decisions, valuations | Yes |
 
-Three of the six are answerable from what `OrderSubmitted`, `PositionChanged`
-and `ChallengeDecision` already record. Two are not, and they are the two the
-original hypotheses in the specification were written around.
+Four of the six — B, C, E and F — are answerable from what `OrderSubmitted`,
+`PositionChanged` and `ChallengeDecision` already record. Two are not, and they
+are the two the original hypotheses in the specification were written around.
 
 **What is missing, precisely.** To express any outcome in R, or to say anything
 about stops, the log would need: a trade's identity across its entry and exit,
@@ -140,78 +140,128 @@ Dispersion dominates everything. Doubling it quadruples the sample.
 
 All 1,536 combinations of the scenarios above:
 
-| sample | scenarios it can answer |
+| sample | combinations reached |
 |---|---|
-| 25 sessions | 11 of 1,536 — 1% |
-| 50 sessions | 46 of 1,536 — 3% |
-| 100 sessions | 139 of 1,536 — 9% |
-| 200 sessions | 304 of 1,536 — 20% |
-| 400 sessions | 548 of 1,536 — 36% |
+| 25 sessions | 11 of 1,536 |
+| 50 sessions | 46 of 1,536 |
+| 100 sessions | 139 of 1,536 |
+| 200 sessions | 304 of 1,536 |
+| 400 sessions | 548 of 1,536 |
+
+These are counts of enumerated cells, not probabilities. The grid is a way of
+seeing which assumptions dominate, not a forecast.
 
 The most favourable corner — a 0.5R effect, tight 0.75R dispersion, twelve
 trades a session, a condition firing on three trades in ten, no within-session
 correlation — needs 10 sessions. The least favourable needs 28,020.
 
-**A hundred sessions answers one plausible scenario in eleven.** The figure in
-the specification was chosen by feel, and for an effect measured in R it is not
-a sample.
+**A hundred sessions reaches the target in 139 of the 1,536 enumerated
+combinations.** That is not a probability of feasibility: the grid was chosen by
+hand, its scenarios carry no weights, and nothing here says which of them the
+real world resembles. What it does show is that the figure in the specification
+was chosen by feel, and that plausible assumptions exist in quantity under which
+it is not a sample for an effect measured in R.
 
 ---
 
-## 5. A frequency hypothesis costs a fraction of that
+## 5. A frequency question is cheaper, and there are three of them
 
-"How often does this happen?" is a much cheaper question than "how much does
-this change the result?", because a rate has no dispersion of its own to see
-through.
+"How often does this happen?" costs less than "how much does this change the
+result?" — but not for the reason it is tempting to give. A rate is not free of
+dispersion: a binary outcome has variance `p(1-p)`, and the formulas below use
+exactly that. The advantage is that the variance is **bounded and fixed by the
+rate itself**, between 0 and 0.25, instead of inheriting the wide continuous
+spread of a result measured in R, where a dispersion of 2R quadruples the
+sample against 1R.
 
-Observations of the conditioning event needed to distinguish one rate from
-another:
+The saving is real. The reason has to be stated correctly or the next person
+will apply it where it does not hold.
 
-| if the true rate is | and we want to detect | 80% power | 90% power |
-|---|---|---|---|
-| 15% | 25% | 114 | 158 |
-| 15% | 30% | 53 | 74 |
-| 15% | 40% | 20 | 29 |
-| 10% | 25% | 41 | 59 |
-| 20% | 35% | 63 | 87 |
-| 30% | 50% | 44 | 60 |
+### Three different questions, three different costs
 
-In sessions, at five trades a session and a correlation of 0.1:
+They are easy to conflate and they are not the same experiment.
 
-| hypothesis | condition occurs in | sessions |
+**(a) One proportion against a threshold fixed in advance.** "Stops are widened
+on more than 15% of the occasions where they could be." The 15% is stated
+before any data is collected and is not estimated from it.
+
+**(b) Two proportions, both observed.** "Stops are widened more often on days
+already down than on days that are not." Both rates come out of the experiment,
+both carry error, and the comparison costs roughly four to five times the
+first.
+
+**(c) A paired or within-session comparison.** The same day contributes to both
+sides, which removes the between-day variation and can cost less than (b) — but
+it needs a design that pairs the observations, and it is not what the formula
+below computes.
+
+| comparison | (a) one-sample, total | (b) two-sample, per group | (b) total | (b)/(a) |
+|---|---|---|---|---|
+| 15% vs 25% | 114 | 250 | 500 | 4.4x |
+| 15% vs 30% | 53 | 121 | 241 | 4.6x |
+| 15% vs 40% | 20 | 49 | 98 | 4.9x |
+| 20% vs 35% | 63 | 138 | 276 | 4.4x |
+| 30% vs 50% | 44 | 93 | 186 | 4.3x |
+
+In sessions, at five trades a session and a correlation of 0.1, for a rate
+moving from 15% to 30%:
+
+| condition occurs in | (a) one-sample | (b) two-sample |
 |---|---|---|
-| 15% → 30% | 10% of trades | 147 |
-| 15% → 30% | 20% of trades | 74 |
-| 15% → 30% | 30% of trades | 49 |
-| 15% → 40% | 20% of trades | 28 |
-| 15% → 40% | 30% of trades | 19 |
+| 10% of trades | 147 | 338 |
+| 20% of trades | 74 | 169 |
+| 30% of trades | 49 | 113 |
+| 50% of trades | 30 | 68 |
 
-Comparable questions, one to two orders of magnitude cheaper.
+The 49 quoted in earlier drafts of this document was question (a). Most
+behavioural hypotheses worth asking are shaped like (b) — they compare a
+condition against its absence — and cost between two and three times that.
+Quoting the cheap figure for the expensive question would answer something
+nobody asked.
 
----
-
-## 6. The split-half rule doubles whatever the answer is
+## 6. The split-half rule costs more than doubling
 
 The specification requires an effect to hold in both halves of the sample
-separately. If each half must stand on its own, each half needs full power, and
-the totals double:
+separately. Doubling the sample gives each half the same power the whole would
+have had — and that is **not** the same as the experiment having that power.
 
-| | one sample | both halves |
+If each half is at 80% and both must come out positive, the chance of passing
+the rule is roughly `0.80 x 0.80 = 0.64`, assuming the halves are independent.
+A one in three chance of missing an effect that is really there.
+
+For 80% **joint** power each half needs about 89.4%, and for 90% joint, 94.9%:
+
+| what the target means | each half | total sample |
 |---|---|---|
-| 0.3R effect, 5 trades, 10% rate, 1R dispersion | 489 | 978 |
-| frequency 15% → 30%, condition in 30% of trades | 49 | 98 |
+| each half at 80% (joint ≈ 64%) | 80.0% | 2.00x |
+| joint 80% | 89.4% | 2.63x |
+| joint 90% | 94.9% | 3.29x |
 
-This is not an argument against the rule. It is an argument for knowing its
-price before promising it.
+Worked, for the 0.3R example at five trades a session, a 10% rate and 1R
+dispersion:
 
----
+| | sessions |
+|---|---|
+| one sample, 80% | 489 |
+| both halves, each at 80% (joint ≈ 64%) | 977 |
+| both halves, joint 80% | 1,283 |
+
+This is not an argument against the rule. It is an argument for saying which
+of the two the protocol means, before it is frozen.
 
 ## 7. What this changes
 
-**The primary hypothesis should be a frequency, not an effect size.** It is the
-only shape of question a personal experiment of realistic length can answer,
-and section 5 shows it is answerable at 50 to 100 sessions rather than 500.
-Effect-size questions become exploratory: reported with their confidence
+**Centrality first, cost second.** A hypothesis is not chosen because it is
+affordable. It is chosen because it represents the thesis — that traders fail
+at executing their own strategy — and only then checked for whether it can be
+measured with reasonable power. An easy question that does not matter would
+validate nothing, and answering it confidently would be worse than answering
+nothing.
+
+**Given that, the primary hypothesis is more likely to be a frequency than an
+effect size.** Section 4 shows an effect in R is out of reach at any realistic
+sample. Section 5 shows a frequency is reachable, provided it is question (a)
+or a modest (b). Effect-size questions become exploratory: reported with their
 intervals and never claimed as findings.
 
 **Two of the six candidates cannot be answered at all today**, and both need the
@@ -219,11 +269,16 @@ same missing thing: a trade's planned risk and its protective levels. That is
 the scope the interface has to cover, and it is a much narrower answer than
 "record everything."
 
-**Recording a stop when it is placed and again when it is moved is worth more
-than anything else** on the list. It makes candidate D possible, it makes R
-computable, and it is a frequency question — the cheap kind.
+**But protection events alone may not be enough**, and this is the question to
+settle before building anything. A rate needs a denominator. "Stops are widened
+on 30% of occasions" requires knowing how many occasions there *were* — every
+moment a losing position had a stop that could have been moved and was not.
+That is not an event; it is a state that has to be reconstructible. Depending
+on which comparison section 5 settles on, the log may also need explicit
+relations between a trade's entry, its protection and its exit.
 
----
+Deciding the exact comparison decides whether the next slice is three events or
+something larger.
 
 ## 8. What the pilot sessions are for
 
@@ -250,7 +305,7 @@ answer, which is the failure this whole document exists to avoid.
 
 ```python
 import math
-Z = {0.80: 0.8416212336, 0.90: 1.2815515655}
+Z = {0.80: 0.8416212336, 0.894: 1.2504, 0.90: 1.2815515655, 0.949: 1.6322}
 ZA = 1.9599639845  # two-sided 5%
 
 def sessions(effect, dispersion, trades, rate, correlation, power):
@@ -259,7 +314,19 @@ def sessions(effect, dispersion, trades, rate, correlation, power):
     design = 1 + (trades - 1) * correlation
     return per_group * design / (trades * min(rate, 1 - rate))
 
-def observations_for_rate(p0, p1, power):
+# (a) one observed proportion against a threshold fixed in advance
+def one_proportion(p0, p1, power):
     return ((ZA*math.sqrt(p0*(1-p0)) + Z[power]*math.sqrt(p1*(1-p1)))**2
             / (p1 - p0)**2)
+
+# (b) two observed proportions, per group
+def two_proportions(p1, p2, power):
+    pbar = (p1 + p2) / 2
+    return ((ZA*math.sqrt(2*pbar*(1-pbar))
+             + Z[power]*math.sqrt(p1*(1-p1) + p2*(1-p2)))**2
+            / (p1 - p2)**2)
+
+# each half's power, for a joint target across both halves of the sample
+def half_power(joint):
+    return math.sqrt(joint)
 ```

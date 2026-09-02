@@ -674,29 +674,35 @@ Next, in order:
 
 1. ~~A power sensitivity table.~~ Done:
    [`docs/experiment/power-sensitivity.md`](experiment/power-sensitivity.md).
-   Its answer changes the plan. A hundred sessions can answer roughly one
-   plausible scenario in eleven for an effect measured in R, so the primary
-   hypothesis should be a **frequency** rather than an effect size — a question
-   one to two orders of magnitude cheaper, and answerable at the sample a
-   personal experiment can realistically reach. Effect-size questions become
-   exploratory, reported with intervals and never claimed as findings. The
-   split-half rule doubles whatever the figure is.
+   Its answer changes the plan. An effect measured in R is out of reach at any
+   realistic sample, so the primary hypothesis is more likely to be a frequency
+   — chosen because it represents the thesis, never because it is affordable —
+   with effect-size questions kept exploratory and reported with intervals. The
+   split-half rule costs more than doubling: two halves at 80% each give about
+   64% jointly, and 80% jointly needs 2.63 times the single-sample figure. Which
+   of the two the protocol means must be said before it is frozen.
 
-2. **A minimal local UI**, scoped by that document rather than by intuition.
-   Two of six candidate hypotheses cannot be answered at all today, and both
-   need the same missing thing: a trade's planned risk and its protective
-   levels. Recording a stop when it is placed and again when it is moved is
-   worth more than anything else on the list — it makes the behavioural
-   question possible, makes R computable, and is the cheap kind of question.
-   Beyond that: chart, replay controls, buy and sell, quantity, stop and
-   target, position, balance and equity, and the evaluation's status. Nothing
-   else until ten sessions have been traded.
-3. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
+2. **Decide the exact comparison the primary hypothesis makes**, because it
+   decides what has to be recorded. A rate needs a denominator: "stops are
+   widened on 30% of occasions" requires knowing how many occasions there were,
+   which is a reconstructible state rather than an event. Two of six candidates
+   cannot be answered at all today and both need the same missing thing — a
+   trade's planned risk and its protective levels — but whether three events
+   suffice, or the log also needs explicit relations between a trade's entry,
+   its protection and its exit, follows from the comparison rather than
+   preceding it.
+3. **Protective levels as domain facts**, scoped by that decision: placing,
+   moving and cancelling a stop or target, and the levels being executed rather
+   than merely noted.
+4. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
+   and target, position, balance and equity, and the evaluation's status.
+   Nothing else until ten sessions have been traded.
+5. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
    used only to estimate the inputs the sensitivity table left open.
-4. **Freeze the experiment**: the primary hypothesis, the minimum relevant
+6. **Freeze the experiment**: the primary hypothesis, the minimum relevant
    effect, the analysis method, the power target, the sample size, the
    exclusion rules and the stopping rule.
-5. **Only the challenge rules the frozen protocol requires.**
+7. **Only the challenge rules the frozen protocol requires.**
 
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not
