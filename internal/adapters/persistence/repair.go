@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
+
+	"praxis/internal/session"
 )
 
 // Condition is what a journal needs, if anything.
@@ -62,6 +64,12 @@ type Report struct {
 	// CorruptBatch is set when Condition is ConditionCorruptLastBatch.
 	CorruptBatch *TailBatch
 
+	// Proved and EventsProved are set by Prove. A report without them says
+	// only that the bytes are intact, which is a weaker claim than most
+	// readers will take "clean" to mean.
+	Proved       bool
+	EventsProved int
+
 	// Repaired and SidecarPath are set by an applied repair.
 	Repaired    bool
 	SidecarPath string
@@ -76,6 +84,11 @@ var (
 	ErrNotRepairable    = errors.New("persistence: damage is not repairable by truncation")
 	ErrCorruptBatchHeld = errors.New("persistence: discarding a fully written batch needs explicit consent")
 	ErrEvidenceDiffers  = errors.New("persistence: preserved evidence already exists and differs")
+
+	// ErrNotProvable reports a journal whose frames are intact and whose
+	// history is not. Checksums say the bytes are the bytes that were written;
+	// they say nothing about whether what was written could have happened.
+	ErrNotProvable = errors.New("persistence: the journal's frames are intact but its history cannot be proved")
 )
 
 // RepairOptions says how far a repair may go. Both default to refusing.
@@ -103,6 +116,54 @@ func Inspect(path string) (*Report, error) {
 	}
 	defer f.Close()
 	return describe(path, f)
+}
+
+// Prove reads a journal under a shared lock and rebuilds every derived fact in
+// it from the facts that caused it.
+//
+// Inspection checks frames: lengths, checksums, continuity. That is a much
+// weaker claim than it sounds, and one an operator will overread. A forged
+// realised amount, re-checksummed, passes inspection perfectly — the bytes are
+// exactly the bytes that were written. What catches it is replaying the journal
+// against the account and the evaluation that would have had to produce it,
+// which ADR-012 names as the actual defence against a fabricated history.
+//
+// This is that defence, offered as an operation rather than only as a side
+// effect of resuming a run.
+func Prove(path string) (*Report, error) {
+	f, err := openLocked(path, false)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	report, err := describe(path, f)
+	if err != nil {
+		return report, err
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return report, err
+	}
+	journal, err := ReadJournal(f)
+	if err != nil {
+		return report, err
+	}
+
+	events := journal.Events()
+	report.EventsProved = len(events)
+
+	// Verify catches a log that contradicts itself; Replay catches one that is
+	// perfectly self-consistent and still describes something no account could
+	// have done. Both, in that order, because the first names the cheaper
+	// fault more precisely.
+	if err := session.Verify(events); err != nil {
+		return report, fmt.Errorf("%w: %v", ErrNotProvable, err)
+	}
+	if _, err := session.Replay(events); err != nil {
+		return report, fmt.Errorf("%w: %v", ErrNotProvable, err)
+	}
+	report.Proved = true
+	return report, nil
 }
 
 // Repair truncates a journal back to its last confirmed batch, preserving the

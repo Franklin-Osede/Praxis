@@ -91,3 +91,43 @@ func truncateToFirstBatch(t *testing.T, path string) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
+
+// forgeJournalForCLI alters one recorded valuation and re-frames the journal so
+// every checksum matches. The bytes become exactly the bytes that were written,
+// and the history becomes something no account could have produced.
+func forgeJournalForCLI(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	journal, err := persistence.ReadJournal(f)
+	f.Close()
+	if err != nil {
+		t.Fatalf("ReadJournal: %v", err)
+	}
+
+	out := persistence.Header()
+	altered := false
+	for _, b := range journal.Batches {
+		events := make([]session.Event, len(b.Events))
+		copy(events, b.Events)
+		for n, e := range events {
+			if v, ok := e.(session.AccountValued); ok && !altered {
+				v.EquityCts -= 1
+				events[n], altered = v, true
+			}
+		}
+		framed, err := persistence.EncodeBatch(b.Number, events)
+		if err != nil {
+			t.Fatalf("EncodeBatch: %v", err)
+		}
+		out = append(out, framed...)
+	}
+	if !altered {
+		t.Fatal("the journal held no valuation to alter")
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}

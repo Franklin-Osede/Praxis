@@ -54,8 +54,9 @@ state its confirmed batches describe. A session commits one batch per command
 through a narrow port and stops for good if a commit fails.
 
 `cmd/praxis` is the command: `praxis replay` runs or resumes a simulation over
-a market file, and `praxis store inspect` and `praxis store repair` examine and
-mend the history one leaves behind. Exit codes are meant to be automated
+a market file; `praxis store inspect` checks a journal's frames, `praxis store
+verify` proves its history against the aggregates that produced it, and
+`praxis store repair` mends an unconfirmed or damaged tail. Exit codes are meant to be automated
 against.
 
 **What that path does not yet include.** `praxis replay` feeds observations and
@@ -410,6 +411,19 @@ configuration would otherwise resume against anything at all.
 
 Running the same file twice appends nothing. A damaged tail is not repaired in
 passing: the command says to run `praxis store repair`.
+
+### Intact is not the same as true, and the commands say which
+
+Inspection checks frames: lengths, checksums, continuity. A forged fact,
+re-checksummed, passes it perfectly — the bytes really are the bytes that were
+written. Checksums answer "were these damaged" and cannot answer "could this
+have happened".
+
+`praxis store verify` answers the second, by replaying the journal against the
+account and evaluation that would have had to produce it. It exists as its own
+command, with its own exit code, because an operator reading "clean" will
+believe the stronger claim, and until it existed the defence ADR-012 names was
+reachable only as a side effect of resuming a run.
 
 ### A journal is not believed, it is proved
 

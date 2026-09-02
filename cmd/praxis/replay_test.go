@@ -309,3 +309,59 @@ func TestAJournalWithOnlyItsConfigurationChecksTheInstrument(t *testing.T) {
 		t.Fatalf("the refusal does not name both instruments:\n%s", out)
 	}
 }
+
+// Scenario: inspection and proof make different claims, and the exit codes say
+// which one you asked for
+//
+// A journal whose bytes were altered and re-checksummed is intact by every
+// measure inspection has. Only replaying it against the account and evaluation
+// that would have had to produce it says otherwise.
+func TestVerifyCatchesWhatInspectCannot(t *testing.T) {
+	binary := buildPraxis(t)
+	dir := t.TempDir()
+	market := writeMarket(t, dir, "market.csv", marketFile)
+	journal := filepath.Join(dir, "journal.praxis")
+
+	if _, code := runPraxis(t, binary, replayArgs(market, journal)...); code != exitClean {
+		t.Fatal("the run failed")
+	}
+
+	out, code := runPraxis(t, binary, "store", "verify", journal)
+	if code != exitClean {
+		t.Fatalf("an honest journal did not verify: exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "proved:") {
+		t.Fatalf("verify does not report what it proved:\n%s", out)
+	}
+
+	forgeJournalForCLI(t, journal)
+
+	if _, code := runPraxis(t, binary, "store", "inspect", journal); code != exitClean {
+		t.Fatalf("inspection saw a forgery it cannot see: exit %d", code)
+	}
+
+	out, code = runPraxis(t, binary, "store", "verify", journal)
+	if code != exitNotProvable {
+		t.Fatalf("verify: exit %d, want %d\n%s", code, exitNotProvable, out)
+	}
+	if !strings.Contains(out, "what does not hold is the history") {
+		t.Fatalf("the refusal does not say what is wrong:\n%s", out)
+	}
+}
+
+func TestVerifyOnABusyOrMissingJournal(t *testing.T) {
+	binary := buildPraxis(t)
+	dir := t.TempDir()
+	journal := filepath.Join(dir, "journal.praxis")
+
+	if _, code := runPraxis(t, binary, "store", "verify", filepath.Join(dir, "absent")); code != exitNoInput {
+		t.Fatalf("a missing journal: exit %d, want %d", code, exitNoInput)
+	}
+
+	writeJournalForCLI(t, journal)
+	held := holdJournal(t, journal)
+	defer held()
+	if _, code := runPraxis(t, binary, "store", "verify", journal); code != exitBusy {
+		t.Fatalf("a busy journal: exit %d, want %d", code, exitBusy)
+	}
+}

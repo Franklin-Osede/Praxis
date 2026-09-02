@@ -10,6 +10,28 @@ import (
 	"praxis/internal/session"
 )
 
+// writeSessionWithOrder builds a journal that contains a decision, not only
+// observations. Most fixtures here observe and never submit, which mirrors the
+// gap in the system itself: everything durable was built around the flow that
+// measures nothing.
+func writeSessionWithOrder(t *testing.T, path string) {
+	t.Helper()
+	s, w := openSessionOnDisk(t, path)
+	order, err := market.NewMarketOrder("o-1", mnqInstrument(), market.SideBuy, 2)
+	if err != nil {
+		t.Fatalf("NewMarketOrder: %v", err)
+	}
+	if err := s.SubmitOrder(order); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+	if err := s.EndTradingSession(9_000); err != nil {
+		t.Fatalf("EndTradingSession: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // writeSession builds a journal on disk with two confirmed commands.
 func writeSession(t *testing.T, path string) {
 	t.Helper()
@@ -355,5 +377,134 @@ func TestInspectionSharesWhereRepairExcludes(t *testing.T) {
 	}
 	if _, err := Repair(path, RepairOptions{}); !errors.Is(err, ErrLocked) {
 		t.Fatalf("repair ran while a reader held the journal: %v", err)
+	}
+}
+
+// forge rewrites a journal with one fact altered, re-framed so that every
+// checksum matches. The result is byte-perfect at the frame level and false at
+// the domain level, which is precisely the case inspection cannot see.
+func forge(t *testing.T, path string, alter func(session.Event) (session.Event, bool)) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	journal, err := ReadJournal(f)
+	f.Close()
+	if err != nil {
+		t.Fatalf("ReadJournal: %v", err)
+	}
+
+	out := Header()
+	altered := false
+	for _, b := range journal.Batches {
+		events := make([]session.Event, len(b.Events))
+		copy(events, b.Events)
+		for n, e := range events {
+			if got, ok := alter(e); ok && !altered {
+				events[n], altered = got, true
+			}
+		}
+		framed, err := EncodeBatch(b.Number, events)
+		if err != nil {
+			t.Fatalf("EncodeBatch: %v", err)
+		}
+		out = append(out, framed...)
+	}
+	if !altered {
+		t.Fatal("nothing was altered")
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+// Scenario: a forged journal passes inspection and fails proof
+//
+//	Given a journal in which one recorded valuation was altered and every
+//	  checksum recomputed
+//	When it is inspected, it is clean — the bytes are exactly the bytes that
+//	  were written
+//	And when it is proved, it is refused, because no account could have
+//	  produced that valuation.
+//
+// Checksums answer "were these bytes damaged". They cannot answer "could this
+// have happened", and an operator reading "clean" will believe the second.
+func TestAForgedJournalInspectsCleanAndFailsProof(t *testing.T) {
+	path := tempJournal(t)
+	writeSession(t, path)
+
+	if report, err := Prove(path); err != nil || !report.Proved {
+		t.Fatalf("the honest journal does not prove: %v %+v", err, report)
+	}
+
+	forge(t, path, func(e session.Event) (session.Event, bool) {
+		v, ok := e.(session.AccountValued)
+		if !ok {
+			return nil, false
+		}
+		v.EquityCts -= 1
+		return v, true
+	})
+
+	report, err := Inspect(path)
+	if err != nil || report.Condition != ConditionClean {
+		t.Fatalf("inspection: got %v %v, want it to see nothing wrong", report.Condition, err)
+	}
+
+	report, err = Prove(path)
+	if !errors.Is(err, ErrNotProvable) {
+		t.Fatalf("proof: got %v, want %v", err, ErrNotProvable)
+	}
+	if report.Proved {
+		t.Fatal("a forged journal was reported as proved")
+	}
+}
+
+// The same, for a fact the log can be made self-consistent about: Verify
+// catches this one and Replay would too.
+func TestAForgedContextIsCaughtByProof(t *testing.T) {
+	path := tempJournal(t)
+	writeSessionWithOrder(t, path)
+
+	forge(t, path, func(e session.Event) (session.Event, bool) {
+		o, ok := e.(session.OrderSubmitted)
+		if !ok {
+			return nil, false
+		}
+		o.Context.ConsecutiveLosses++
+		return o, true
+	})
+
+	if report, err := Inspect(path); err != nil || report.Condition != ConditionClean {
+		t.Fatalf("inspection saw a problem it cannot see: %v %v", report.Condition, err)
+	}
+	if _, err := Prove(path); !errors.Is(err, ErrNotProvable) {
+		t.Fatalf("proof: got %v, want %v", err, ErrNotProvable)
+	}
+}
+
+// Proof takes a shared lock, like inspection, and refuses a journal a writer
+// holds.
+func TestProofSharesAndRefusesABusyJournal(t *testing.T) {
+	path := tempJournal(t)
+	writeSession(t, path)
+
+	reader, err := openLocked(path, false)
+	if err != nil {
+		t.Fatalf("shared lock: %v", err)
+	}
+	if _, err := Prove(path); err != nil {
+		t.Fatalf("a second reader was refused: %v", err)
+	}
+	reader.Close()
+
+	w, err := OpenWriter(path, DurableEveryBatch)
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	defer w.Close()
+	if _, err := Prove(path); !errors.Is(err, ErrLocked) {
+		t.Fatalf("proof ran while a writer held the journal: %v", err)
 	}
 }

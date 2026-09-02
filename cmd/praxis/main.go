@@ -4,6 +4,7 @@
 // will join it as a sibling subcommand rather than as a second binary.
 //
 //	praxis store inspect <journal>
+//	praxis store verify  <journal>
 //	praxis store repair  <journal> [--apply] [--discard-corrupt-batch]
 //
 // Exit codes are meant to be automated against:
@@ -13,6 +14,7 @@
 //	2  fatal: exists but is not a journal, or is damaged beyond truncation
 //	3  busy: another process holds the journal
 //	4  no such input
+//	5  frames intact, history not provable
 package main
 
 import (
@@ -26,11 +28,12 @@ import (
 )
 
 const (
-	exitClean      = 0
-	exitRepairable = 1
-	exitFatal      = 2
-	exitBusy       = 3
-	exitNoInput    = 4
+	exitClean       = 0
+	exitRepairable  = 1
+	exitFatal       = 2
+	exitBusy        = 3
+	exitNoInput     = 4
+	exitNotProvable = 5
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -60,6 +63,8 @@ func storeCommand(args []string, out, errOut *os.File) int {
 	switch args[0] {
 	case "inspect":
 		return inspect(args[1:], out, errOut)
+	case "verify":
+		return verify(args[1:], out, errOut)
 	case "repair":
 		return repair(args[1:], out, errOut)
 	default:
@@ -87,6 +92,41 @@ func inspect(args []string, out, errOut *os.File) int {
 		return exitClean
 	}
 	return exitRepairable
+}
+
+// verify is inspect plus the proof. They are separate commands because they
+// make different claims and an operator must be able to tell which one they
+// asked for: inspection says the bytes are intact, and only this says the
+// history in them could have happened.
+func verify(args []string, out, errOut *os.File) int {
+	fs := flag.NewFlagSet("praxis store verify", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	flags, operands := splitArgs(fs, args)
+	if err := fs.Parse(flags); err != nil || len(operands) != 1 {
+		fmt.Fprintln(errOut, "usage: praxis store verify <journal>")
+		return exitFatal
+	}
+
+	report, err := persistence.Prove(operands[0])
+	if errors.Is(err, persistence.ErrNotProvable) {
+		printReport(out, report)
+		fmt.Fprintf(errOut, "\npraxis: %v\n", err)
+		fmt.Fprintln(errOut, "the frames are intact: every batch's checksum matches its bytes.")
+		fmt.Fprintln(errOut, "what does not hold is the history — some fact in this journal could")
+		fmt.Fprintln(errOut, "not have been produced by the account and evaluation it describes.")
+		return exitNotProvable
+	}
+	if code, handled := classify(err, errOut); handled {
+		return code
+	}
+
+	printReport(out, report)
+	fmt.Fprintf(out, "proved:    %d events replayed against the aggregates that produced them\n", report.EventsProved)
+	if report.Condition != persistence.ConditionClean {
+		fmt.Fprintln(out, "\nthe confirmed part of this journal is provable; its tail is not confirmed.")
+		return exitRepairable
+	}
+	return exitClean
 }
 
 func repair(args []string, out, errOut *os.File) int {
@@ -211,5 +251,6 @@ func usage(out *os.File) {
 	fmt.Fprintln(out, "usage:")
 	fmt.Fprintln(out, "  praxis replay <market-file> --journal <journal> [configuration]")
 	fmt.Fprintln(out, "  praxis store inspect <journal>")
+	fmt.Fprintln(out, "  praxis store verify  <journal>")
 	fmt.Fprintln(out, "  praxis store repair  <journal> [--apply] [--discard-corrupt-batch]")
 }
