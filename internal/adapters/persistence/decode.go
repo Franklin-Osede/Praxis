@@ -81,6 +81,21 @@ func decodeEvent(line string) (session.Event, error) {
 			},
 		}
 
+	case typeOrderRested:
+		kind = session.KindOrderRested
+		order := market.Order{ID: r.id(), Instrument: r.instrument(), Side: r.side(), Type: r.orderType(), Qty: r.qty()}
+		order.LimitPrice, order.StopPrice = r.ticks(), r.ticks()
+		event = session.OrderRested{
+			Envelope: envelope(at, sequence, kind), Order: order, RestingQty: r.qty(),
+		}
+
+	case typeOrderCancelled:
+		kind = session.KindOrderCancelled
+		event = session.OrderCancelled{
+			Envelope: envelope(at, sequence, kind),
+			OrderID:  r.id(), RemainingQty: r.qty(), Reason: r.cancelReason(),
+		}
+
 	case typeFillProduced:
 		kind = session.KindFillProduced
 		event = session.FillProduced{
@@ -225,6 +240,17 @@ func (r *reader) side() market.Side {
 	}
 	r.fail(fmt.Errorf("%w: side %q", ErrSyntax, s))
 	return market.SideUnspecified
+}
+
+func (r *reader) cancelReason() session.CancelReason {
+	s := r.next()
+	for k, name := range cancelReasonNames {
+		if name == s {
+			return k
+		}
+	}
+	r.fail(fmt.Errorf("%w: cancellation reason %q", ErrSyntax, s))
+	return 0
 }
 
 func (r *reader) orderType() market.OrderType {

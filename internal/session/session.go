@@ -31,7 +31,16 @@ var (
 	// confirmed batches. It is never healed in place and its last command is
 	// never re-executed automatically.
 	ErrSessionNeedsRecovery = errors.New("session: requires recovery")
+
+	ErrDuplicateOrderID = errors.New("session: an order with this identifier is already working")
+	ErrNoSuchOrder      = errors.New("session: no working order with this identifier")
 )
+
+// workingOrder is an order waiting for a later observation.
+type workingOrder struct {
+	order     market.Order
+	remaining market.Qty
+}
 
 // BatchCommitter durably records the events one command produced.
 //
@@ -60,6 +69,12 @@ type Session struct {
 
 	lastQuote market.Quote
 	hasQuote  bool
+
+	// working holds the orders waiting for a later observation, in the order
+	// they were submitted. It is a slice and not a map because the order in
+	// which they are offered an observation decides which of them fills a
+	// scarce book first, and that must never depend on iteration order.
+	working []workingOrder
 
 	openSessionID       challenge.SessionID
 	sessionOpen         bool
@@ -120,7 +135,7 @@ func (s *Session) NeedsRecovery() error { return s.needsRecovery }
 // it is why a failed commit is terminal rather than something to retry.
 func (s *Session) command(run func() error) error {
 	if s.needsRecovery != nil {
-		return fmt.Errorf("%w: %v", ErrSessionNeedsRecovery, s.needsRecovery)
+		return fmt.Errorf("%w: %w", ErrSessionNeedsRecovery, s.needsRecovery)
 	}
 
 	start := s.journal.Len()
@@ -129,17 +144,19 @@ func (s *Session) command(run func() error) error {
 
 	if err != nil {
 		// A command that refused before recording anything leaves the session
-		// usable. One that failed after recording has already moved memory
-		// past the disk.
+		// usable. One that failed after recording has already put events in
+		// the journal that will never be committed, so the next command's
+		// batch would start from a position the store has never seen — which
+		// the writer would refuse, correctly and much later.
 		//
-		// NOT COVERED BY A TEST. No public command can currently fail after
-		// recording an event: every one of them either refuses before touching
-		// the journal or runs to completion. The guard is here because that is
-		// a property of today's commands rather than of the design. If a
-		// change ever opens that path, its test belongs in the same commit.
+		// Working orders made this reachable. An observation records itself
+		// before offering the quote to a waiting stop, and an order records
+		// itself before its fills are applied, so a refusal from the account
+		// now happens after the log has already spoken. It is covered by
+		// TestACommandThatFailsAfterRecordingStopsTheSession.
 		if len(produced) > 0 {
 			s.needsRecovery = err
-			return fmt.Errorf("%w: %v", ErrSessionNeedsRecovery, err)
+			return fmt.Errorf("%w: %w", ErrSessionNeedsRecovery, err)
 		}
 		return err
 	}
@@ -148,7 +165,7 @@ func (s *Session) command(run func() error) error {
 	}
 	if err := s.committer.Commit(produced); err != nil {
 		s.needsRecovery = err
-		return fmt.Errorf("%w: %v", ErrSessionNeedsRecovery, err)
+		return fmt.Errorf("%w: %w", ErrSessionNeedsRecovery, err)
 	}
 	return nil
 }
@@ -322,6 +339,105 @@ func (s *Session) Observe(q market.Quote, sourceSequence uint64) error {
 	return s.command(func() error { return s.observe(q, sourceSequence) })
 }
 
+// offerToWorkingOrders gives an observation to every waiting order, in the
+// order they were submitted.
+//
+// It runs before the account is revalued, so the valuation the evaluation sees
+// already contains anything a stop just did. Revaluing first would report an
+// equity that had not yet felt the fill the same observation caused.
+func (s *Session) offerToWorkingOrders(at market.LogicalTime) error {
+	// A fresh slice, not s.working[:0]: reusing the backing array would
+	// overwrite the entry being read while the loop is still walking it.
+	kept := make([]workingOrder, 0, len(s.working))
+	for _, w := range s.working {
+		attempt := w.order
+		attempt.Qty = w.remaining
+
+		fills, err := s.policy.ExecuteOnQuote(attempt, s.lastQuote)
+		if err != nil {
+			return err
+		}
+		if err := s.consume(fills); err != nil {
+			return err
+		}
+		filled, err := s.applyAndRecord(at, fills)
+		if err != nil {
+			return err
+		}
+		remaining, err := market.AddQty(w.remaining, -filled)
+		if err != nil {
+			return err
+		}
+		if remaining > 0 {
+			w.remaining = remaining
+			kept = append(kept, w)
+		}
+	}
+	s.working = kept
+	return nil
+}
+
+// consume takes what filled out of the observation's displayed size.
+//
+// One observation shows a finite book. Several waiting orders and a newly
+// submitted one all draw from the same displayed size, and once it is gone
+// nothing more fills until the next observation. Letting each of them take the
+// full size would hand the same contracts to everybody, which is the largest
+// possible way for a simulator to invent liquidity.
+func (s *Session) consume(fills []market.Fill) error {
+	for _, f := range fills {
+		var err error
+		if f.Side == market.SideBuy {
+			s.lastQuote.AskSize, err = market.AddQty(s.lastQuote.AskSize, -f.Qty)
+		} else {
+			s.lastQuote.BidSize, err = market.AddQty(s.lastQuote.BidSize, -f.Qty)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyAndRecord applies fills to the account and records what they did,
+// returning the quantity filled. Nothing is recorded until every fill has been
+// accepted, so a refusal leaves no trace.
+func (s *Session) applyAndRecord(at market.LogicalTime, fills []market.Fill) (market.Qty, error) {
+	applied := make([][]portfolio.PositionEvent, 0, len(fills))
+	var filled market.Qty
+	for _, f := range fills {
+		changes, err := s.account.ApplyFill(f)
+		if err != nil {
+			return 0, err
+		}
+		applied = append(applied, changes)
+		total, err := market.AddQty(filled, f.Qty)
+		if err != nil {
+			return 0, err
+		}
+		filled = total
+	}
+
+	for n, f := range fills {
+		if err := s.record(at, KindFillProduced, func(e Envelope) Event {
+			return FillProduced{Envelope: e, Fill: f}
+		}); err != nil {
+			return 0, err
+		}
+		for _, change := range applied[n] {
+			if err := s.record(at, KindPositionChanged, func(e Envelope) Event {
+				return PositionChanged{Envelope: e, Change: change}
+			}); err != nil {
+				return 0, err
+			}
+			if err := s.countClose(change); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return filled, nil
+}
+
 func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 	if q.Instrument != s.cfg.Instrument {
 		return ErrWrongInstrument
@@ -338,6 +454,12 @@ func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 		return err
 	}
 	s.lastQuote, s.hasQuote, s.observedThisSession = q, true, true
+
+	if s.sessionOpen && !s.ended() {
+		if err := s.offerToWorkingOrders(q.Time); err != nil {
+			return err
+		}
+	}
 	return s.revalue(q.Time)
 }
 
@@ -365,6 +487,9 @@ func (s *Session) submitOrder(o market.Order) error {
 	if !s.observedThisSession {
 		return ErrNoMarketObserved
 	}
+	if s.isWorking(o.ID) {
+		return fmt.Errorf("%w: %s", ErrDuplicateOrderID, o.ID)
+	}
 	at := s.lastQuote.Time
 	if err := s.journal.ValidateNext(at, s.sequence+1); err != nil {
 		return err
@@ -386,20 +511,23 @@ func (s *Session) submitOrder(o market.Order) error {
 
 	// Everything the command will do is computed and applied before any of it
 	// is recorded, so a refusal leaves no order in the log, no counter moved
-	// and no money changed. Execution against one quote yields at most one
-	// fill today; when a single order can produce several, this needs a real
-	// transaction boundary rather than the ordering of these lines.
+	// and no money changed.
 	fills, err := s.policy.ExecuteOnQuote(o, s.lastQuote)
 	if err != nil {
 		return err
 	}
-	applied := make([][]portfolio.PositionEvent, 0, len(fills))
+	if err := s.consume(fills); err != nil {
+		return err
+	}
+	var filled market.Qty
 	for _, f := range fills {
-		changes, err := s.account.ApplyFill(f)
-		if err != nil {
+		if filled, err = market.AddQty(filled, f.Qty); err != nil {
 			return err
 		}
-		applied = append(applied, changes)
+	}
+	remaining, err := market.AddQty(o.Qty, -filled)
+	if err != nil {
+		return err
 	}
 
 	if err := s.record(at, KindOrderSubmitted, func(e Envelope) Event {
@@ -410,22 +538,31 @@ func (s *Session) submitOrder(o market.Order) error {
 	if s.ordersThisSession, err = addOrders(s.ordersThisSession, 1); err != nil {
 		return err
 	}
+	if _, err := s.applyAndRecord(at, fills); err != nil {
+		return err
+	}
 
-	for n, f := range fills {
-		if err := s.record(at, KindFillProduced, func(e Envelope) Event {
-			return FillProduced{Envelope: e, Fill: f}
-		}); err != nil {
-			return err
-		}
-		for _, change := range applied[n] {
-			if err := s.record(at, KindPositionChanged, func(e Envelope) Event {
-				return PositionChanged{Envelope: e, Change: change}
+	// What the book could not fill is a fact either way, and the log says
+	// which. A limit or a stop waits for a later observation; a market order's
+	// remainder is cancelled, because resting it would mean inventing a price
+	// the trader never named.
+	if remaining > 0 {
+		if o.Type == market.OrderTypeMarket {
+			if err := s.record(at, KindOrderCancelled, func(e Envelope) Event {
+				return OrderCancelled{
+					Envelope: e, OrderID: o.ID, RemainingQty: remaining,
+					Reason: CancelledUnfillableRemainder,
+				}
 			}); err != nil {
 				return err
 			}
-			if err := s.countClose(change); err != nil {
+		} else {
+			if err := s.record(at, KindOrderRested, func(e Envelope) Event {
+				return OrderRested{Envelope: e, Order: o, RestingQty: remaining}
+			}); err != nil {
 				return err
 			}
+			s.working = append(s.working, workingOrder{order: o, remaining: remaining})
 		}
 	}
 	return s.revalue(at)
@@ -450,6 +587,65 @@ func (s *Session) countClose(change portfolio.PositionEvent) error {
 		s.consecutiveLosses = 0
 	}
 	return nil
+}
+
+// WorkingOrders returns the orders waiting for a later observation, in the
+// order they were submitted.
+func (s *Session) WorkingOrders() []market.Order {
+	out := make([]market.Order, 0, len(s.working))
+	for _, w := range s.working {
+		resting := w.order
+		resting.Qty = w.remaining
+		out = append(out, resting)
+	}
+	return out
+}
+
+func (s *Session) isWorking(id string) bool {
+	for _, w := range s.working {
+		if w.order.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// CancelOrder withdraws a working order.
+func (s *Session) CancelOrder(id string) error {
+	return s.command(func() error { return s.cancelOrder(id) })
+}
+
+func (s *Session) cancelOrder(id string) error {
+	if !s.sessionOpen {
+		return ErrNoSessionOpen
+	}
+	if s.ended() {
+		return ErrChallengeEnded
+	}
+	at := s.lastQuote.Time
+	if !s.hasQuote {
+		return ErrNoMarketObserved
+	}
+	if err := s.journal.ValidateNext(at, s.sequence+1); err != nil {
+		return err
+	}
+
+	for n, w := range s.working {
+		if w.order.ID != id {
+			continue
+		}
+		if err := s.record(at, KindOrderCancelled, func(e Envelope) Event {
+			return OrderCancelled{
+				Envelope: e, OrderID: id, RemainingQty: w.remaining,
+				Reason: CancelledByTrader,
+			}
+		}); err != nil {
+			return err
+		}
+		s.working = append(s.working[:n], s.working[n+1:]...)
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrNoSuchOrder, id)
 }
 
 // EndTradingSession closes the open trading session.

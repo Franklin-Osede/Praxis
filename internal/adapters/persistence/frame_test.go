@@ -41,7 +41,7 @@ func TestAFramedJournalReadsBack(t *testing.T) {
 	if j.Batches[0].Number != 1 || j.Batches[1].Number != 2 {
 		t.Fatalf("numbers: got %d and %d", j.Batches[0].Number, j.Batches[1].Number)
 	}
-	if j.Batches[0].FirstSequence != 1 || j.Batches[1].LastSequence != 9 {
+	if j.Batches[0].FirstSequence != 1 || int(j.Batches[1].LastSequence) != len(events) {
 		t.Fatalf("sequences: got %+v", j.Batches)
 	}
 	if !reflect.DeepEqual(j.Events(), events) {

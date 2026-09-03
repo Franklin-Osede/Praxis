@@ -77,7 +77,7 @@ func TestTheGoldenBytesAreTheFormat(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSuffix(string(payload), "\n"), "\n")
-	if len(lines) != 9 {
+	if len(lines) != 11 {
 		t.Fatalf("lines: got %d, want one per event type", len(lines))
 	}
 	if strings.Contains(string(payload), "\r") {

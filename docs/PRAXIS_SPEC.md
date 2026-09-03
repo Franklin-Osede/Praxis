@@ -752,23 +752,21 @@ Next, in order:
    `opened` and `closed`, entries by `Order.ID` — so the only thing missing is
    the reference from a level to the entry that placed it. Three protection
    events suffice; no relation table is needed.
-4. **Design the protection events and the one new counter together**, because
-   they are the last change `praxis.event.v1` gets. Its golden bytes have
-   already moved once, for the source sequence; a version whose meaning shifts
-   a third time is not a version. `ProtectionPlaced`, `ProtectionReplaced`,
-   `ProtectionCancelled` — each referencing the entry's order id — plus
-   `ConsecutiveLosingTrades` on `order_submitted`. After this, `v1` is fixed and
-   anything further is `v2`.
-5. **Resting orders, and keeping a partially filled remainder.** This precedes
-   protection rather than following it: a stop is an order that waits for later
-   observations, and modelling protection on a kernel that cannot hold a
-   waiting order would record decisions the engine does not honour. The
-   remainder `ExecuteOnQuote` documents as "the caller's to carry", and that its
-   only caller drops, is the same defect and is fixed here.
-6. **The life of a protective level**: place, replace, cancel, trigger. Cancel
+4. ~~Resting orders, and keeping a partially filled remainder.~~ Done. An
+   order that the observation it was submitted on could not fill now waits for
+   a later one, and what the book could not fill is named rather than dropped:
+   a limit or a stop rests, a market order's remainder is cancelled and
+   recorded, because resting a market order would invent a price the trader
+   never named. One observation shows a finite book and everything executing
+   against it consumes what it takes, so the same contracts are never handed to
+   two orders. Waiting orders are offered an observation in the order they were
+   submitted, and they are offered it before the account is revalued, so the
+   valuation an observation records already contains what that observation
+   caused.
+5. **The life of a protective level**: place, replace, cancel, trigger. Cancel
    and replace must be distinguishable, or a log will show intervals without
-   protection that the trader never intended. Carried into the journal, the
-   codec and `Replay` in the same slice.
+   protection that the trader never intended. Plus `ConsecutiveLosingTrades`
+   from ADR-013. These close the `praxis.event.v1` epoch.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.

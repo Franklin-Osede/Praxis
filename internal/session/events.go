@@ -22,6 +22,8 @@ const (
 	KindSessionOpened
 	KindMarketObserved
 	KindOrderSubmitted
+	KindOrderRested
+	KindOrderCancelled
 	KindFillProduced
 	KindPositionChanged
 	KindAccountValued
@@ -39,6 +41,10 @@ func (k Kind) String() string {
 		return "market observed"
 	case KindOrderSubmitted:
 		return "order submitted"
+	case KindOrderRested:
+		return "order rested"
+	case KindOrderCancelled:
+		return "order cancelled"
 	case KindFillProduced:
 		return "fill produced"
 	case KindPositionChanged:
@@ -153,6 +159,56 @@ type OrderSubmitted struct {
 	Envelope
 	Order   market.Order
 	Context OrderContext
+}
+
+// CancelReason says why an order stopped working. It is a fact about what the
+// system did, not a judgement about why the trader did anything.
+type CancelReason uint8
+
+const (
+	// CancelledByTrader: the trader asked for it.
+	CancelledByTrader CancelReason = iota + 1
+
+	// CancelledUnfillableRemainder: the part of a market order the book could
+	// not fill. A market order does not rest, because resting one would mean
+	// inventing a price the trader never named.
+	CancelledUnfillableRemainder
+)
+
+func (r CancelReason) String() string {
+	switch r {
+	case CancelledByTrader:
+		return "by trader"
+	case CancelledUnfillableRemainder:
+		return "unfillable remainder"
+	default:
+		return "unspecified"
+	}
+}
+
+// OrderRested records that an order, or what is left of one, is now waiting
+// for a later observation.
+//
+// A stop is only a stop because it survives until the market reaches it. Until
+// this event existed, an order that did not fill against the observation it was
+// submitted on was dropped, and the log said nothing about it — so "how often
+// does the trader re-enter after a partial fill" would have measured an
+// artefact of the simulator rather than the trader.
+type OrderRested struct {
+	Envelope
+	Order market.Order
+
+	// RestingQty is what remains working, which is the whole order when
+	// nothing filled and the remainder when something did.
+	RestingQty market.Qty
+}
+
+// OrderCancelled records that an order stopped working, and why.
+type OrderCancelled struct {
+	Envelope
+	OrderID      string
+	RemainingQty market.Qty
+	Reason       CancelReason
 }
 
 // FillProduced is an execution fact.

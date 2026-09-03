@@ -67,22 +67,34 @@ func everyEventType() []session.Event {
 				SessionRealisedCts: -1_500, PositionQtyBefore: -4,
 			},
 		},
+		session.OrderRested{
+			Envelope: session.Envelope{Time: 3_000, Sequence: 7, Kind: session.KindOrderRested},
+			Order: market.Order{
+				ID: "o-2", Instrument: mnq, Side: market.SideBuy,
+				Type: market.OrderTypeStop, Qty: 5, StopPrice: 20_060,
+			},
+			RestingQty: 4,
+		},
+		session.OrderCancelled{
+			Envelope: session.Envelope{Time: 3_000, Sequence: 8, Kind: session.KindOrderCancelled},
+			OrderID:  "o-3", RemainingQty: 6, Reason: session.CancelledUnfillableRemainder,
+		},
 		session.FillProduced{
-			Envelope: session.Envelope{Time: 3_000, Sequence: 7, Kind: session.KindFillProduced},
+			Envelope: session.Envelope{Time: 3_000, Sequence: 9, Kind: session.KindFillProduced},
 			Fill: market.Fill{
 				OrderID: "o-1", Instrument: mnq, Time: 3_000,
 				Side: market.SideSell, Price: 20_050, Qty: 3,
 			},
 		},
 		session.PositionChanged{
-			Envelope: session.Envelope{Time: 3_000, Sequence: 8, Kind: session.KindPositionChanged},
+			Envelope: session.Envelope{Time: 3_000, Sequence: 10, Kind: session.KindPositionChanged},
 			Change: portfolio.PositionEvent{
 				Kind: portfolio.PositionReduced, Instrument: mnq, Side: market.SideSell,
 				Qty: 3, Price: 20_050, RealisedCts: -750, FeeCts: 150,
 			},
 		},
 		session.SessionEnded{
-			Envelope:  session.Envelope{Time: 9_000, Sequence: 9, Kind: session.KindSessionEnded},
+			Envelope:  session.Envelope{Time: 9_000, Sequence: 11, Kind: session.KindSessionEnded},
 			SessionID: "2026-08-27",
 		},
 	}

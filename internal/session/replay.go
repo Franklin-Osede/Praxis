@@ -42,6 +42,10 @@ func kindOf(e Event) Kind {
 		return KindMarketObserved
 	case OrderSubmitted:
 		return KindOrderSubmitted
+	case OrderRested:
+		return KindOrderRested
+	case OrderCancelled:
+		return KindOrderCancelled
 	case FillProduced:
 		return KindFillProduced
 	case PositionChanged:
@@ -74,6 +78,11 @@ type ReplayedState struct {
 	OrdersThisSession  uint32
 	ConsecutiveLosses  uint32
 	SessionRealisedCts market.Cents
+
+	// Working is the set of orders waiting for a later observation, in the
+	// order they were submitted. A session that resumed without it would
+	// forget a stop the trader believed was protecting them.
+	Working []market.Order
 
 	LastSequence uint64
 	Events       []Event
@@ -153,6 +162,11 @@ func Replay(events []Event) (*ReplayedState, error) {
 			if err != nil {
 				return nil, err
 			}
+			// A fill from an order that never rested matches nothing here,
+			// which is correct: it was gone before it could wait.
+			if state.Working, err = reduceWorking(state.Working, v.Fill.OrderID, v.Fill.Qty); err != nil {
+				return nil, err
+			}
 
 		case PositionChanged:
 			if len(pendingChanges) == 0 {
@@ -230,6 +244,14 @@ func Replay(events []Event) (*ReplayedState, error) {
 		case MarketObserved:
 			state.LastQuote, state.HasQuote, state.ObservedThisSession = v.Quote, true, true
 
+		case OrderRested:
+			resting := v.Order
+			resting.Qty = v.RestingQty
+			state.Working = append(state.Working, resting)
+
+		case OrderCancelled:
+			state.Working = removeWorking(state.Working, v.OrderID)
+
 		case OrderSubmitted:
 			if state.OrdersThisSession, err = addOrders(state.OrdersThisSession, 1); err != nil {
 				return nil, err
@@ -286,8 +308,18 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 		ordersThisSession:   state.OrdersThisSession,
 		consecutiveLosses:   state.ConsecutiveLosses,
 		sessionRealisedCts:  state.SessionRealisedCts,
+		working:             restoreWorking(state.Working),
 		committer:           committer,
 	}, nil
+}
+
+func restoreWorking(orders []market.Order) []workingOrder {
+	out := make([]workingOrder, 0, len(orders))
+	for _, o := range orders {
+		full := o
+		out = append(out, workingOrder{order: full, remaining: o.Qty})
+	}
+	return out
 }
 
 // Verify reports whether the derived context recorded on every decision agrees
@@ -364,6 +396,40 @@ func Verify(events []Event) error {
 		}
 	}
 	return nil
+}
+
+// reduceWorking takes a fill off the order that produced it, if that order is
+// waiting. A fill from an order that filled immediately matches nothing here,
+// which is correct: it never rested.
+func reduceWorking(working []market.Order, orderID string, qty market.Qty) ([]market.Order, error) {
+	for n, o := range working {
+		if o.ID != orderID {
+			continue
+		}
+		remaining, err := market.AddQty(o.Qty, -qty)
+		if err != nil {
+			return nil, err
+		}
+		if remaining < 0 {
+			return nil, fmt.Errorf("%w: order %s filled %d with %d working",
+				ErrFabricated, orderID, qty, o.Qty)
+		}
+		if remaining == 0 {
+			return append(working[:n], working[n+1:]...), nil
+		}
+		working[n].Qty = remaining
+		return working, nil
+	}
+	return working, nil
+}
+
+func removeWorking(working []market.Order, orderID string) []market.Order {
+	for n, o := range working {
+		if o.ID == orderID {
+			return append(working[:n], working[n+1:]...)
+		}
+	}
+	return working
 }
 
 func addOrders(n, by uint32) (uint32, error) {

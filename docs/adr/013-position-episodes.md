@@ -114,7 +114,12 @@ one new counter, and those change the payload format.
 protection events are new lines. Both change `praxis.event.v1`, whose golden
 bytes have already been changed once, for the source sequence.
 
-**They land together, in one change, and that is the last one.** A version whose
-meaning shifts a third time is not a version. After the protection events and
-this counter, `praxis.event.v1` is fixed, and anything further is `v2` with the
-compatibility table the store already carries.
+This was first written as "they land together and that is the last one", which
+was too narrow: resting orders needed their own events and landed before them.
+
+The honest rule is an **epoch**, not a single change. `praxis.event.v1` is still
+gaining event kinds while the kernel is unfinished — resting and cancellation,
+then protection, then this counter — and it closes when the last of them lands.
+After that, anything further is `v2` with the compatibility table the store
+already carries. Stating the epoch is what keeps "the last change" from being
+said a fourth time.

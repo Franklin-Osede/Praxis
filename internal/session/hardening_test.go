@@ -97,13 +97,20 @@ func snapshot(t *testing.T, s *session.Session) sessionSnapshot {
 	}
 }
 
-// Scenario: an order the account refuses leaves no trace at all
+// Scenario: a command that fails after recording stops the session
 //
-//	Given a fill whose arithmetic cannot be represented
+//	Given a fill whose arithmetic the account cannot represent
 //	When the order is submitted
-//	Then no order, no fill and no position change is recorded, no counter
-//	  moves, the account is untouched, and the log still replays.
-func TestAnOrderTheAccountRefusesLeavesNoTrace(t *testing.T) {
+//	Then the account is untouched, and the session is finished rather than
+//	  usable — because events are already in its journal that will never be
+//	  committed, and continuing would build the next batch on a position the
+//	  store has never seen.
+//
+// This branch was unreachable and marked as such until working orders arrived.
+// An observation now records itself before offering the quote to a waiting
+// stop, and an order records itself before its fills are applied, so a refusal
+// from the account happens after the log has spoken.
+func TestACommandThatFailsAfterRecordingStopsTheSession(t *testing.T) {
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
 	huge := market.Quote{
@@ -113,27 +120,30 @@ func TestAnOrderTheAccountRefusesLeavesNoTrace(t *testing.T) {
 	}
 	mustObserve(t, s, huge)
 
-	before := snapshot(t, s)
+	positionsBefore := s.Account().Positions()
+	realisedBefore, feesBefore := s.Account().RealisedCts(), s.Account().FeesCts()
 
 	err := s.SubmitOrder(order("o-1", market.SideBuy, math.MaxInt64))
+	if !errors.Is(err, session.ErrSessionNeedsRecovery) {
+		t.Fatalf("error: got %v, want %v", err, session.ErrSessionNeedsRecovery)
+	}
 	if !errors.Is(err, market.ErrOverflow) {
-		t.Fatalf("error: got %v, want %v", err, market.ErrOverflow)
+		t.Fatalf("the cause is not reported: %v", err)
+	}
+	if s.NeedsRecovery() == nil {
+		t.Fatal("the session does not report that it needs recovery")
 	}
 
-	if got := snapshot(t, s); !reflect.DeepEqual(got, before) {
-		t.Fatalf("a refused order changed the session\n got: %+v\nwas: %+v", got, before)
+	// The money is untouched: ApplyFill is atomic and refused before changing
+	// anything.
+	if !reflect.DeepEqual(s.Account().Positions(), positionsBefore) ||
+		s.Account().RealisedCts() != realisedBefore || s.Account().FeesCts() != feesBefore {
+		t.Fatal("a refused fill changed the account")
 	}
-	for _, e := range s.Events() {
-		switch e.(type) {
-		case session.OrderSubmitted, session.FillProduced, session.PositionChanged:
-			t.Fatalf("a refused order was recorded as %v", e.Header().Kind)
-		}
-	}
-	if err := session.Verify(s.Events()); err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	if _, err := session.Replay(s.Events()); err != nil {
-		t.Fatalf("Replay: %v", err)
+
+	// And the session is finished, whatever the store would now accept.
+	if err := s.Observe(quote(4_000, 20_000, 20_001), 1); !errors.Is(err, session.ErrSessionNeedsRecovery) {
+		t.Fatalf("a stopped session accepted a command: %v", err)
 	}
 }
 

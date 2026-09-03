@@ -4,6 +4,8 @@ challenge_decision 2000 3 2 activated 2026-08-27 5000000 5000000 0 0 none 0 0
 account_valued 2000 4 2026-08-27 5000000 4999900
 market_observed 3000 5 MNQ 50 3000 4 20000 20001 10 12
 order_submitted 3000 6 o-1 MNQ 50 sell limit 3 20050 0 5000000 4999900 2 1 -1500 -4
-fill_produced 3000 7 o-1 MNQ 50 3000 sell 20050 3
-position_changed 3000 8 reduced MNQ 50 sell 3 20050 -750 150
-session_ended 9000 9 2026-08-27
+order_rested 3000 7 o-2 MNQ 50 buy stop 5 0 20060 4
+order_cancelled 3000 8 o-3 6 unfillable_remainder
+fill_produced 3000 9 o-1 MNQ 50 3000 sell 20050 3
+position_changed 3000 10 reduced MNQ 50 sell 3 20050 -750 150
+session_ended 9000 11 2026-08-27

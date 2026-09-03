@@ -19,6 +19,8 @@ const (
 	typeSessionOpened     = "session_opened"
 	typeMarketObserved    = "market_observed"
 	typeOrderSubmitted    = "order_submitted"
+	typeOrderRested       = "order_rested"
+	typeOrderCancelled    = "order_cancelled"
 	typeFillProduced      = "fill_produced"
 	typePositionChanged   = "position_changed"
 	typeAccountValued     = "account_valued"
@@ -33,6 +35,10 @@ var (
 	positionKindNames = map[portfolio.PositionEventKind]string{
 		portfolio.PositionOpened: "opened", portfolio.PositionIncreased: "increased",
 		portfolio.PositionReduced: "reduced", portfolio.PositionClosed: "closed",
+	}
+	cancelReasonNames = map[session.CancelReason]string{
+		session.CancelledByTrader:            "by_trader",
+		session.CancelledUnfillableRemainder: "unfillable_remainder",
 	}
 	decisionKindNames = map[challenge.EventKind]string{
 		challenge.ChallengeActivated: "activated", challenge.SessionReferenceEstablished: "session_reference_established",
@@ -90,6 +96,23 @@ func encodeEvent(e session.Event) (string, error) {
 		f.int(int64(v.Context.BalanceCts)).int(int64(v.Context.EquityCts))
 		f.uint(uint64(v.Context.OrdersSubmittedThisSession)).uint(uint64(v.Context.ConsecutiveLosses))
 		f.int(int64(v.Context.SessionRealisedCts)).int(int64(v.Context.PositionQtyBefore))
+
+	case session.OrderRested:
+		if header.Kind != session.KindOrderRested {
+			return "", ErrKindMismatch
+		}
+		f.name(typeOrderRested).at(header)
+		f.id(v.Order.ID).instrument(v.Order.Instrument)
+		f.side(v.Order.Side).orderType(v.Order.Type).int(int64(v.Order.Qty))
+		f.int(int64(v.Order.LimitPrice)).int(int64(v.Order.StopPrice))
+		f.int(int64(v.RestingQty))
+
+	case session.OrderCancelled:
+		if header.Kind != session.KindOrderCancelled {
+			return "", ErrKindMismatch
+		}
+		f.name(typeOrderCancelled).at(header)
+		f.id(v.OrderID).int(int64(v.RemainingQty)).cancelReason(v.Reason)
 
 	case session.FillProduced:
 		if header.Kind != session.KindFillProduced {
@@ -186,6 +209,10 @@ func (f *fields) decisionKind(k challenge.EventKind) *fields {
 }
 func (f *fields) failure(r challenge.FailureReason) *fields {
 	return f.enum(failureNames[r], "failure reason")
+}
+
+func (f *fields) cancelReason(r session.CancelReason) *fields {
+	return f.enum(cancelReasonNames[r], "cancellation reason")
 }
 
 func (f *fields) enum(name, what string) *fields {
