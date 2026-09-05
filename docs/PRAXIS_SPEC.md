@@ -196,7 +196,10 @@ because it can be relabelled after the fact.
 `OrderContext.ConsecutiveLosses` counts closing legs and is not renamed —
 that would change what already-written journals say about their own past. A
 hypothesis about losing streaks needs `ConsecutiveLosingTrades`, a second
-counter advanced only when an episode ends. See
+counter advanced only when an episode ends. Both counters and the protection
+events inaugurate `praxis.event.v2`: v1 keeps the schema it has, because a
+version is stable when its bytes stop changing rather than when anyone promises
+the next change will be the last. See
 [`docs/adr/013-position-episodes.md`](adr/013-position-episodes.md).
 
 ## 4. Domain rules
@@ -424,6 +427,24 @@ account and evaluation that would have had to produce it. It exists as its own
 command, with its own exit code, because an operator reading "clean" will
 believe the stronger claim, and until it existed the defence ADR-012 names was
 reachable only as a side effect of resuming a run.
+
+### One projection, three readers
+
+A position episode is derived by a single projection used by the live session,
+by `Verify` and by `Replay`. A second implementation would eventually disagree
+with the first, and the disagreement would be between a journal and the thing
+that checks it.
+
+The distinction between the two readers survives it. In `Verify` the projection
+shows the log is consistent with itself; in `Replay` it runs on position
+changes already proved against what applying the fill produced, so what it
+derives rests on facts rather than on the log's word for them.
+
+A decision carries the streak that was true when it was taken. The order that
+flips a position therefore records the count from before the flip — the episode
+had not ended when the trader decided — and the next order sees the episode the
+flip closed. Attributing the later figure to the earlier decision would credit
+the trader with knowledge they did not have.
 
 ### A journal is not believed, it is proved
 
@@ -763,10 +784,14 @@ Next, in order:
    submitted, and they are offered it before the account is revalued, so the
    valuation an observation records already contains what that observation
    caused.
-5. **The life of a protective level**: place, replace, cancel, trigger. Cancel
-   and replace must be distinguishable, or a log will show intervals without
-   protection that the trader never intended. Plus `ConsecutiveLosingTrades`
-   from ADR-013. These close the `praxis.event.v1` epoch.
+5. **The life of a protective level.** Its schema exists: `praxis.event.v2`
+   defines `ProtectionPlaced`, keyed to the entry's order because at the moment
+   of the decision there is no episode to key it to, and `ProtectionReplaced`
+   and `ProtectionCancelled`, keyed to the episode. What remains is the session
+   commands that emit them, the binding derived at the opening fill, and the
+   levels being executed rather than merely noted.
+6. **The counter is already carried**: `ConsecutiveLosingTrades` is recorded,
+   verified and replayed.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.

@@ -81,7 +81,7 @@ func TestACommitFailingAtEveryByteOffset(t *testing.T) {
 		Envelope:  session.Envelope{Time: 9_000, Sequence: before, Kind: session.KindSessionEnded},
 		SessionID: "d1",
 	}
-	framed, err := EncodeBatch(probeWriter.NextBatchNumber()-1, []session.Event{ended})
+	framed, err := EncodeBatch(probeWriter.NextBatchNumber()-1, []session.Event{ended}, EventVersion)
 	if err != nil {
 		t.Fatalf("EncodeBatch: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"praxis/internal/market"
@@ -405,7 +406,7 @@ func forge(t *testing.T, path string, alter func(session.Event) (session.Event, 
 				events[n], altered = got, true
 			}
 		}
-		framed, err := EncodeBatch(b.Number, events)
+		framed, err := EncodeBatch(b.Number, events, EventVersion)
 		if err != nil {
 			t.Fatalf("EncodeBatch: %v", err)
 		}
@@ -506,5 +507,96 @@ func TestProofSharesAndRefusesABusyJournal(t *testing.T) {
 	defer w.Close()
 	if _, err := Prove(path); !errors.Is(err, ErrLocked) {
 		t.Fatalf("proof ran while a writer held the journal: %v", err)
+	}
+}
+
+// Scenario: a journal written in the older schema keeps working
+//
+//	Given a journal whose header says v1
+//	When it is read, proved and appended to
+//	Then all three succeed, and the appended batches are still v1 — a
+//	  journal is not rewritten into a newer schema by being written to.
+//
+// This is what the compatibility table was built for, exercised now rather than
+// once there is data in it worth losing.
+func TestAV1JournalIsStillReadableAndAppendable(t *testing.T) {
+	path := tempJournal(t)
+
+	// Written deliberately in the older schema.
+	events := []session.Event{SessionStartedFixture(1)}
+	framed, err := EncodeBatch(1, events, EventVersionV1)
+	if err != nil {
+		t.Fatalf("EncodeBatch: %v", err)
+	}
+	if err := os.WriteFile(path, append(HeaderFor(EventVersionV1), framed...), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	journal, err := func() (*Journal, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return ReadJournal(f)
+	}()
+	if err != nil {
+		t.Fatalf("ReadJournal: %v", err)
+	}
+	if journal.PayloadVersion != EventVersionV1 {
+		t.Fatalf("version: got %q, want v1", journal.PayloadVersion)
+	}
+
+	w, err := OpenWriter(path, DurableEveryBatch)
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	if w.PayloadVersion() != EventVersionV1 {
+		t.Fatalf("the writer would upgrade the journal to %q", w.PayloadVersion())
+	}
+	if _, err := w.Append([]session.Event{
+		session.SessionOpened{
+			Envelope:  session.Envelope{Time: 2_000, Sequence: 2, Kind: session.KindSessionOpened},
+			SessionID: "d1", BalanceCts: 5_000_000, EquityCts: 5_000_000,
+		},
+	}); err != nil {
+		t.Fatalf("Append to a v1 journal: %v", err)
+	}
+	w.Close()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.HasPrefix(string(raw), "PRAXIS-EVENT-STORE 1 "+EventVersionV1) {
+		t.Fatal("appending changed the journal's schema")
+	}
+}
+
+// A v1 journal cannot be given a fact its schema has no room for.
+func TestAV1JournalRefusesAV2Fact(t *testing.T) {
+	path := tempJournal(t)
+	framed, err := EncodeBatch(1, []session.Event{SessionStartedFixture(1)}, EventVersionV1)
+	if err != nil {
+		t.Fatalf("EncodeBatch: %v", err)
+	}
+	if err := os.WriteFile(path, append(HeaderFor(EventVersionV1), framed...), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	w, err := OpenWriter(path, DurableEveryBatch)
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	defer w.Close()
+
+	_, err = w.Append([]session.Event{
+		session.ProtectionPlaced{
+			Envelope:     session.Envelope{Time: 2_000, Sequence: 2, Kind: session.KindProtectionPlaced},
+			EntryOrderID: "o-1", StopPrice: 19_900,
+		},
+	})
+	if !errors.Is(err, ErrUnsupportedInVersion) {
+		t.Fatalf("error: got %v, want %v", err, ErrUnsupportedInVersion)
 	}
 }

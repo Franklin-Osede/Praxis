@@ -54,7 +54,7 @@ func TestTheFrameGolden(t *testing.T) {
 	raw := journalBytes(t, everyEventType()[:1])
 	lines := strings.SplitN(string(raw), "\n", 3)
 
-	if lines[0] != "PRAXIS-EVENT-STORE 1 praxis.event.v1" {
+	if lines[0] != "PRAXIS-EVENT-STORE 1 "+persistence.EventVersion {
 		t.Fatalf("version line: got %q", lines[0])
 	}
 
@@ -84,11 +84,11 @@ func TestTheFrameGolden(t *testing.T) {
 
 // Scenario: encoding a batch twice produces the same bytes
 func TestEncodingABatchTwiceIsIdentical(t *testing.T) {
-	first, err := persistence.EncodeBatch(7, everyEventType())
+	first, err := persistence.EncodeBatch(7, everyEventType(), persistence.EventVersion)
 	if err != nil {
 		t.Fatalf("EncodeBatch: %v", err)
 	}
-	again, err := persistence.EncodeBatch(7, everyEventType())
+	again, err := persistence.EncodeBatch(7, everyEventType(), persistence.EventVersion)
 	if err != nil {
 		t.Fatalf("EncodeBatch: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestADamagedBatchFollowedByDataIsFatal(t *testing.T) {
 // damaged
 func TestMetadataDisagreeingWithItsPayloadIsRefused(t *testing.T) {
 	events := everyEventType()
-	payload, err := persistence.EncodeEvents(events)
+	payload, err := persistence.EncodeEvents(events, persistence.EventVersion)
 	if err != nil {
 		t.Fatalf("EncodeEvents: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestVersionCombinationsAreExplicit(t *testing.T) {
 		line string
 		want error
 	}{
-		{"a known container with an unknown payload", "PRAXIS-EVENT-STORE 1 praxis.event.v2\n", persistence.ErrVersionPair},
+		{"a known container with an unknown payload", "PRAXIS-EVENT-STORE 1 praxis.event.v3\n", persistence.ErrVersionPair},
 		{"an unknown container with a known payload", "PRAXIS-EVENT-STORE 2 praxis.event.v1\n", persistence.ErrVersionPair},
 		{"another file entirely", "SOMETHING-ELSE 1 praxis.event.v1\n", persistence.ErrMagic},
 		{"a version line with a missing field", "PRAXIS-EVENT-STORE 1\n", persistence.ErrMagic},
@@ -288,7 +288,7 @@ func TestRefusesAMalformedHeaderOrAnOversizedBatch(t *testing.T) {
 // An empty batch cannot be written: a command that produced no events produced
 // no batch.
 func TestAnEmptyBatchCannotBeWritten(t *testing.T) {
-	if _, err := persistence.EncodeBatch(1, nil); !errors.Is(err, persistence.ErrEmptyBatch) {
+	if _, err := persistence.EncodeBatch(1, nil, persistence.EventVersion); !errors.Is(err, persistence.ErrEmptyBatch) {
 		t.Fatalf("error: got %v, want %v", err, persistence.ErrEmptyBatch)
 	}
 }

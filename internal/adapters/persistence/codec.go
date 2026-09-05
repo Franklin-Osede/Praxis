@@ -40,8 +40,24 @@ import (
 	"praxis/internal/session"
 )
 
-// EventVersion is the only event payload format this package reads or writes.
-const EventVersion = "praxis.event.v1"
+// The event payload formats this package understands.
+//
+// A version is stable when its bytes stop changing, not when anyone promises
+// the next change will be the last. v1 is what a writer and a command line have
+// already been able to produce, so it keeps the schema it had; the position
+// episode counter and the protection events inaugurate v2.
+const (
+	EventVersionV1 = "praxis.event.v1"
+	EventVersionV2 = "praxis.event.v2"
+
+	// EventVersion is what a new journal is written in.
+	EventVersion = EventVersionV2
+)
+
+// ErrUnsupportedInVersion reports an event, or a field, that the payload
+// version in use has no way to express. A v1 journal cannot carry protection:
+// it honestly lacks those facts rather than pretending to hold them.
+var ErrUnsupportedInVersion = errors.New("persistence: this payload version cannot express that event")
 
 // Limits checked before memory is reserved, so a corrupt length cannot ask for
 // an allocation the process cannot survive.
@@ -61,11 +77,11 @@ var (
 	ErrKindMismatch    = errors.New("persistence: event's kind contradicts its type")
 )
 
-// EncodeEvents renders events as one canonical payload.
-func EncodeEvents(events []session.Event) ([]byte, error) {
+// EncodeEvents renders events as one canonical payload in the given version.
+func EncodeEvents(events []session.Event, version string) ([]byte, error) {
 	var b strings.Builder
 	for n, e := range events {
-		line, err := encodeEvent(e)
+		line, err := encodeEvent(e, version)
 		if err != nil {
 			return nil, fmt.Errorf("event %d: %w", n, err)
 		}
@@ -81,8 +97,8 @@ func EncodeEvents(events []session.Event) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// DecodeEvents reads a canonical payload back into events.
-func DecodeEvents(payload []byte) ([]session.Event, error) {
+// DecodeEvents reads a canonical payload of the given version back into events.
+func DecodeEvents(payload []byte, version string) ([]session.Event, error) {
 	if len(payload) > MaxPayloadBytes {
 		return nil, fmt.Errorf("%w: payload is %d bytes", ErrTooLarge, len(payload))
 	}
@@ -99,7 +115,7 @@ func DecodeEvents(payload []byte) ([]session.Event, error) {
 		if len(line) > MaxLineBytes {
 			return nil, fmt.Errorf("%w: line %d is %d bytes", ErrTooLarge, n, len(line))
 		}
-		e, err := decodeEvent(line)
+		e, err := decodeEvent(line, version)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", n+1, err)
 		}

@@ -211,18 +211,29 @@ func TestVerifyRejectsALogItCannotAddUp(t *testing.T) {
 		return session.PositionChanged{
 			Envelope: session.Envelope{Time: 3_000, Sequence: seq, Kind: session.KindPositionChanged},
 			Change: portfolio.PositionEvent{
-				Kind: portfolio.PositionClosed, Instrument: mnq,
+				Kind: portfolio.PositionReduced, Instrument: mnq,
 				Side: market.SideSell, Qty: 1, Price: 20_000, RealisedCts: realisedCts,
 			},
 		}
 	}
 
+	opened := session.PositionChanged{
+		Envelope: session.Envelope{Time: 3_000, Sequence: 4, Kind: session.KindPositionChanged},
+		Change: portfolio.PositionEvent{
+			Kind: portfolio.PositionOpened, Instrument: mnq,
+			Side: market.SideBuy, Qty: 3, Price: 20_000,
+		},
+	}
+	// Reductions rather than closes, so the log describes a coherent episode
+	// and the only thing wrong with it is that its realised amounts cannot be
+	// added up.
 	events := []session.Event{
 		session.SessionStarted{Envelope: session.Envelope{Time: 1_000, Sequence: 1, Kind: session.KindSessionStarted}, Config: config()},
 		session.SessionOpened{Envelope: session.Envelope{Time: 2_000, Sequence: 2, Kind: session.KindSessionOpened}, SessionID: "d1"},
 		session.AccountValued{Envelope: session.Envelope{Time: 2_000, Sequence: 3, Kind: session.KindAccountValued}, SessionID: "d1"},
-		closing(4, math.MinInt64),
-		closing(5, -1),
+		opened,
+		closing(5, math.MinInt64),
+		closing(6, -1),
 	}
 
 	if err := session.Verify(events); !errors.Is(err, market.ErrOverflow) {

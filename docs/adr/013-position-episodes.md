@@ -111,15 +111,25 @@ one new counter, and those change the payload format.
 ## The format change this implies
 
 `ConsecutiveLosingTrades` is a new field on `order_submitted`, and the
-protection events are new lines. Both change `praxis.event.v1`, whose golden
-bytes have already been changed once, for the source sequence.
+protection events are new lines.
 
-This was first written as "they land together and that is the last one", which
-was too narrow: resting orders needed their own events and landed before them.
+An earlier draft said they would be the last change to `praxis.event.v1`. That
+was wrong twice over: resting orders needed their own events and landed first,
+and more importantly **a version is stable when its bytes stop changing, not
+when anyone promises the next change will be the last**. A writer and a command
+line can already produce v1 journals.
 
-The honest rule is an **epoch**, not a single change. `praxis.event.v1` is still
-gaining event kinds while the kernel is unfinished — resting and cancellation,
-then protection, then this counter — and it closes when the last of them lands.
-After that, anything further is `v2` with the compatibility table the store
-already carries. Stating the epoch is what keeps "the last change" from being
-said a fourth time.
+So v1 keeps the schema it has, and these facts inaugurate **`praxis.event.v2`**:
+
+- New journals are written in v2.
+- The compatibility table selects the codec, which is what it was built for.
+- A v1 journal still reads, still proves and can still be appended to — in v1.
+  Appending never rewrites a journal into a newer schema.
+- A v1 journal honestly lacks the new facts rather than appearing to hold them,
+  and writing one into it is refused rather than dropped.
+
+Whether a v1 journal may be migrated so that a session can use protection is a
+separate decision, and is not taken here.
+
+This also exercises the version machinery now, while no journal holds anything
+worth losing.

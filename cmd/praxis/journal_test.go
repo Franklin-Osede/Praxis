@@ -79,7 +79,7 @@ func truncateToFirstBatch(t *testing.T, path string) {
 		t.Fatalf("the journal has %d batches, want more than one", len(journal.Batches))
 	}
 
-	framed, err := persistence.EncodeBatch(1, journal.Batches[0].Events)
+	framed, err := persistence.EncodeBatch(1, journal.Batches[0].Events, journal.PayloadVersion)
 	if err != nil {
 		t.Fatalf("EncodeBatch: %v", err)
 	}
@@ -107,7 +107,7 @@ func forgeJournalForCLI(t *testing.T, path string) {
 		t.Fatalf("ReadJournal: %v", err)
 	}
 
-	out := persistence.Header()
+	out := persistence.HeaderFor(journal.PayloadVersion)
 	altered := false
 	for _, b := range journal.Batches {
 		events := make([]session.Event, len(b.Events))
@@ -118,7 +118,7 @@ func forgeJournalForCLI(t *testing.T, path string) {
 				events[n], altered = v, true
 			}
 		}
-		framed, err := persistence.EncodeBatch(b.Number, events)
+		framed, err := persistence.EncodeBatch(b.Number, events, journal.PayloadVersion)
 		if err != nil {
 			t.Fatalf("EncodeBatch: %v", err)
 		}

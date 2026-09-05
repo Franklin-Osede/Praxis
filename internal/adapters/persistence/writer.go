@@ -62,6 +62,11 @@ type Writer struct {
 	nextNumber   uint64
 	nextSequence uint64
 
+	// payloadVersion is the version this journal is written in: the one it
+	// already carries when it existed, and the current one when it did not. A
+	// journal is never rewritten into a newer schema by being appended to.
+	payloadVersion string
+
 	// recovered is the journal this writer read while opening. It is kept so
 	// that recovery and appending share one lock: reopening to read would
 	// leave a window in which another process could take it.
@@ -93,7 +98,8 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 	}
 
 	w := &Writer{file: file, path: path, policy: policy, nextNumber: 1, nextSequence: 1,
-		recovered: &Journal{ContainerVersion: ContainerVersion, PayloadVersion: EventVersion}}
+		payloadVersion: EventVersion,
+		recovered:      &Journal{ContainerVersion: ContainerVersion, PayloadVersion: EventVersion}}
 
 	info, err := file.Stat()
 	if err != nil {
@@ -134,6 +140,7 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 		return nil, fmt.Errorf("%w: %v tail of %d bytes", ErrUnconfirmedTail, journal.Tail, journal.DiscardedBytes)
 	}
 	w.recovered = journal
+	w.payloadVersion = journal.PayloadVersion
 	if n := len(journal.Batches); n > 0 {
 		w.nextNumber = journal.Batches[n-1].Number + 1
 		w.nextSequence = journal.Batches[n-1].LastSequence + 1
@@ -148,6 +155,9 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 // Recovered is the journal this writer found when it opened, read under the
 // same lock it still holds.
 func (w *Writer) Recovered() *Journal { return w.recovered }
+
+// PayloadVersion is the schema this journal is written in.
+func (w *Writer) PayloadVersion() string { return w.payloadVersion }
 
 func (w *Writer) NextBatchNumber() uint64 { return w.nextNumber }
 func (w *Writer) NextSequence() uint64    { return w.nextSequence }
@@ -175,7 +185,7 @@ func (w *Writer) Append(events []session.Event) (Batch, error) {
 		}
 	}
 
-	framed, err := EncodeBatch(w.nextNumber, events)
+	framed, err := EncodeBatch(w.nextNumber, events, w.payloadVersion)
 	if err != nil {
 		return Batch{}, err
 	}

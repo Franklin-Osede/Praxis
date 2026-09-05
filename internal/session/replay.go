@@ -17,6 +17,7 @@ var (
 	ErrContradictoryLog   = errors.New("session: a recorded context contradicts the events before it")
 	ErrUnexpectedSequence = errors.New("session: the log is not one contiguous ordering")
 	ErrCounterOverflow    = errors.New("session: a counter in the log cannot be represented")
+	ErrEpisode            = errors.New("session: position changes do not describe an episode")
 
 	// ErrFabricated reports a recorded fact the aggregates did not produce.
 	// A journal is not a source of truth because it is well formed; it is one
@@ -79,6 +80,15 @@ type ReplayedState struct {
 	ConsecutiveLosses  uint32
 	SessionRealisedCts market.Cents
 
+	// ConsecutiveLosingTrades is the streak of completed losing episodes, which
+	// a resumed session must continue rather than restart.
+	ConsecutiveLosingTrades uint32
+
+	// episodes carries the whole projection, not only its counter: an episode
+	// open when a run was interrupted must still be open when it resumes, or
+	// the close that ends it would arrive with nothing to end.
+	episodes episodeProjection
+
 	// Working is the set of orders waiting for a later observation, in the
 	// order they were submitted. A session that resumed without it would
 	// forget a stop the trader believed was protecting them.
@@ -123,6 +133,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 
 	state := &ReplayedState{Config: started.Config, Account: account, Challenge: eval}
 	var (
+		episodes         episodeProjection
 		lastTime         market.LogicalTime
 		pendingChanges   []portfolio.PositionEvent
 		pendingDecisions []challenge.Event
@@ -177,6 +188,14 @@ func Replay(events []Event) (*ReplayedState, error) {
 					ErrFabricated, n, v.Change, pendingChanges[0])
 			}
 			pendingChanges = pendingChanges[1:]
+			// The episode projection runs on changes already proved against
+			// what applying the fill produced, so what it derives rests on
+			// facts rather than on the log's word for them.
+			if err := episodes.apply(v.Sequence, v.Change); err != nil {
+				return nil, err
+			}
+			state.ConsecutiveLosingTrades = episodes.consecutiveLosingTradesNow()
+			state.episodes = episodes
 			if v.Change.Kind != portfolio.PositionReduced && v.Change.Kind != portfolio.PositionClosed {
 				continue
 			}
@@ -307,6 +326,7 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 		observedThisSession: state.ObservedThisSession,
 		ordersThisSession:   state.OrdersThisSession,
 		consecutiveLosses:   state.ConsecutiveLosses,
+		episodes:            state.episodes,
 		sessionRealisedCts:  state.SessionRealisedCts,
 		working:             restoreWorking(state.Working),
 		committer:           committer,
@@ -342,6 +362,11 @@ func Verify(events []Event) error {
 		equityCts   market.Cents
 		valued      bool
 		err         error
+
+		// The same projection the live session and Replay use. A second
+		// implementation would eventually disagree with the first, and the
+		// disagreement would be between a journal and the thing checking it.
+		episodes episodeProjection
 	)
 
 	for _, e := range events {
@@ -357,6 +382,9 @@ func Verify(events []Event) error {
 
 		case PositionChanged:
 			if netQty, err = market.AddQty(netQty, signedQty(v.Change.Side, v.Change.Qty)); err != nil {
+				return err
+			}
+			if err := episodes.apply(v.Sequence, v.Change); err != nil {
 				return err
 			}
 			if v.Change.Kind != portfolio.PositionReduced && v.Change.Kind != portfolio.PositionClosed {
@@ -385,6 +413,7 @@ func Verify(events []Event) error {
 				ConsecutiveLosses:          losses,
 				SessionRealisedCts:         realisedCts,
 				PositionQtyBefore:          netQty,
+				ConsecutiveLosingTrades:    episodes.consecutiveLosingTradesNow(),
 			}
 			if v.Context != want {
 				return fmt.Errorf("%w: order %s recorded %+v, the events before it say %+v",

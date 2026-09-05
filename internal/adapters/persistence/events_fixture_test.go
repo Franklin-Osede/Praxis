@@ -12,6 +12,34 @@ import (
 
 var mnq = market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 
+// everyEventTypeV2 is everyEventType plus everything only v2 can express: the
+// protection events, and a decision carrying a losing-trade streak.
+func everyEventTypeV2() []session.Event {
+	events := everyEventType()
+	for n, e := range events {
+		if o, ok := e.(session.OrderSubmitted); ok {
+			o.Context.ConsecutiveLosingTrades = 3
+			events[n] = o
+		}
+	}
+	return append(events,
+		session.ProtectionPlaced{
+			Envelope:     session.Envelope{Time: 9_000, Sequence: 12, Kind: session.KindProtectionPlaced},
+			EntryOrderID: "o-4", StopPrice: 19_900, TargetPrice: 20_400,
+		},
+		session.ProtectionReplaced{
+			Envelope:          session.Envelope{Time: 9_000, Sequence: 13, Kind: session.KindProtectionReplaced},
+			EpisodeID:         10,
+			PreviousStopPrice: 19_900, PreviousTargetPrice: 20_400,
+			StopPrice: 19_800, TargetPrice: 20_400, Widened: true,
+		},
+		session.ProtectionCancelled{
+			Envelope:  session.Envelope{Time: 9_000, Sequence: 14, Kind: session.KindProtectionCancelled},
+			EpisodeID: 10, StopPrice: 19_800, TargetPrice: 20_400,
+		},
+	)
+}
+
 // everyEventType is one instance of each of the nine events, with every field
 // set to a distinguishable value so a golden file pins each one's position.
 func everyEventType() []session.Event {
@@ -164,7 +192,7 @@ func journalBytes(t *testing.T, batches ...[]session.Event) []byte {
 	t.Helper()
 	out := persistence.Header()
 	for n, events := range batches {
-		framed, err := persistence.EncodeBatch(uint64(n+1), events)
+		framed, err := persistence.EncodeBatch(uint64(n+1), events, persistence.EventVersion)
 		if err != nil {
 			t.Fatalf("EncodeBatch: %v", err)
 		}

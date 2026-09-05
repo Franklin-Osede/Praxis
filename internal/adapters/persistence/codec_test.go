@@ -12,9 +12,11 @@ import (
 	"praxis/internal/session"
 )
 
-func golden(t *testing.T) []byte {
+func golden(t *testing.T) []byte { return goldenFor(t, "testdata/golden-events.txt") }
+
+func goldenFor(t *testing.T, path string) []byte {
 	t.Helper()
-	b, err := os.ReadFile("testdata/golden-events.txt")
+	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -23,18 +25,68 @@ func golden(t *testing.T) []byte {
 
 // Scenario: encoding and decoding preserve the events exactly
 func TestDecodeOfEncodeIsTheIdentity(t *testing.T) {
-	events := everyEventType()
+	for _, tc := range []struct {
+		version string
+		events  []session.Event
+	}{
+		{persistence.EventVersionV1, everyEventType()},
+		{persistence.EventVersionV2, everyEventTypeV2()},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			payload, err := persistence.EncodeEvents(tc.events, tc.version)
+			if err != nil {
+				t.Fatalf("EncodeEvents: %v", err)
+			}
+			got, err := persistence.DecodeEvents(payload, tc.version)
+			if err != nil {
+				t.Fatalf("DecodeEvents: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.events) {
+				t.Fatalf("round trip\n got: %+v\nwant: %+v", got, tc.events)
+			}
+		})
+	}
+}
 
-	payload, err := persistence.EncodeEvents(events)
-	if err != nil {
-		t.Fatalf("EncodeEvents: %v", err)
+// Scenario: a version cannot express what it does not have
+//
+//	Given a fact that only the newer schema carries
+//	When it is written in the older one
+//	Then it is refused rather than dropped. A v1 journal honestly lacks
+//	  protection; it must never appear to hold it, and must never silently
+//	  lose it either.
+func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
+	protection := session.ProtectionPlaced{
+		Envelope:     session.Envelope{Time: 1, Sequence: 1, Kind: session.KindProtectionPlaced},
+		EntryOrderID: "o-1", StopPrice: 19_900,
 	}
-	got, err := persistence.DecodeEvents(payload)
-	if err != nil {
-		t.Fatalf("DecodeEvents: %v", err)
+	if _, err := persistence.EncodeEvents([]session.Event{protection}, persistence.EventVersionV1); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
+		t.Fatalf("protection under v1: got %v, want %v", err, persistence.ErrUnsupportedInVersion)
 	}
-	if !reflect.DeepEqual(got, events) {
-		t.Fatalf("round trip\n got: %+v\nwant: %+v", got, events)
+	if _, err := persistence.EncodeEvents([]session.Event{protection}, persistence.EventVersionV2); err != nil {
+		t.Fatalf("protection under v2: %v", err)
+	}
+
+	// A streak that v1 has no field for is refused rather than quietly lost.
+	var withStreak []session.Event
+	for _, e := range everyEventTypeV2() {
+		if o, ok := e.(session.OrderSubmitted); ok {
+			withStreak = append(withStreak, o)
+		}
+	}
+	if len(withStreak) == 0 {
+		t.Fatal("the fixture carries no decision")
+	}
+	if _, err := persistence.EncodeEvents(withStreak, persistence.EventVersionV1); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
+		t.Fatalf("a streak under v1: got %v, want %v", err, persistence.ErrUnsupportedInVersion)
+	}
+
+	// And reading one version's bytes as the other is refused, not guessed at.
+	if _, err := persistence.DecodeEvents(goldenFor(t, "testdata/golden-events-v2.txt"), persistence.EventVersionV1); err == nil {
+		t.Fatal("v2 bytes were read as v1")
+	}
+	if _, err := persistence.DecodeEvents(golden(t), persistence.EventVersionV2); err == nil {
+		t.Fatal("v1 bytes were read as v2")
 	}
 }
 
@@ -47,18 +99,24 @@ func TestDecodeOfEncodeIsTheIdentity(t *testing.T) {
 //	  is what makes replay equality a property of the domain rather than of
 //	  an encoder.
 func TestEncodeOfDecodeReproducesTheBytes(t *testing.T) {
-	canonical := golden(t)
-
-	events, err := persistence.DecodeEvents(canonical)
-	if err != nil {
-		t.Fatalf("DecodeEvents: %v", err)
-	}
-	got, err := persistence.EncodeEvents(events)
-	if err != nil {
-		t.Fatalf("EncodeEvents: %v", err)
-	}
-	if string(got) != string(canonical) {
-		t.Fatalf("re-encoded bytes differ\n got: %q\nwant: %q", got, canonical)
+	for _, tc := range []struct{ version, path string }{
+		{persistence.EventVersionV1, "testdata/golden-events.txt"},
+		{persistence.EventVersionV2, "testdata/golden-events-v2.txt"},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			canonical := goldenFor(t, tc.path)
+			events, err := persistence.DecodeEvents(canonical, tc.version)
+			if err != nil {
+				t.Fatalf("DecodeEvents: %v", err)
+			}
+			got, err := persistence.EncodeEvents(events, tc.version)
+			if err != nil {
+				t.Fatalf("EncodeEvents: %v", err)
+			}
+			if string(got) != string(canonical) {
+				t.Fatalf("re-encoded bytes differ\n got: %q\nwant: %q", got, canonical)
+			}
+		})
 	}
 }
 
@@ -68,18 +126,32 @@ func TestEncodeOfDecodeReproducesTheBytes(t *testing.T) {
 // silently breaking every journal written before. Literal expected bytes are
 // what stops that, so praxis.event.v1 means one thing forever.
 func TestTheGoldenBytesAreTheFormat(t *testing.T) {
-	payload, err := persistence.EncodeEvents(everyEventType())
-	if err != nil {
-		t.Fatalf("EncodeEvents: %v", err)
-	}
-	if string(payload) != string(golden(t)) {
-		t.Fatalf("the format changed\n got:\n%s\nwant:\n%s", payload, golden(t))
+	for _, tc := range []struct {
+		version string
+		events  []session.Event
+		path    string
+		lines   int
+	}{
+		{persistence.EventVersionV1, everyEventType(), "testdata/golden-events.txt", 11},
+		{persistence.EventVersionV2, everyEventTypeV2(), "testdata/golden-events-v2.txt", 14},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			payload, err := persistence.EncodeEvents(tc.events, tc.version)
+			if err != nil {
+				t.Fatalf("EncodeEvents: %v", err)
+			}
+			want := goldenFor(t, tc.path)
+			if string(payload) != string(want) {
+				t.Fatalf("the format changed\n got:\n%s\nwant:\n%s", payload, want)
+			}
+			lines := strings.Split(strings.TrimSuffix(string(payload), "\n"), "\n")
+			if len(lines) != tc.lines {
+				t.Fatalf("lines: got %d, want %d", len(lines), tc.lines)
+			}
+		})
 	}
 
-	lines := strings.Split(strings.TrimSuffix(string(payload), "\n"), "\n")
-	if len(lines) != 11 {
-		t.Fatalf("lines: got %d, want one per event type", len(lines))
-	}
+	payload := golden(t)
 	if strings.Contains(string(payload), "\r") {
 		t.Fatal("the payload contains a carriage return")
 	}
@@ -118,13 +190,13 @@ func TestDecodeRefusesNonCanonicalText(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := persistence.DecodeEvents([]byte(tc.payload)); !errors.Is(err, tc.want) {
+			if _, err := persistence.DecodeEvents([]byte(tc.payload), persistence.EventVersion); !errors.Is(err, tc.want) {
 				t.Fatalf("error: got %v, want %v", err, tc.want)
 			}
 		})
 	}
 
-	if _, err := persistence.DecodeEvents([]byte(valid)); err != nil {
+	if _, err := persistence.DecodeEvents([]byte(valid), persistence.EventVersion); err != nil {
 		t.Fatalf("the valid line does not decode: %v", err)
 	}
 }
@@ -163,7 +235,7 @@ func TestEncodeRefusesWhatItCouldNotReadBack(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := persistence.EncodeEvents([]session.Event{tc.event}); !errors.Is(err, tc.want) {
+			if _, err := persistence.EncodeEvents([]session.Event{tc.event}, persistence.EventVersion); !errors.Is(err, tc.want) {
 				t.Fatalf("error: got %v, want %v", err, tc.want)
 			}
 		})
@@ -177,7 +249,7 @@ func TestRefusesInputBeyondTheFormatsLimits(t *testing.T) {
 	for n := range oversized {
 		oversized[n] = 'a'
 	}
-	if _, err := persistence.DecodeEvents(oversized); !errors.Is(err, persistence.ErrTooLarge) {
+	if _, err := persistence.DecodeEvents(oversized, persistence.EventVersion); !errors.Is(err, persistence.ErrTooLarge) {
 		t.Fatalf("error: got %v, want %v", err, persistence.ErrTooLarge)
 	}
 
@@ -185,7 +257,7 @@ func TestRefusesInputBeyondTheFormatsLimits(t *testing.T) {
 		Envelope:  session.Envelope{Time: 1, Sequence: 1, Kind: session.KindSessionEnded},
 		SessionID: sessionIDOf(persistence.MaxLineBytes + 1),
 	}
-	if _, err := persistence.EncodeEvents([]session.Event{long}); !errors.Is(err, persistence.ErrTooLarge) {
+	if _, err := persistence.EncodeEvents([]session.Event{long}, persistence.EventVersion); !errors.Is(err, persistence.ErrTooLarge) {
 		t.Fatalf("error: got %v, want %v", err, persistence.ErrTooLarge)
 	}
 }
@@ -194,11 +266,11 @@ func TestRefusesInputBeyondTheFormatsLimits(t *testing.T) {
 func TestPropertyARealJournalRoundTrips(t *testing.T) {
 	events := realSessionEvents(t)
 
-	payload, err := persistence.EncodeEvents(events)
+	payload, err := persistence.EncodeEvents(events, persistence.EventVersion)
 	if err != nil {
 		t.Fatalf("EncodeEvents: %v", err)
 	}
-	got, err := persistence.DecodeEvents(payload)
+	got, err := persistence.DecodeEvents(payload, persistence.EventVersion)
 	if err != nil {
 		t.Fatalf("DecodeEvents: %v", err)
 	}
@@ -212,7 +284,7 @@ func TestPropertyARealJournalRoundTrips(t *testing.T) {
 		t.Fatalf("Replay of the decoded journal: %v", err)
 	}
 
-	again, err := persistence.EncodeEvents(got)
+	again, err := persistence.EncodeEvents(got, persistence.EventVersion)
 	if err != nil {
 		t.Fatalf("EncodeEvents: %v", err)
 	}

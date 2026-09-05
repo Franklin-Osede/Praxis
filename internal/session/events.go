@@ -24,6 +24,9 @@ const (
 	KindOrderSubmitted
 	KindOrderRested
 	KindOrderCancelled
+	KindProtectionPlaced
+	KindProtectionReplaced
+	KindProtectionCancelled
 	KindFillProduced
 	KindPositionChanged
 	KindAccountValued
@@ -45,6 +48,12 @@ func (k Kind) String() string {
 		return "order rested"
 	case KindOrderCancelled:
 		return "order cancelled"
+	case KindProtectionPlaced:
+		return "protection placed"
+	case KindProtectionReplaced:
+		return "protection replaced"
+	case KindProtectionCancelled:
+		return "protection cancelled"
 	case KindFillProduced:
 		return "fill produced"
 	case KindPositionChanged:
@@ -151,6 +160,15 @@ type OrderContext struct {
 
 	// PositionQtyBefore is the net position this order was submitted into.
 	PositionQtyBefore market.Qty
+
+	// ConsecutiveLosingTrades counts completed position episodes that ended at
+	// a loss, in an unbroken run, as it stood when this order was submitted.
+	//
+	// It is not ConsecutiveLosses, which counts closing legs: scaling out of
+	// one bad position in two reductions is one trade abandoned in pieces, not
+	// a streak. Both are facts about different things and both are recorded.
+	// See ADR-013.
+	ConsecutiveLosingTrades uint32
 }
 
 // OrderSubmitted is a decision. It is the reason Praxis exists, so it records
@@ -209,6 +227,58 @@ type OrderCancelled struct {
 	OrderID      string
 	RemainingQty market.Qty
 	Reason       CancelReason
+}
+
+// ProtectionPlaced records the levels a trader attached to an entry at the
+// moment they submitted it.
+//
+// It names the entry's order and not an episode, because at the moment of the
+// decision there is no episode: the position does not exist until the first
+// fill. Requiring the levels to be placed afterwards would lose the planned
+// risk at the instant it was decided, which is the number the whole experiment
+// is measured in.
+//
+// The binding to an episode is derived rather than recorded: the fill that
+// opens the episode carries this order's identifier, so replay can join them
+// without a second fact that could disagree.
+type ProtectionPlaced struct {
+	Envelope
+	EntryOrderID string
+
+	// StopPrice and TargetPrice are zero when not set, as order prices are.
+	StopPrice   market.Ticks
+	TargetPrice market.Ticks
+}
+
+// ProtectionReplaced records levels changed on a position that exists.
+//
+// Replacement is one event and not a cancellation followed by a placement,
+// because two events would show an interval with no protection that the trader
+// never intended, and measuring those intervals is one of the things the log
+// exists for.
+type ProtectionReplaced struct {
+	Envelope
+	EpisodeID uint64
+
+	PreviousStopPrice   market.Ticks
+	PreviousTargetPrice market.Ticks
+	StopPrice           market.Ticks
+	TargetPrice         market.Ticks
+
+	// Widened says the stop moved away from the entry: to a lower price for a
+	// long, a higher one for a short. It is a comparison against the level the
+	// stop already had, not a judgement about why. Naming the pattern is
+	// analytics and belongs elsewhere; see ADR-008.
+	Widened bool
+}
+
+// ProtectionCancelled records protection removed and not replaced.
+type ProtectionCancelled struct {
+	Envelope
+	EpisodeID uint64
+
+	StopPrice   market.Ticks
+	TargetPrice market.Ticks
 }
 
 // FillProduced is an execution fact.

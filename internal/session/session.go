@@ -84,6 +84,11 @@ type Session struct {
 	consecutiveLosses  uint32
 	sessionRealisedCts market.Cents
 
+	// episodes derives position episodes from the changes it is given. The
+	// same projection runs in Verify and in Replay, so a live session and the
+	// checks on its journal cannot disagree about what a trade was.
+	episodes episodeProjection
+
 	// committer is optional. A session without one keeps its journal in
 	// memory and nothing else.
 	committer BatchCommitter
@@ -433,6 +438,11 @@ func (s *Session) applyAndRecord(at market.LogicalTime, fills []market.Fill) (ma
 			if err := s.countClose(change); err != nil {
 				return 0, err
 			}
+			// The projection is fed the sequence the change was recorded at,
+			// which becomes the identity of any episode it opens.
+			if err := s.episodes.apply(s.sequence, change); err != nil {
+				return 0, err
+			}
 		}
 	}
 	return filled, nil
@@ -507,6 +517,7 @@ func (s *Session) submitOrder(o market.Order) error {
 		ConsecutiveLosses:          s.consecutiveLosses,
 		SessionRealisedCts:         s.sessionRealisedCts,
 		PositionQtyBefore:          position.NetQty,
+		ConsecutiveLosingTrades:    s.episodes.consecutiveLosingTradesNow(),
 	}
 
 	// Everything the command will do is computed and applied before any of it

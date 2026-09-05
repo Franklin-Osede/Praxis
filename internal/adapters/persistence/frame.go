@@ -19,8 +19,11 @@ const ContainerVersion = "1"
 // compatible is the explicit table of combinations this build understands. A
 // recognised container with an unrecognised payload is refused, and so is the
 // reverse.
+// compatible is the explicit table of combinations this build understands. A
+// recognised container with an unrecognised payload is refused, and so is the
+// reverse. Both payload versions are readable; only the newer is written.
 var compatible = map[string]map[string]bool{
-	ContainerVersion: {EventVersion: true},
+	ContainerVersion: {EventVersionV1: true, EventVersionV2: true},
 }
 
 const (
@@ -124,12 +127,12 @@ func (j *Journal) Events() []session.Event {
 	return out
 }
 
-// EncodeBatch frames one command's events.
-func EncodeBatch(number uint64, events []session.Event) ([]byte, error) {
+// EncodeBatch frames one command's events in the given payload version.
+func EncodeBatch(number uint64, events []session.Event, version string) ([]byte, error) {
 	if len(events) == 0 {
 		return nil, ErrEmptyBatch
 	}
-	payload, err := EncodeEvents(events)
+	payload, err := EncodeEvents(events, version)
 	if err != nil {
 		return nil, err
 	}
@@ -151,9 +154,13 @@ func EncodeBatch(number uint64, events []session.Event) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// Header is the first line of a journal file.
-func Header() []byte {
-	return []byte(magic + " " + ContainerVersion + " " + EventVersion + "\n")
+// Header is the first line of a journal file written now.
+func Header() []byte { return HeaderFor(EventVersion) }
+
+// HeaderFor is the first line of a journal in a given payload version, which a
+// test or a migration may need to write deliberately.
+func HeaderFor(version string) []byte {
+	return []byte(magic + " " + ContainerVersion + " " + version + "\n")
 }
 
 // formatMetadata is the exact byte construction the checksum covers, and the
@@ -192,7 +199,7 @@ func ReadJournal(r io.Reader) (*Journal, error) {
 	)
 
 	for len(rest) > 0 {
-		batch, consumed, status, header, err := readBatch(rest, expectedNumber, expectedSequence)
+		batch, consumed, status, header, err := readBatch(rest, expectedNumber, expectedSequence, payloadVersion)
 		if err != nil {
 			return nil, err
 		}
@@ -220,7 +227,7 @@ func ReadJournal(r io.Reader) (*Journal, error) {
 
 // readBatch reads one frame. It reports a tail status rather than an error for
 // the two endings that are recoverable, and an error for the ones that are not.
-func readBatch(raw []byte, wantNumber, wantSequence uint64) (Batch, int, TailStatus, *TailBatch, error) {
+func readBatch(raw []byte, wantNumber, wantSequence uint64, version string) (Batch, int, TailStatus, *TailBatch, error) {
 	line, rest, ok := splitLine(raw)
 	if !ok {
 		return Batch{}, 0, TailIncomplete, nil, nil
@@ -250,7 +257,7 @@ func readBatch(raw []byte, wantNumber, wantSequence uint64) (Batch, int, TailSta
 		return Batch{}, 0, TailComplete, nil, fmt.Errorf("%w: batch %d starts at %d, want %d", ErrDiscontinuous, number, first, wantSequence)
 	}
 
-	events, err := DecodeEvents(payload)
+	events, err := DecodeEvents(payload, version)
 	if err != nil {
 		return Batch{}, 0, TailComplete, nil, err
 	}

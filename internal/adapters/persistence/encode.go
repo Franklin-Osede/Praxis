@@ -21,6 +21,9 @@ const (
 	typeOrderSubmitted    = "order_submitted"
 	typeOrderRested       = "order_rested"
 	typeOrderCancelled    = "order_cancelled"
+	typeProtectionPlaced  = "protection_placed"
+	typeProtectionChanged = "protection_replaced"
+	typeProtectionRemoved = "protection_cancelled"
 	typeFillProduced      = "fill_produced"
 	typePositionChanged   = "position_changed"
 	typeAccountValued     = "account_valued"
@@ -50,7 +53,7 @@ var (
 	}
 )
 
-func encodeEvent(e session.Event) (string, error) {
+func encodeEvent(e session.Event, version string) (string, error) {
 	header := e.Header()
 	f := &fields{}
 
@@ -96,6 +99,11 @@ func encodeEvent(e session.Event) (string, error) {
 		f.int(int64(v.Context.BalanceCts)).int(int64(v.Context.EquityCts))
 		f.uint(uint64(v.Context.OrdersSubmittedThisSession)).uint(uint64(v.Context.ConsecutiveLosses))
 		f.int(int64(v.Context.SessionRealisedCts)).int(int64(v.Context.PositionQtyBefore))
+		if version != EventVersionV1 {
+			f.uint(uint64(v.Context.ConsecutiveLosingTrades))
+		} else if v.Context.ConsecutiveLosingTrades != 0 {
+			return "", fmt.Errorf("%w: %s cannot carry a losing-trade streak", ErrUnsupportedInVersion, version)
+		}
 
 	case session.OrderRested:
 		if header.Kind != session.KindOrderRested {
@@ -149,6 +157,38 @@ func encodeEvent(e session.Event) (string, error) {
 		f.failure(v.Decision.Reason)
 		f.int(int64(v.Decision.HighWaterCts)).int(int64(v.Decision.ThresholdCts))
 
+	case session.ProtectionPlaced:
+		if version == EventVersionV1 {
+			return "", fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		}
+		if header.Kind != session.KindProtectionPlaced {
+			return "", ErrKindMismatch
+		}
+		f.name(typeProtectionPlaced).at(header)
+		f.id(v.EntryOrderID).int(int64(v.StopPrice)).int(int64(v.TargetPrice))
+
+	case session.ProtectionReplaced:
+		if version == EventVersionV1 {
+			return "", fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		}
+		if header.Kind != session.KindProtectionReplaced {
+			return "", ErrKindMismatch
+		}
+		f.name(typeProtectionChanged).at(header)
+		f.uint(v.EpisodeID)
+		f.int(int64(v.PreviousStopPrice)).int(int64(v.PreviousTargetPrice))
+		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice)).boolean(v.Widened)
+
+	case session.ProtectionCancelled:
+		if version == EventVersionV1 {
+			return "", fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		}
+		if header.Kind != session.KindProtectionCancelled {
+			return "", ErrKindMismatch
+		}
+		f.name(typeProtectionRemoved).at(header)
+		f.uint(v.EpisodeID).int(int64(v.StopPrice)).int(int64(v.TargetPrice))
+
 	case session.SessionEnded:
 		if header.Kind != session.KindSessionEnded {
 			return "", ErrKindMismatch
@@ -183,6 +223,15 @@ func (f *fields) int(v int64) *fields {
 func (f *fields) uint(v uint64) *fields {
 	f.parts = append(f.parts, strconv.FormatUint(v, 10))
 	return f
+}
+
+// boolean has one spelling and only one, so a payload cannot say the same
+// thing two ways.
+func (f *fields) boolean(v bool) *fields {
+	if v {
+		return f.name("1")
+	}
+	return f.name("0")
 }
 
 func (f *fields) id(s string) *fields {

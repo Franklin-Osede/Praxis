@@ -180,7 +180,7 @@ func TestAWriterRefusesAnUnconfirmedTail(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	firstBatchEnd := len(persistence.Header())
-	framed, err := persistence.EncodeBatch(1, events[:1])
+	framed, err := persistence.EncodeBatch(1, events[:1], persistence.EventVersion)
 	if err != nil {
 		t.Fatalf("EncodeBatch: %v", err)
 	}

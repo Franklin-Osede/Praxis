@@ -14,7 +14,7 @@ import (
 // decodeEvent reads one canonical line. It refuses anything it did not write:
 // a different spelling of the same number, an unknown enumeration, a missing
 // or extra field, or an unknown type.
-func decodeEvent(line string) (session.Event, error) {
+func decodeEvent(line string, version string) (session.Event, error) {
 	if strings.Contains(line, "\r") {
 		return nil, fmt.Errorf("%w: carriage return", ErrSyntax)
 	}
@@ -80,6 +80,11 @@ func decodeEvent(line string) (session.Event, error) {
 				SessionRealisedCts: r.cents(), PositionQtyBefore: r.qty(),
 			},
 		}
+		if version != EventVersionV1 {
+			submitted := event.(session.OrderSubmitted)
+			submitted.Context.ConsecutiveLosingTrades = r.uint32()
+			event = submitted
+		}
 
 	case typeOrderRested:
 		kind = session.KindOrderRested
@@ -133,6 +138,37 @@ func decodeEvent(line string) (session.Event, error) {
 				LossCts: r.cents(), GainCts: r.cents(), Reason: r.failure(),
 				HighWaterCts: r.cents(), ThresholdCts: r.cents(),
 			},
+		}
+
+	case typeProtectionPlaced:
+		if version == EventVersionV1 {
+			return nil, fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		}
+		kind = session.KindProtectionPlaced
+		event = session.ProtectionPlaced{
+			Envelope:     envelope(at, sequence, kind),
+			EntryOrderID: r.id(), StopPrice: r.ticks(), TargetPrice: r.ticks(),
+		}
+
+	case typeProtectionChanged:
+		if version == EventVersionV1 {
+			return nil, fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		}
+		kind = session.KindProtectionReplaced
+		event = session.ProtectionReplaced{
+			Envelope: envelope(at, sequence, kind), EpisodeID: r.uint(),
+			PreviousStopPrice: r.ticks(), PreviousTargetPrice: r.ticks(),
+			StopPrice: r.ticks(), TargetPrice: r.ticks(), Widened: r.boolean(),
+		}
+
+	case typeProtectionRemoved:
+		if version == EventVersionV1 {
+			return nil, fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		}
+		kind = session.KindProtectionCancelled
+		event = session.ProtectionCancelled{
+			Envelope: envelope(at, sequence, kind), EpisodeID: r.uint(),
+			StopPrice: r.ticks(), TargetPrice: r.ticks(),
 		}
 
 	case typeSessionEnded:
@@ -218,6 +254,18 @@ func (r *reader) logicalTime() market.LogicalTime { return market.LogicalTime(r.
 func (r *reader) cents() market.Cents             { return market.Cents(r.int()) }
 func (r *reader) ticks() market.Ticks             { return market.Ticks(r.int()) }
 func (r *reader) qty() market.Qty                 { return market.Qty(r.int()) }
+
+func (r *reader) boolean() bool {
+	switch s := r.next(); s {
+	case "0":
+		return false
+	case "1":
+		return true
+	default:
+		r.fail(fmt.Errorf("%w: boolean %q, want 0 or 1", ErrSyntax, s))
+		return false
+	}
+}
 
 func (r *reader) id() string {
 	s := r.next()
