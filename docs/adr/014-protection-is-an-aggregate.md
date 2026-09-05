@@ -1,7 +1,8 @@
 # ADR-014 — Protection is an aggregate, not two prices
 
-Status: accepted. Its schema is designed here and is **not** published yet; see
-"When v3 gets its bytes".
+Status: accepted. `praxis.event.v3` is published by the commands that place,
+change and withdraw a planned protection. Activation and execution are the
+slices after it.
 
 ## What this corrects
 
@@ -193,10 +194,16 @@ argument was mine and it was wrong here: **a schema is not proven until
 something both produces and consumes it**, and the three holes above are
 exactly what a producer would have found on the first attempt.
 
-So `praxis.event.v3` is designed here and published with the commands that
-write it, not before. Until then v2 stays as it is, and its protection lines
-remain what they are — a schema nothing ever wrote, kept readable because that
-is what a published version means.
+So `praxis.event.v3` was designed here and published with the first commands
+that write it.
+
+The protection lines declared in v2 were removed rather than kept readable. A
+published version's bytes are protected because journals hold them, and no
+journal ever held those: nothing wrote them and, their shape being wrong,
+nothing could. What v2 does produce — a decision carrying a losing-trade streak
+— is untouched, and v1 is untouched byte for byte. Keeping an unwritable schema
+to honour a rule about written data would be the rule cargo-culted rather than
+applied.
 
 v1 and v2 both stay readable. The compatibility table already selects the
 codec, and this is the second time it has earned its place.

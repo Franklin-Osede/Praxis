@@ -47,7 +47,8 @@ against the aggregates that produced it, and resumes a whole session from it.
 
 `internal/adapters/marketdata` reads a versioned canonical file into ordered
 observations and drives a session with them, and
-`internal/adapters/persistence` encodes a journal as canonical text, frames it
+`internal/adapters/persistence` speaks three payload versions, encodes a
+journal as canonical text, frames it
 into checksummed batches, reads it back, appends to it under an exclusive
 advisory lock with an explicit durability policy, and recovers the session
 state its confirmed batches describe. A session commits one batch per command
@@ -222,8 +223,10 @@ quantity grows. The machine
 is `Planned → Active(stop?, target?, quantity) → Ended`, and execution is a
 reason for a transition rather than a state.
 
-`praxis.event.v3` is designed there and published **with** the commands that
-write it. The protection events in v2 were defined ahead of any producer, and
+`praxis.event.v3` is published together with the commands that write it: an
+entry and its levels are submitted as one command and therefore one durable
+batch, and a planned protection can be changed or withdrawn while its entry
+waits. Activation, protected quantities and execution are the slices after it. The protection events in v2 were defined ahead of any producer, and
 that is precisely what let them be wrong: a schema is not proven until
 something both produces and consumes it. See
 [`docs/adr/014-protection-is-an-aggregate.md`](adr/014-protection-is-an-aggregate.md).
@@ -826,14 +829,13 @@ Next, in order:
    submitted, and they are offered it before the account is revalued, so the
    valuation an observation records already contains what that observation
    caused.
-5. **The life of a protective level**, in five steps rather than one, split
-   along the machine of ADR-014: planned protection and its commands with no
-   execution; activation and binding by the fill's real effect; one-cancels-the-
-   other execution with partial quantities; verification, replay, resume and
-   persistence; and only then a human command. `praxis.event.v3` is published
-   with the first of these, not ahead of it.
-6. **Fourteen transition scenarios** must pass before the machine is believed,
-   listed in ADR-014, each ending in a replay and a resume.
+5. **The life of a protective level**, continuing. Planned protection and its
+   commands are done and `praxis.event.v3` is published by them. What remains:
+   activation and binding by the fill's real effect; one-cancels-the-other
+   execution with partial quantities; then a human command.
+6. **Eighteen transition scenarios** are listed in ADR-014. The four that
+   concern a protection whose entry is still waiting now pass; the rest wait
+   for activation.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.

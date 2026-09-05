@@ -26,7 +26,7 @@ const (
 	KindOrderCancelled
 	KindProtectionPlaced
 	KindProtectionReplaced
-	KindProtectionCancelled
+	KindProtectionEnded
 	KindFillProduced
 	KindPositionChanged
 	KindAccountValued
@@ -52,8 +52,8 @@ func (k Kind) String() string {
 		return "protection placed"
 	case KindProtectionReplaced:
 		return "protection replaced"
-	case KindProtectionCancelled:
-		return "protection cancelled"
+	case KindProtectionEnded:
+		return "protection ended"
 	case KindFillProduced:
 		return "fill produced"
 	case KindPositionChanged:
@@ -229,56 +229,152 @@ type OrderCancelled struct {
 	Reason       CancelReason
 }
 
+// ProtectionRefKind says whether a protection is named by the entry that
+// planned it or by the episode it now governs.
+type ProtectionRefKind uint8
+
+const (
+	ProtectionRefEntry ProtectionRefKind = iota + 1
+	ProtectionRefEpisode
+)
+
+func (k ProtectionRefKind) String() string {
+	switch k {
+	case ProtectionRefEntry:
+		return "entry"
+	case ProtectionRefEpisode:
+		return "episode"
+	default:
+		return "unspecified"
+	}
+}
+
+// ProtectionRef names a protection. It is a tagged union rather than an
+// episode identifier with zero meaning "an entry instead": a zero that means
+// something is the defect the drawdown accessors had to be rescued from.
+type ProtectionRef struct {
+	Kind      ProtectionRefKind
+	OrderID   string
+	EpisodeID uint64
+}
+
+func (r ProtectionRef) Validate() error {
+	switch r.Kind {
+	case ProtectionRefEntry:
+		if r.OrderID == "" {
+			return ErrProtectionRef
+		}
+		if r.EpisodeID != 0 {
+			return ErrProtectionRef
+		}
+	case ProtectionRefEpisode:
+		if r.EpisodeID == 0 || r.OrderID != "" {
+			return ErrProtectionRef
+		}
+	default:
+		return ErrProtectionRef
+	}
+	return nil
+}
+
+// ProtectionEndReason says what the system did to end a protection. These are
+// facts about the machine, never about why anyone did anything: naming a
+// pattern is analytics and belongs elsewhere. See ADR-008.
+type ProtectionEndReason uint8
+
+const (
+	ProtectionWithdrawnByTrader ProtectionEndReason = iota + 1
+	ProtectionEntryCancelled
+	ProtectionDidNotOpenExposure
+	ProtectionAlreadyActive
+	ProtectionPositionClosed
+	ProtectionFlipped
+	ProtectionExecuted
+)
+
+func (r ProtectionEndReason) String() string {
+	switch r {
+	case ProtectionWithdrawnByTrader:
+		return "withdrawn_by_trader"
+	case ProtectionEntryCancelled:
+		return "entry_cancelled"
+	case ProtectionDidNotOpenExposure:
+		return "did_not_open_exposure"
+	case ProtectionAlreadyActive:
+		return "already_active"
+	case ProtectionPositionClosed:
+		return "position_closed"
+	case ProtectionFlipped:
+		return "flipped"
+	case ProtectionExecuted:
+		return "executed"
+	default:
+		return "unspecified"
+	}
+}
+
 // ProtectionPlaced records the levels a trader attached to an entry at the
 // moment they submitted it.
 //
 // It names the entry's order and not an episode, because at the moment of the
 // decision there is no episode: the position does not exist until the first
-// fill. Requiring the levels to be placed afterwards would lose the planned
-// risk at the instant it was decided, which is the number the whole experiment
-// is measured in.
+// fill. Requiring the levels afterwards would lose the planned risk at the
+// instant it was decided, which is the number the experiment is measured in.
 //
-// The binding to an episode is derived rather than recorded: the fill that
-// opens the episode carries this order's identifier, so replay can join them
-// without a second fact that could disagree.
+// Each level that exists gets an order identifier from a namespace the system
+// owns, keyed by this event's own sequence, so a later fill points at something
+// that exists. A level that is not set reserves nothing.
 type ProtectionPlaced struct {
 	Envelope
 	EntryOrderID string
 
 	// StopPrice and TargetPrice are zero when not set, as order prices are.
+	// Both zero is invalid: it would protect nothing and be indistinguishable
+	// from an entry that placed none.
 	StopPrice   market.Ticks
 	TargetPrice market.Ticks
+
+	// StopOrderID and TargetOrderID are empty for a level that is not set.
+	StopOrderID   string
+	TargetOrderID string
 }
 
-// ProtectionReplaced records levels changed on a position that exists.
+// ProtectionReplaced records levels changed.
 //
-// Replacement is one event and not a cancellation followed by a placement,
+// Replacement is one event and not a withdrawal followed by a placement,
 // because two events would show an interval with no protection that the trader
 // never intended, and measuring those intervals is one of the things the log
 // exists for.
 type ProtectionReplaced struct {
 	Envelope
-	EpisodeID uint64
+	Ref ProtectionRef
 
 	PreviousStopPrice   market.Ticks
 	PreviousTargetPrice market.Ticks
 	StopPrice           market.Ticks
 	TargetPrice         market.Ticks
 
-	// Widened says the stop moved away from the entry: to a lower price for a
-	// long, a higher one for a short. It is a comparison against the level the
-	// stop already had, not a judgement about why. Naming the pattern is
-	// analytics and belongs elsewhere; see ADR-008.
+	// StopOrderID and TargetOrderID carry the identifiers after the change: the
+	// ones already in use where a level survived, and new ones where a level
+	// appeared.
+	StopOrderID   string
+	TargetOrderID string
+
+	// Widened says the stop moved away from the entry. It is a comparison
+	// against the level the stop already had, not a judgement about why, and
+	// replacing a level from nothing is placing it rather than widening it.
+	// Being derived, it is recomputed by Verify rather than believed.
 	Widened bool
 }
 
-// ProtectionCancelled records protection removed and not replaced.
-type ProtectionCancelled struct {
+// ProtectionEnded records a protection that stopped existing, and why.
+type ProtectionEnded struct {
 	Envelope
-	EpisodeID uint64
+	Ref ProtectionRef
 
 	StopPrice   market.Ticks
 	TargetPrice market.Ticks
+	Reason      ProtectionEndReason
 }
 
 // FillProduced is an execution fact.

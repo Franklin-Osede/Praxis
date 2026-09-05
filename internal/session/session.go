@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"praxis/internal/challenge"
 	"praxis/internal/execution"
@@ -83,6 +84,10 @@ type Session struct {
 	ordersThisSession  uint32
 	consecutiveLosses  uint32
 	sessionRealisedCts market.Cents
+
+	// protections derives planned protections and the identifiers a journal
+	// has spent. The same projection runs in Verify and in Replay.
+	protections protectionProjection
 
 	// episodes derives position episodes from the changes it is given. The
 	// same projection runs in Verify and in Replay, so a live session and the
@@ -508,8 +513,14 @@ func (s *Session) submitOrder(o market.Order) error {
 	if !s.observedThisSession {
 		return ErrNoMarketObserved
 	}
+	if strings.HasPrefix(o.ID, reservedPrefix) {
+		return fmt.Errorf("%w: %s", ErrReservedNamespace, o.ID)
+	}
 	if s.isWorking(o.ID) {
 		return fmt.Errorf("%w: %s", ErrDuplicateOrderID, o.ID)
+	}
+	if s.protections.used(o.ID) {
+		return fmt.Errorf("%w: %s", ErrOrderIDReused, o.ID)
 	}
 	at := s.lastQuote.Time
 	if err := s.journal.ValidateNext(at, s.sequence+1); err != nil {
@@ -556,6 +567,9 @@ func (s *Session) submitOrder(o market.Order) error {
 	if err := s.record(at, KindOrderSubmitted, func(e Envelope) Event {
 		return OrderSubmitted{Envelope: e, Order: o, Context: context}
 	}); err != nil {
+		return err
+	}
+	if err := s.protections.claim(o.ID); err != nil {
 		return err
 	}
 	if s.ordersThisSession, err = addOrders(s.ordersThisSession, 1); err != nil {

@@ -23,7 +23,7 @@ const (
 	typeOrderCancelled    = "order_cancelled"
 	typeProtectionPlaced  = "protection_placed"
 	typeProtectionChanged = "protection_replaced"
-	typeProtectionRemoved = "protection_cancelled"
+	typeProtectionEnded   = "protection_ended"
 	typeFillProduced      = "fill_produced"
 	typePositionChanged   = "position_changed"
 	typeAccountValued     = "account_valued"
@@ -38,6 +38,19 @@ var (
 	positionKindNames = map[portfolio.PositionEventKind]string{
 		portfolio.PositionOpened: "opened", portfolio.PositionIncreased: "increased",
 		portfolio.PositionReduced: "reduced", portfolio.PositionClosed: "closed",
+	}
+	protectionRefNames = map[session.ProtectionRefKind]string{
+		session.ProtectionRefEntry:   "entry",
+		session.ProtectionRefEpisode: "episode",
+	}
+	protectionEndNames = map[session.ProtectionEndReason]string{
+		session.ProtectionWithdrawnByTrader:  "withdrawn_by_trader",
+		session.ProtectionEntryCancelled:     "entry_cancelled",
+		session.ProtectionDidNotOpenExposure: "did_not_open_exposure",
+		session.ProtectionAlreadyActive:      "already_active",
+		session.ProtectionPositionClosed:     "position_closed",
+		session.ProtectionFlipped:            "flipped",
+		session.ProtectionExecuted:           "executed",
 	}
 	cancelReasonNames = map[session.CancelReason]string{
 		session.CancelledByTrader:            "by_trader",
@@ -158,36 +171,38 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		f.int(int64(v.Decision.HighWaterCts)).int(int64(v.Decision.ThresholdCts))
 
 	case session.ProtectionPlaced:
-		if version == EventVersionV1 {
-			return "", fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		if err := requireProtection(version); err != nil {
+			return "", err
 		}
 		if header.Kind != session.KindProtectionPlaced {
 			return "", ErrKindMismatch
 		}
 		f.name(typeProtectionPlaced).at(header)
 		f.id(v.EntryOrderID).int(int64(v.StopPrice)).int(int64(v.TargetPrice))
+		f.optionalID(v.StopOrderID).optionalID(v.TargetOrderID)
 
 	case session.ProtectionReplaced:
-		if version == EventVersionV1 {
-			return "", fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		if err := requireProtection(version); err != nil {
+			return "", err
 		}
 		if header.Kind != session.KindProtectionReplaced {
 			return "", ErrKindMismatch
 		}
-		f.name(typeProtectionChanged).at(header)
-		f.uint(v.EpisodeID)
+		f.name(typeProtectionChanged).at(header).ref(v.Ref)
 		f.int(int64(v.PreviousStopPrice)).int(int64(v.PreviousTargetPrice))
-		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice)).boolean(v.Widened)
+		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice))
+		f.optionalID(v.StopOrderID).optionalID(v.TargetOrderID).boolean(v.Widened)
 
-	case session.ProtectionCancelled:
-		if version == EventVersionV1 {
-			return "", fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+	case session.ProtectionEnded:
+		if err := requireProtection(version); err != nil {
+			return "", err
 		}
-		if header.Kind != session.KindProtectionCancelled {
+		if header.Kind != session.KindProtectionEnded {
 			return "", ErrKindMismatch
 		}
-		f.name(typeProtectionRemoved).at(header)
-		f.uint(v.EpisodeID).int(int64(v.StopPrice)).int(int64(v.TargetPrice))
+		f.name(typeProtectionEnded).at(header).ref(v.Ref)
+		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice))
+		f.enum(protectionEndNames[v.Reason], "protection end reason")
 
 	case session.SessionEnded:
 		if header.Kind != session.KindSessionEnded {
@@ -223,6 +238,30 @@ func (f *fields) int(v int64) *fields {
 func (f *fields) uint(v uint64) *fields {
 	f.parts = append(f.parts, strconv.FormatUint(v, 10))
 	return f
+}
+
+func requireProtection(version string) error {
+	if version == EventVersionV1 || version == EventVersionV2 {
+		return fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+	}
+	return nil
+}
+
+// optionalID writes an identifier that may legitimately be absent. A level
+// that is not set reserves no name, and "-" says so in one spelling.
+func (f *fields) optionalID(s string) *fields {
+	if s == "" {
+		return f.name("-")
+	}
+	return f.id(s)
+}
+
+func (f *fields) ref(r session.ProtectionRef) *fields {
+	f.enum(protectionRefNames[r.Kind], "protection reference")
+	if r.Kind == session.ProtectionRefEntry {
+		return f.optionalID(r.OrderID).uint(0)
+	}
+	return f.optionalID("").uint(r.EpisodeID)
 }
 
 // boolean has one spelling and only one, so a payload cannot say the same

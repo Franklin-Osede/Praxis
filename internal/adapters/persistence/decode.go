@@ -141,35 +141,37 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		}
 
 	case typeProtectionPlaced:
-		if version == EventVersionV1 {
-			return nil, fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		if err := requireProtection(version); err != nil {
+			return nil, err
 		}
 		kind = session.KindProtectionPlaced
 		event = session.ProtectionPlaced{
 			Envelope:     envelope(at, sequence, kind),
 			EntryOrderID: r.id(), StopPrice: r.ticks(), TargetPrice: r.ticks(),
+			StopOrderID: r.optionalID(), TargetOrderID: r.optionalID(),
 		}
 
 	case typeProtectionChanged:
-		if version == EventVersionV1 {
-			return nil, fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+		if err := requireProtection(version); err != nil {
+			return nil, err
 		}
 		kind = session.KindProtectionReplaced
-		event = session.ProtectionReplaced{
-			Envelope: envelope(at, sequence, kind), EpisodeID: r.uint(),
-			PreviousStopPrice: r.ticks(), PreviousTargetPrice: r.ticks(),
-			StopPrice: r.ticks(), TargetPrice: r.ticks(), Widened: r.boolean(),
-		}
+		replaced := session.ProtectionReplaced{Envelope: envelope(at, sequence, kind), Ref: r.ref()}
+		replaced.PreviousStopPrice, replaced.PreviousTargetPrice = r.ticks(), r.ticks()
+		replaced.StopPrice, replaced.TargetPrice = r.ticks(), r.ticks()
+		replaced.StopOrderID, replaced.TargetOrderID = r.optionalID(), r.optionalID()
+		replaced.Widened = r.boolean()
+		event = replaced
 
-	case typeProtectionRemoved:
-		if version == EventVersionV1 {
-			return nil, fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+	case typeProtectionEnded:
+		if err := requireProtection(version); err != nil {
+			return nil, err
 		}
-		kind = session.KindProtectionCancelled
-		event = session.ProtectionCancelled{
-			Envelope: envelope(at, sequence, kind), EpisodeID: r.uint(),
-			StopPrice: r.ticks(), TargetPrice: r.ticks(),
-		}
+		kind = session.KindProtectionEnded
+		ended := session.ProtectionEnded{Envelope: envelope(at, sequence, kind), Ref: r.ref()}
+		ended.StopPrice, ended.TargetPrice = r.ticks(), r.ticks()
+		ended.Reason = r.protectionEndReason()
+		event = ended
 
 	case typeSessionEnded:
 		kind = session.KindSessionEnded
@@ -254,6 +256,45 @@ func (r *reader) logicalTime() market.LogicalTime { return market.LogicalTime(r.
 func (r *reader) cents() market.Cents             { return market.Cents(r.int()) }
 func (r *reader) ticks() market.Ticks             { return market.Ticks(r.int()) }
 func (r *reader) qty() market.Qty                 { return market.Qty(r.int()) }
+
+// optionalID reads an identifier that may legitimately be absent.
+func (r *reader) optionalID() string {
+	s := r.next()
+	if s == "-" {
+		return ""
+	}
+	if err := validIdentifier(s); err != nil {
+		r.fail(err)
+	}
+	return s
+}
+
+func (r *reader) ref() session.ProtectionRef {
+	name := r.next()
+	orderID, episodeID := r.optionalID(), r.uint()
+	for k, n := range protectionRefNames {
+		if n == name {
+			ref := session.ProtectionRef{Kind: k, OrderID: orderID, EpisodeID: episodeID}
+			if err := ref.Validate(); err != nil {
+				r.fail(err)
+			}
+			return ref
+		}
+	}
+	r.fail(fmt.Errorf("%w: protection reference %q", ErrSyntax, name))
+	return session.ProtectionRef{}
+}
+
+func (r *reader) protectionEndReason() session.ProtectionEndReason {
+	s := r.next()
+	for k, name := range protectionEndNames {
+		if name == s {
+			return k
+		}
+	}
+	r.fail(fmt.Errorf("%w: protection end reason %q", ErrSyntax, s))
+	return 0
+}
 
 func (r *reader) boolean() bool {
 	switch s := r.next(); s {

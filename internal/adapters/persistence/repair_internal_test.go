@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -637,5 +638,75 @@ func TestAV1JournalRefusesAV2FieldInsideAValidLine(t *testing.T) {
 	withStreak.Context.ConsecutiveLosingTrades = 0
 	if _, err := w.Append([]session.Event{withStreak}); err != nil {
 		t.Fatalf("a v1 decision was refused: %v", err)
+	}
+}
+
+// Scenario: a journal a real session produced, with protection in it, survives
+// framing, proof and a resume
+//
+// A golden written before the first real flow only freezes a guess. This is the
+// flow, and it is what publishes v3.
+func TestARealProtectedJournalRoundTrips(t *testing.T) {
+	path := tempJournal(t)
+	w, err := OpenWriter(path, DurableEveryBatch)
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	if w.PayloadVersion() != EventVersionV3 {
+		t.Fatalf("a new journal is written in %q, want v3", w.PayloadVersion())
+	}
+
+	s, err := session.New(sessionConfig(), 1_000, w)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := s.OpenTradingSession(2_000, "d1"); err != nil {
+		t.Fatalf("OpenTradingSession: %v", err)
+	}
+	q := market.Quote{Instrument: mnqInstrument(), Time: 3_000, Bid: 20_000, Ask: 20_001, BidSize: 50, AskSize: 50}
+	if err := s.Observe(q, 1); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	entry, err := market.NewLimitOrder("entry", mnqInstrument(), market.SideBuy, 2, 19_000)
+	if err != nil {
+		t.Fatalf("NewLimitOrder: %v", err)
+	}
+	if err := s.SubmitOrderWithProtection(entry, 18_900, 19_500); err != nil {
+		t.Fatalf("SubmitOrderWithProtection: %v", err)
+	}
+	if err := s.ReplaceProtection(
+		session.ProtectionRef{Kind: session.ProtectionRefEntry, OrderID: "entry"}, 18_800, 19_500,
+	); err != nil {
+		t.Fatalf("ReplaceProtection: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	report, err := Prove(path)
+	if err != nil || !report.Proved {
+		t.Fatalf("Prove: %v %+v", err, report)
+	}
+
+	state, journal, err := Recover(path)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if journal.PayloadVersion != EventVersionV3 {
+		t.Fatalf("version: got %q", journal.PayloadVersion)
+	}
+	if !reflect.DeepEqual(journal.Events(), s.Events()) {
+		t.Fatal("the journal on disk differs from the one in memory")
+	}
+	if len(state.PlannedProtections) != 1 || state.PlannedProtections[0].StopPrice != 18_800 {
+		t.Fatalf("planned: got %+v", state.PlannedProtections)
+	}
+
+	resumed, err := session.Resume(state, nil)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !reflect.DeepEqual(resumed.PlannedProtections(), s.PlannedProtections()) {
+		t.Fatal("a resumed session forgot the protection")
 	}
 }

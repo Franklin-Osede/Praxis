@@ -18,6 +18,7 @@ var (
 	ErrUnexpectedSequence = errors.New("session: the log is not one contiguous ordering")
 	ErrCounterOverflow    = errors.New("session: a counter in the log cannot be represented")
 	ErrEpisode            = errors.New("session: position changes do not describe an episode")
+	ErrProtectionRef      = errors.New("session: a protection reference names neither an entry nor an episode")
 
 	// ErrFabricated reports a recorded fact the aggregates did not produce.
 	// A journal is not a source of truth because it is well formed; it is one
@@ -47,6 +48,12 @@ func kindOf(e Event) Kind {
 		return KindOrderRested
 	case OrderCancelled:
 		return KindOrderCancelled
+	case ProtectionPlaced:
+		return KindProtectionPlaced
+	case ProtectionReplaced:
+		return KindProtectionReplaced
+	case ProtectionEnded:
+		return KindProtectionEnded
 	case FillProduced:
 		return KindFillProduced
 	case PositionChanged:
@@ -88,6 +95,12 @@ type ReplayedState struct {
 	// open when a run was interrupted must still be open when it resumes, or
 	// the close that ends it would arrive with nothing to end.
 	episodes episodeProjection
+
+	// PlannedProtections are the protections whose entries have not filled,
+	// and UsedOrderIDs every identifier the journal has spent — never reused,
+	// so a resumed session must carry them.
+	PlannedProtections []PlannedProtection
+	UsedOrderIDs       []string
 
 	// Working is the set of orders waiting for a later observation, in the
 	// order they were submitted. A session that resumed without it would
@@ -134,6 +147,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 	state := &ReplayedState{Config: started.Config, Account: account, Challenge: eval}
 	var (
 		episodes         episodeProjection
+		protections      protectionProjection
 		lastTime         market.LogicalTime
 		pendingChanges   []portfolio.PositionEvent
 		pendingDecisions []challenge.Event
@@ -275,6 +289,24 @@ func Replay(events []Event) (*ReplayedState, error) {
 			if state.OrdersThisSession, err = addOrders(state.OrdersThisSession, 1); err != nil {
 				return nil, err
 			}
+			if err := protections.claim(v.Order.ID); err != nil {
+				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+			}
+
+		case ProtectionPlaced:
+			if err := protections.applyPlaced(v); err != nil {
+				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+			}
+
+		case ProtectionReplaced:
+			if err := protections.applyReplaced(v); err != nil {
+				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+			}
+
+		case ProtectionEnded:
+			if err := protections.applyEnded(v); err != nil {
+				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+			}
 		}
 	}
 
@@ -283,6 +315,8 @@ func Replay(events []Event) (*ReplayedState, error) {
 			ErrFabricated, len(pendingChanges), len(pendingDecisions))
 	}
 
+	state.PlannedProtections = protections.snapshot()
+	state.UsedOrderIDs = protections.usedIdentifiers()
 	state.Events = make([]Event, len(events))
 	copy(state.Events, events)
 	return state, nil
@@ -313,7 +347,7 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Session{
+	resumed := &Session{
 		cfg:                 state.Config,
 		account:             state.Account,
 		eval:                state.Challenge,
@@ -330,7 +364,9 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 		sessionRealisedCts:  state.SessionRealisedCts,
 		working:             restoreWorking(state.Working),
 		committer:           committer,
-	}, nil
+	}
+	resumed.protections.restore(state.PlannedProtections, state.UsedOrderIDs)
+	return resumed, nil
 }
 
 func restoreWorking(orders []market.Order) []workingOrder {
@@ -363,10 +399,15 @@ func Verify(events []Event) error {
 		valued      bool
 		err         error
 
-		// The same projection the live session and Replay use. A second
+		// The same projections the live session and Replay use. A second
 		// implementation would eventually disagree with the first, and the
 		// disagreement would be between a journal and the thing checking it.
-		episodes episodeProjection
+		episodes    episodeProjection
+		protections protectionProjection
+
+		// sides remembers which way an entry would open, which is what makes a
+		// stop's move away from it a widening.
+		sides = map[string]bool{}
 	)
 
 	for _, e := range events {
@@ -421,6 +462,42 @@ func Verify(events []Event) error {
 			}
 			if orders, err = addOrders(orders, 1); err != nil {
 				return err
+			}
+			sides[v.Order.ID] = v.Order.Side == market.SideBuy
+
+		case ProtectionPlaced:
+			if err := protections.applyPlaced(v); err != nil {
+				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+			}
+
+		case ProtectionReplaced:
+			planned, ok := protections.plannedFor(v.Ref.OrderID)
+			if !ok {
+				return fmt.Errorf("%w: a change to a protection that was not planned", ErrContradictoryLog)
+			}
+			// The previous levels are recorded, so they are checked rather
+			// than believed, and Widened is derived, so it is recomputed.
+			if v.PreviousStopPrice != planned.stopPrice || v.PreviousTargetPrice != planned.targetPrice {
+				return fmt.Errorf("%w: a change records %d/%d as the previous levels, the events before it say %d/%d",
+					ErrContradictoryLog, v.PreviousStopPrice, v.PreviousTargetPrice,
+					planned.stopPrice, planned.targetPrice)
+			}
+			if want := widened(sides[v.Ref.OrderID], planned.stopPrice, v.StopPrice); v.Widened != want {
+				return fmt.Errorf("%w: a change records widened=%v, the levels say %v",
+					ErrContradictoryLog, v.Widened, want)
+			}
+			if err := protections.applyReplaced(v); err != nil {
+				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+			}
+
+		case ProtectionEnded:
+			planned, ok := protections.plannedFor(v.Ref.OrderID)
+			if ok && (v.StopPrice != planned.stopPrice || v.TargetPrice != planned.targetPrice) {
+				return fmt.Errorf("%w: an ending records levels %d/%d, the events before it say %d/%d",
+					ErrContradictoryLog, v.StopPrice, v.TargetPrice, planned.stopPrice, planned.targetPrice)
+			}
+			if err := protections.applyEnded(v); err != nil {
+				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
 			}
 		}
 	}

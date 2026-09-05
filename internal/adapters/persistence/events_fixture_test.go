@@ -12,8 +12,10 @@ import (
 
 var mnq = market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 
-// everyEventTypeV2 is everyEventType plus everything only v2 can express: the
-// protection events, and a decision carrying a losing-trade streak.
+// everyEventTypeV2 is everyEventType plus the one thing only v2 added: a
+// decision carrying a losing-trade streak. The protection events that were
+// declared in v2 were never written by anything and could not be — see
+// ADR-014 — so they are not part of it.
 func everyEventTypeV2() []session.Event {
 	events := everyEventType()
 	for n, e := range events {
@@ -22,20 +24,30 @@ func everyEventTypeV2() []session.Event {
 			events[n] = o
 		}
 	}
-	return append(events,
+	return events
+}
+
+// everyEventTypeV3 adds protection, whose shape ADR-014 settled and whose
+// producer exists in the same change that publishes these bytes.
+func everyEventTypeV3() []session.Event {
+	return append(everyEventTypeV2(),
 		session.ProtectionPlaced{
 			Envelope:     session.Envelope{Time: 9_000, Sequence: 12, Kind: session.KindProtectionPlaced},
 			EntryOrderID: "o-4", StopPrice: 19_900, TargetPrice: 20_400,
+			StopOrderID: "praxis:12:stop", TargetOrderID: "praxis:12:target",
 		},
 		session.ProtectionReplaced{
 			Envelope:          session.Envelope{Time: 9_000, Sequence: 13, Kind: session.KindProtectionReplaced},
-			EpisodeID:         10,
+			Ref:               session.ProtectionRef{Kind: session.ProtectionRefEntry, OrderID: "o-4"},
 			PreviousStopPrice: 19_900, PreviousTargetPrice: 20_400,
-			StopPrice: 19_800, TargetPrice: 20_400, Widened: true,
+			StopPrice: 19_800, TargetPrice: 0,
+			StopOrderID: "praxis:12:stop", TargetOrderID: "",
+			Widened: true,
 		},
-		session.ProtectionCancelled{
-			Envelope:  session.Envelope{Time: 9_000, Sequence: 14, Kind: session.KindProtectionCancelled},
-			EpisodeID: 10, StopPrice: 19_800, TargetPrice: 20_400,
+		session.ProtectionEnded{
+			Envelope:  session.Envelope{Time: 9_000, Sequence: 14, Kind: session.KindProtectionEnded},
+			Ref:       session.ProtectionRef{Kind: session.ProtectionRefEpisode, EpisodeID: 10},
+			StopPrice: 19_800, Reason: session.ProtectionWithdrawnByTrader,
 		},
 	)
 }

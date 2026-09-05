@@ -9,3 +9,6 @@ order_cancelled 3000 8 o-3 6 unfillable_remainder
 fill_produced 3000 9 o-1 MNQ 50 3000 sell 20050 3
 position_changed 3000 10 reduced MNQ 50 sell 3 20050 -750 150
 session_ended 9000 11 2026-08-27
+protection_placed 9000 12 o-4 19900 20400 praxis:12:stop praxis:12:target
+protection_replaced 9000 13 entry o-4 0 19900 20400 19800 0 praxis:12:stop - 1
+protection_ended 9000 14 episode - 10 19800 0 withdrawn_by_trader

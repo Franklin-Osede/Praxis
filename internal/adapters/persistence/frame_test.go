@@ -249,7 +249,7 @@ func TestVersionCombinationsAreExplicit(t *testing.T) {
 		line string
 		want error
 	}{
-		{"a known container with an unknown payload", "PRAXIS-EVENT-STORE 1 praxis.event.v3\n", persistence.ErrVersionPair},
+		{"a known container with an unknown payload", "PRAXIS-EVENT-STORE 1 praxis.event.v9\n", persistence.ErrVersionPair},
 		{"an unknown container with a known payload", "PRAXIS-EVENT-STORE 2 praxis.event.v1\n", persistence.ErrVersionPair},
 		{"another file entirely", "SOMETHING-ELSE 1 praxis.event.v1\n", persistence.ErrMagic},
 		{"a version line with a missing field", "PRAXIS-EVENT-STORE 1\n", persistence.ErrMagic},

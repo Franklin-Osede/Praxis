@@ -49,14 +49,16 @@ import (
 const (
 	EventVersionV1 = "praxis.event.v1"
 	EventVersionV2 = "praxis.event.v2"
+	EventVersionV3 = "praxis.event.v3"
 
 	// EventVersion is what a new journal is written in.
-	EventVersion = EventVersionV2
+	EventVersion = EventVersionV3
 )
 
 // ErrUnsupportedInVersion reports an event, or a field, that the payload
-// version in use has no way to express. A v1 journal cannot carry protection:
-// it honestly lacks those facts rather than pretending to hold them.
+// version in use has no way to express. A v1 journal cannot carry a losing
+// trade streak and a v2 journal cannot carry protection: they honestly lack
+// those facts rather than pretending to hold them.
 var ErrUnsupportedInVersion = errors.New("persistence: this payload version cannot express that event")
 
 // Limits checked before memory is reserved, so a corrupt length cannot ask for
