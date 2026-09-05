@@ -1,8 +1,8 @@
 # ADR-014 — Protection is an aggregate, not two prices
 
 Status: accepted. `praxis.event.v3` is published by the commands that place,
-change and withdraw a planned protection. Activation and execution are the
-slices after it.
+change and withdraw a protection, and a plan now becomes active from the real
+effect of a fill. One-cancels-the-other execution is the slice after it.
 
 ## What this corrects
 
@@ -117,6 +117,56 @@ both legs cancelled  -> Ended
 The second line is the one that made this necessary: a stop that reached its
 level has triggered and cannot untrigger (ADR-004), so its remainder is
 cancelled — and the target survives over what is left.
+
+### Activation reads the whole effect of a fill, not each change in turn
+
+A reversal is one fill producing two changes: the position closes and the
+opposite one opens. A projection reacting to the close alone would end the
+arriving plan as having opened no exposure, one event before the exposure it
+opens, and the plan could never be tied to the episode it was placed for.
+
+A fill's changes are therefore assembled before any of them is recorded, and
+the batch is written in causal order:
+
+```text
+FillProduced
+PositionChanged   closed
+ProtectionEnded   the old episode's protection, reason=flipped
+PositionChanged   opened
+                  the plan activates over the new episode, derived
+```
+
+Activation itself is **derived and not recorded**. There is no
+`ProtectionActivated`: a plan binding to an episode is a consequence of a
+position change that is already in the log, and an event saying so would be a
+second copy of a fact — the kind that can disagree with the first.
+
+Only an event ever removes a protection. Folding a change never does. That is
+what lets `Verify`, which holds the events but not the fills, reach the same
+state as `Replay`, which holds both: `Verify` cannot see whether a close was a
+reversal or an exit, and that is the only thing the ending's reason turns on.
+So `Verify` demands that a closed episode keeps nothing protecting it, and
+`Replay` proves which ending was owed and why.
+
+### The levels must be on the right sides of each other
+
+A long whose stop sits above its target has the two legs doing each other's
+job, and both can be reachable within a single observation — at which point
+which one executes is decided by the order the engine happens to visit them in,
+and the log records an outcome the trader could not have predicted from what
+they placed. Equality is the same defect with no gap in it.
+
+```text
+long, both present    stop < target
+short, both present   target < stop
+either alone          nothing to be on the wrong side of
+```
+
+It does **not** require the entry's price to lie between them. A market order
+can gap, and its fill is not known when the levels are decided. A level the
+market has already passed is a question for activation, which knows what the
+fill actually was; deciding it here would rewrite the trader's decision with
+information they did not have.
 
 ### Only one protection governs an episode
 
@@ -236,29 +286,29 @@ replay and a resume:
 
 1. An entry that never executes, cancelled — its planned protection ends. ✓
 2. An entry that never executes, left waiting — the protection is still
-   planned, and a later fill activates it. (Planned ✓)
+   planned, and a later fill activates it. ✓
 3. A stop moved while the entry is still waiting. ✓
 4. Protection withdrawn while the entry keeps waiting. ✓
-5. A partial entry fill — protection covers what opened, not what was ordered.
+5. A partial entry fill — protection covers what opened, not what was ordered. ✓
 6. A later fill of the same entry — the protected quantity grows, no second
-   protection appears.
-7. An addition from a different entry — the protected quantity grows.
-8. A manual partial exit — the protected quantity shrinks.
-9. A manual full exit — both legs are cancelled.
+   protection appears. ✓
+7. An addition from a different entry — the protected quantity grows. ✓
+8. A manual partial exit — the protected quantity shrinks. ✓
+9. A manual full exit — the protection ends with the position. ✓
 10. A target filling wholly — the stop is cancelled with it.
 11. A stop filling partly for want of depth — its remainder is cancelled, the
     target survives over what is left, the episode stays open.
 12. A stop reaching its level with no liquidity at all — the whole leg is
     cancelled, the target survives.
-13. A flip — the old protection ends before the new episode's begins.
+13. A flip — the old protection ends before the new episode's begins. ✓
 14. A resume in each of `Planned`, `Active` with both legs, `Active` with one,
-    and after `Ended`.
+    and after `Ended`. ✓
 15. An entry filling into an episode that is already protected — the new plan
-    ends with `ProtectionAlreadyActive` and the existing quantity grows.
+    ends with `ProtectionAlreadyActive` and the existing quantity grows. ✓
 16. A partial entry fill, then a replacement by episode, then the entry's
-    remainder filling — the replaced levels stand and only the quantity grows.
-17. An identifier reused after its order finished — refused.
-18. An order submitted under the `praxis:` namespace — refused.
+    remainder filling — the replaced levels stand and only the quantity grows. ✓
+17. An identifier reused after its order finished — refused. ✓
+18. An order submitted under the `praxis:` namespace — refused. ✓
 
 ## Consequences
 
@@ -278,8 +328,11 @@ The first of those is small and its exit criterion is small: a planned
 protection can be placed, changed, withdrawn, persisted and reconstructed
 exactly, while its entry is still waiting. Nothing executes a level yet.
 
-Two things belong to the join between that slice and the next, and were done
+Two things belonged to the join between that slice and the next, and were done
 before activation rather than with it: the ending of a plan whose entry was
 cancelled, and the ordering that puts `ProtectionPlaced` before the fill.
-Neither is about activation, and both are what activation would have to stand
-on.
+Neither is about activation, and both are what activation had to stand on.
+
+Ten and eleven and twelve are the remaining scenarios, and all three are
+execution. Nothing yet executes a level: what is settled is which protection
+governs which exposure, and how much.

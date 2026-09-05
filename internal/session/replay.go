@@ -97,9 +97,11 @@ type ReplayedState struct {
 	episodes episodeProjection
 
 	// PlannedProtections are the protections whose entries have not filled,
-	// and UsedOrderIDs every identifier the journal has spent — never reused,
-	// so a resumed session must carry them.
+	// ActiveProtections those bound to an open episode, and UsedOrderIDs every
+	// identifier the journal has spent — never reused, so a resumed session
+	// must carry them.
 	PlannedProtections []PlannedProtection
+	ActiveProtections  []ActiveProtection
 	UsedOrderIDs       []string
 
 	// Working is the set of orders waiting for a later observation, in the
@@ -151,6 +153,11 @@ func Replay(events []Event) (*ReplayedState, error) {
 		lastTime         market.LogicalTime
 		pendingChanges   []portfolio.PositionEvent
 		pendingDecisions []challenge.Event
+
+		// fillOrderID is the order whose fill the position changes now being
+		// read belong to. A change does not name it, and protection binds to
+		// the decision that opened the exposure, not to the exposure alone.
+		fillOrderID string
 	)
 
 	for n, e := range events {
@@ -166,7 +173,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 		}
 		lastTime = header.Time
 
-		if _, ok := e.(PositionChanged); !ok && len(pendingChanges) > 0 {
+		if _, ok := e.(PositionChanged); !ok && len(pendingChanges) > 0 && !owedEndingStandsHere(e, &protections) {
 			return nil, fmt.Errorf("%w: event %d follows a fill whose %d changes were not recorded",
 				ErrFabricated, n, len(pendingChanges))
 		}
@@ -190,6 +197,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 			if err != nil {
 				return nil, err
 			}
+			fillOrderID = v.Fill.OrderID
 			// A fill from an order that never rested matches nothing here,
 			// which is correct: it was gone before it could wait.
 			if state.Working, err = reduceWorking(state.Working, v.Fill.OrderID, v.Fill.Qty); err != nil {
@@ -208,9 +216,22 @@ func Replay(events []Event) (*ReplayedState, error) {
 			// The episode projection runs on changes already proved against
 			// what applying the fill produced, so what it derives rests on
 			// facts rather than on the log's word for them.
+			symbol := v.Change.Instrument.Symbol
+			episodeID, _ := episodes.episodeID(symbol)
 			if err := episodes.apply(v.Sequence, v.Change); err != nil {
 				return nil, err
 			}
+			if v.Change.Kind == portfolio.PositionOpened {
+				episodeID, _ = episodes.episodeID(symbol)
+			}
+			// What is left of this fill's effect says whether a close is a
+			// reversal, which is the one thing the ending of a protection
+			// turns on and the one thing a reader without the fills — Verify —
+			// cannot see.
+			flip := v.Change.Kind == portfolio.PositionClosed && len(pendingChanges) > 0
+			protections.owe(protections.endingsAfter(fillOrderID, episodeID, v.Change, flip)...)
+			protections.bind(fillOrderID, episodeID, v.Change, episodes.netQtyOf(symbol))
+
 			state.ConsecutiveLosingTrades = episodes.consecutiveLosingTradesNow()
 			state.episodes = episodes
 			if v.Change.Kind != portfolio.PositionReduced && v.Change.Kind != portfolio.PositionClosed {
@@ -323,10 +344,26 @@ func Replay(events []Event) (*ReplayedState, error) {
 	}
 
 	state.PlannedProtections = protections.snapshot()
+	state.ActiveProtections = protections.activeSnapshot()
 	state.UsedOrderIDs = protections.usedIdentifiers()
 	state.Events = make([]Event, len(events))
 	copy(state.Events, events)
 	return state, nil
+}
+
+// owedEndingStandsHere allows the one thing that may come between two changes
+// of a single fill: the ending of a protection that those changes require.
+//
+// A reversal reads close, ending, open, because the protection the close undoes
+// must be gone before the protection the open activates begins. Nothing else
+// may stand there, and which ending is owed is settled immediately afterwards.
+//
+// The second half of the condition is defence in depth: refusing an ending
+// nobody owes cannot be shown by forgery, because a journal that puts one there
+// has to displace something else, and the displacement is caught first.
+func owedEndingStandsHere(e Event, protections *protectionProjection) bool {
+	_, ok := e.(ProtectionEnded)
+	return ok && len(protections.owed) > 0
 }
 
 // checkValuation rebuilds a recorded valuation from the account and the last
@@ -372,7 +409,8 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 		working:             restoreWorking(state.Working),
 		committer:           committer,
 	}
-	resumed.protections.restore(state.PlannedProtections, state.UsedOrderIDs)
+	resumed.protections.restore(state.PlannedProtections, state.ActiveProtections,
+		state.Config.Instrument.Symbol, state.UsedOrderIDs)
 	return resumed, nil
 }
 
@@ -415,6 +453,10 @@ func Verify(events []Event) error {
 		// sides remembers which way an entry would open, which is what makes a
 		// stop's move away from it a widening.
 		sides = map[string]bool{}
+
+		// fillOrderID is the order whose fill the position changes now being
+		// read belong to.
+		fillOrderID string
 	)
 
 	for _, e := range events {
@@ -432,13 +474,34 @@ func Verify(events []Event) error {
 		case AccountValued:
 			balanceCts, equityCts, valued = v.BalanceCts, v.EquityCts, true
 
+		case FillProduced:
+			fillOrderID = v.Fill.OrderID
+
 		case PositionChanged:
 			if netQty, err = market.AddQty(netQty, signedQty(v.Change.Side, v.Change.Qty)); err != nil {
 				return err
 			}
+			symbol := v.Change.Instrument.Symbol
+			episodeID, _ := episodes.episodeID(symbol)
 			if err := episodes.apply(v.Sequence, v.Change); err != nil {
 				return err
 			}
+			if v.Change.Kind == portfolio.PositionOpened {
+				episodeID, _ = episodes.episodeID(symbol)
+			}
+			// Verify has the events and not the fills, so it demands only what
+			// the events alone establish: an episode that closed can have no
+			// protection left over. Why it ended — a reversal or an exit — is
+			// what the fill decides, and Replay is what proves it.
+			if v.Change.Kind == portfolio.PositionClosed {
+				if active, ok := protections.activeFor(episodeID); ok {
+					protections.owe(owedEnding{
+						ref:       ProtectionRef{Kind: ProtectionRefEpisode, EpisodeID: episodeID},
+						stopPrice: active.stopPrice, targetPrice: active.targetPrice,
+					})
+				}
+			}
+			protections.bind(fillOrderID, episodeID, v.Change, episodes.netQtyOf(symbol))
 			if v.Change.Kind != portfolio.PositionReduced && v.Change.Kind != portfolio.PositionClosed {
 				continue
 			}
@@ -485,18 +548,25 @@ func Verify(events []Event) error {
 			}
 
 		case ProtectionReplaced:
-			planned, ok := protections.plannedFor(v.Ref.OrderID)
+			current, ok := protections.levelsFor(v.Ref)
 			if !ok {
-				return fmt.Errorf("%w: a change to a protection that was not planned", ErrContradictoryLog)
+				return fmt.Errorf("%w: a change to a protection that does not exist", ErrContradictoryLog)
 			}
 			// The previous levels are recorded, so they are checked rather
 			// than believed, and Widened is derived, so it is recomputed.
-			if v.PreviousStopPrice != planned.stopPrice || v.PreviousTargetPrice != planned.targetPrice {
+			if v.PreviousStopPrice != current.stopPrice || v.PreviousTargetPrice != current.targetPrice {
 				return fmt.Errorf("%w: a change records %d/%d as the previous levels, the events before it say %d/%d",
 					ErrContradictoryLog, v.PreviousStopPrice, v.PreviousTargetPrice,
-					planned.stopPrice, planned.targetPrice)
+					current.stopPrice, current.targetPrice)
 			}
-			if want := widened(sides[v.Ref.OrderID], planned.stopPrice, v.StopPrice); v.Widened != want {
+			// A planned protection's direction is the side its entry would
+			// open; an active one carries its own, because the entry that
+			// placed it may be long finished.
+			long := current.long
+			if v.Ref.Kind == ProtectionRefEntry {
+				long = sides[v.Ref.OrderID]
+			}
+			if want := widened(long, current.stopPrice, v.StopPrice); v.Widened != want {
 				return fmt.Errorf("%w: a change records widened=%v, the levels say %v",
 					ErrContradictoryLog, v.Widened, want)
 			}
@@ -505,10 +575,10 @@ func Verify(events []Event) error {
 			}
 
 		case ProtectionEnded:
-			planned, ok := protections.plannedFor(v.Ref.OrderID)
-			if ok && (v.StopPrice != planned.stopPrice || v.TargetPrice != planned.targetPrice) {
+			current, ok := protections.levelsFor(v.Ref)
+			if ok && (v.StopPrice != current.stopPrice || v.TargetPrice != current.targetPrice) {
 				return fmt.Errorf("%w: an ending records levels %d/%d, the events before it say %d/%d",
-					ErrContradictoryLog, v.StopPrice, v.TargetPrice, planned.stopPrice, planned.targetPrice)
+					ErrContradictoryLog, v.StopPrice, v.TargetPrice, current.stopPrice, current.targetPrice)
 			}
 			if err := protections.applyEnded(v); err != nil {
 				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)

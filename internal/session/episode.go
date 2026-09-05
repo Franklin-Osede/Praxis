@@ -126,6 +126,15 @@ func (p *episodeProjection) consecutiveLosingTradesNow() uint32 {
 	return p.consecutiveLosingTrades
 }
 
+// netQtyOf is the signed net quantity of the open episode in an instrument.
+// A closed episode leaves nothing, which is zero exposure and not an absence.
+func (p *episodeProjection) netQtyOf(symbol string) market.Qty {
+	if at := p.indexOf(symbol); at >= 0 {
+		return p.open[at].netQty
+	}
+	return 0
+}
+
 // episodeID is the identity of the open episode in an instrument, and whether
 // there is one. Protection placed before any fill has no episode to attach to,
 // which is why it is bound to the entry's order instead.

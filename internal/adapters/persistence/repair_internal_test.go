@@ -679,6 +679,16 @@ func TestARealProtectedJournalRoundTrips(t *testing.T) {
 	); err != nil {
 		t.Fatalf("ReplaceProtection: %v", err)
 	}
+	// A second observation reaches the limit, so the entry fills, the plan
+	// activates, and the journal on disk holds a protection in both of the
+	// states it can be in.
+	reached := market.Quote{Instrument: mnqInstrument(), Time: 4_000, Bid: 18_990, Ask: 18_991, BidSize: 50, AskSize: 50}
+	if err := s.Observe(reached, 2); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if len(s.ActiveProtections()) != 1 {
+		t.Fatalf("the fixture did not activate: %+v", s.ActiveProtections())
+	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -698,15 +708,21 @@ func TestARealProtectedJournalRoundTrips(t *testing.T) {
 	if !reflect.DeepEqual(journal.Events(), s.Events()) {
 		t.Fatal("the journal on disk differs from the one in memory")
 	}
-	if len(state.PlannedProtections) != 1 || state.PlannedProtections[0].StopPrice != 18_800 {
-		t.Fatalf("planned: got %+v", state.PlannedProtections)
+	if len(state.PlannedProtections) != 0 {
+		t.Fatalf("planned: got %+v, want the plan activated", state.PlannedProtections)
+	}
+	if len(state.ActiveProtections) != 1 || state.ActiveProtections[0].StopPrice != 18_800 {
+		t.Fatalf("active: got %+v", state.ActiveProtections)
+	}
+	if state.ActiveProtections[0].ProtectedQty != 2 {
+		t.Fatalf("cover: got %d contracts, want 2", state.ActiveProtections[0].ProtectedQty)
 	}
 
 	resumed, err := session.Resume(state, nil)
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	if !reflect.DeepEqual(resumed.PlannedProtections(), s.PlannedProtections()) {
+	if !reflect.DeepEqual(resumed.ActiveProtections(), s.ActiveProtections()) {
 		t.Fatal("a resumed session forgot the protection")
 	}
 }

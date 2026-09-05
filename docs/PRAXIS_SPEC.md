@@ -232,8 +232,19 @@ and a plan written afterwards could only be tied to it by inferring causation
 backwards from ordering. **A plan never outlives its entry**: cancelling the
 entry — by the trader, or because a market order's remainder could not fill —
 ends the plan in the same batch, in that order, and `Replay` and `Verify` both
-refuse a journal in which anything else stands between the two. Activation,
-protected quantities and execution are the slices after it. The protection events in v2 were defined ahead of any producer, and
+refuse a journal in which anything else stands between the two.
+
+**Activation is derived, never recorded**: a plan becomes active because a
+position change already in the log opened the exposure it was placed for, and
+an event saying so would be a second copy of a fact. A fill's changes are
+assembled before any of them is written, because a reversal is one fill closing
+one position and opening another, and a decision taken on the close alone would
+end the arriving plan as having opened nothing one event before the exposure it
+opens. Only an event ever removes a protection — folding a change never does —
+which is what lets `Verify`, holding the events but not the fills, reach the
+same state as `Replay`, holding both. The two legs must also be on the right
+sides of each other, or they do each other's job and both can be reachable in a
+single observation. One-cancels-the-other execution is the slice after it. The protection events in v2 were defined ahead of any producer, and
 that is precisely what let them be wrong: a schema is not proven until
 something both produces and consumes it. See
 [`docs/adr/014-protection-is-an-aggregate.md`](adr/014-protection-is-an-aggregate.md).

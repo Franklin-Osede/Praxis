@@ -264,6 +264,79 @@ func TestReplacingWithNothingIsRefused(t *testing.T) {
 	}
 }
 
+// Scenario: the two levels must be on the right sides of each other
+//
+// A long protected with its stop above its target has the legs doing each
+// other's job, and both can be reachable in one observation — at which point
+// which of them executes depends on the order the engine visits them in, and
+// the log records an outcome the trader could not have predicted from what
+// they placed. Equality is the same defect with no gap in it.
+func TestLevelsOnTheWrongSidesAreRefused(t *testing.T) {
+	tests := []struct {
+		name         string
+		side         market.Side
+		stop, target market.Ticks
+		want         error
+	}{
+		{"a long with the stop above the target", market.SideBuy, 20_500, 19_500, session.ErrProtectionInverted},
+		{"a short with the target above the stop", market.SideSell, 19_500, 20_500, session.ErrProtectionInverted},
+		{"levels that meet", market.SideBuy, 20_000, 20_000, session.ErrProtectionInverted},
+		{"a long the right way round", market.SideBuy, 19_500, 20_500, nil},
+		{"a short the right way round", market.SideSell, 20_500, 19_500, nil},
+		// One level alone has nothing to be on the wrong side of.
+		{"a stop alone, wherever it is", market.SideBuy, 20_500, 0, nil},
+		{"a target alone, wherever it is", market.SideBuy, 0, 19_500, nil},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSession(t)
+			mustOpen(t, s, 2_000, "d1")
+			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+			before := s.JournalLen()
+
+			// A limit far from the market, so nothing fills and this is about
+			// the levels alone.
+			limit := market.Ticks(19_000)
+			if tc.side == market.SideSell {
+				limit = 21_000
+			}
+			err := s.SubmitOrderWithProtection(limitOrder(t, "entry", tc.side, 2, limit), tc.stop, tc.target)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error: got %v, want %v", err, tc.want)
+			}
+			if tc.want == nil {
+				return
+			}
+			if s.JournalLen() != before {
+				t.Fatal("a refused command was recorded")
+			}
+			if len(s.WorkingOrders()) != 0 || len(s.PlannedProtections()) != 0 {
+				t.Fatal("a refused command left something behind")
+			}
+		})
+	}
+}
+
+// A replacement is held to the same geometry, against the side the entry would
+// open — not against the side of whoever asked.
+func TestAReplacementCannotInvertTheLevels(t *testing.T) {
+	s := protectedSession(t, 18_900, 19_500)
+	before := s.JournalLen()
+
+	if err := s.ReplaceProtection(entryRef("entry"), 19_600, 19_500); !errors.Is(err, session.ErrProtectionInverted) {
+		t.Fatalf("error: got %v, want %v", err, session.ErrProtectionInverted)
+	}
+	if s.JournalLen() != before || onlyPlanned(t, s).StopPrice != 18_900 {
+		t.Fatal("a refused replacement changed the protection")
+	}
+
+	// Moving a single level past nothing is still allowed.
+	if err := s.ReplaceProtection(entryRef("entry"), 19_400, 19_500); err != nil {
+		t.Fatalf("a replacement the right way round was refused: %v", err)
+	}
+}
+
 // Scenario: a name is never reused, and the system's namespace is its own
 func TestIdentifiersAreSpentForever(t *testing.T) {
 	s := newSession(t)
@@ -363,13 +436,16 @@ func TestProtectionCommandsNeedASession(t *testing.T) {
 	}
 }
 
-// An episode reference is refused with a message that says why, rather than
-// pretending it works.
-func TestAnEpisodeReferenceIsNotYetPossible(t *testing.T) {
+// A reference naming a protection that does not exist is refused, whichever
+// kind it is.
+func TestAReferenceToNothingIsRefused(t *testing.T) {
 	s := protectedSession(t, 18_900, 0)
 	ref := session.ProtectionRef{Kind: session.ProtectionRefEpisode, EpisodeID: 7}
-	if err := s.ReplaceProtection(ref, 18_800, 0); !errors.Is(err, session.ErrProtectionNotPlanned) {
-		t.Fatalf("error: got %v, want %v", err, session.ErrProtectionNotPlanned)
+	if err := s.ReplaceProtection(ref, 18_800, 0); !errors.Is(err, session.ErrNoSuchProtection) {
+		t.Fatalf("error: got %v, want %v", err, session.ErrNoSuchProtection)
+	}
+	if err := s.CancelProtection(entryRef("nobody")); !errors.Is(err, session.ErrNoSuchProtection) {
+		t.Fatalf("error: got %v, want %v", err, session.ErrNoSuchProtection)
 	}
 }
 

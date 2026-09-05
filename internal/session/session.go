@@ -420,18 +420,29 @@ func (s *Session) consume(fills []market.Fill) error {
 	return nil
 }
 
+// fillEffect is everything one fill did, held together.
+//
+// Protection is decided from the whole of it and not from each change in turn.
+// A reversal produces a close and an open from a single fill, and a decision
+// taken on the close alone would end the plan as having opened no exposure — a
+// moment before the exposure it opens. See ADR-014.
+type fillEffect struct {
+	fill    market.Fill
+	changes []portfolio.PositionEvent
+}
+
 // applyAndRecord applies fills to the account and records what they did,
 // returning the quantity filled. Nothing is recorded until every fill has been
 // accepted, so a refusal leaves no trace.
 func (s *Session) applyAndRecord(at market.LogicalTime, fills []market.Fill) (market.Qty, error) {
-	applied := make([][]portfolio.PositionEvent, 0, len(fills))
+	effects := make([]fillEffect, 0, len(fills))
 	var filled market.Qty
 	for _, f := range fills {
 		changes, err := s.account.ApplyFill(f)
 		if err != nil {
 			return 0, err
 		}
-		applied = append(applied, changes)
+		effects = append(effects, fillEffect{fill: f, changes: changes})
 		total, err := market.AddQty(filled, f.Qty)
 		if err != nil {
 			return 0, err
@@ -439,13 +450,14 @@ func (s *Session) applyAndRecord(at market.LogicalTime, fills []market.Fill) (ma
 		filled = total
 	}
 
-	for n, f := range fills {
+	for _, effect := range effects {
+		fill := effect.fill
 		if err := s.record(at, KindFillProduced, func(e Envelope) Event {
-			return FillProduced{Envelope: e, Fill: f}
+			return FillProduced{Envelope: e, Fill: fill}
 		}); err != nil {
 			return 0, err
 		}
-		for _, change := range applied[n] {
+		for n, change := range effect.changes {
 			if err := s.record(at, KindPositionChanged, func(e Envelope) Event {
 				return PositionChanged{Envelope: e, Change: change}
 			}); err != nil {
@@ -456,9 +468,25 @@ func (s *Session) applyAndRecord(at market.LogicalTime, fills []market.Fill) (ma
 			}
 			// The projection is fed the sequence the change was recorded at,
 			// which becomes the identity of any episode it opens.
+			symbol := change.Instrument.Symbol
+			episodeID, _ := s.episodes.episodeID(symbol)
 			if err := s.episodes.apply(s.sequence, change); err != nil {
 				return 0, err
 			}
+			if change.Kind == portfolio.PositionOpened {
+				episodeID, _ = s.episodes.episodeID(symbol)
+			}
+
+			// A close with more of the same fill still to come is a reversal.
+			flip := change.Kind == portfolio.PositionClosed && n+1 < len(effect.changes)
+			for _, owed := range s.protections.endingsAfter(fill.OrderID, episodeID, change, flip) {
+				if err := s.recordProtectionEnded(at, protectionLevels{
+					stopPrice: owed.stopPrice, targetPrice: owed.targetPrice,
+				}, owed.ref, owed.reason); err != nil {
+					return 0, err
+				}
+			}
+			s.protections.bind(fill.OrderID, episodeID, change, s.episodes.netQtyOf(symbol))
 		}
 	}
 	return filled, nil
