@@ -109,7 +109,8 @@ func TestExecuteOnQuoteMarketOrder(t *testing.T) {
 	var policy execution.ConservativeExecution
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			result, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			got := result.Fills
 			if err != nil {
 				t.Fatalf("ExecuteOnQuote returned error: %v", err)
 			}
@@ -232,7 +233,8 @@ func TestExecuteOnQuoteLimitOrder(t *testing.T) {
 	var policy execution.ConservativeExecution
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			result, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			got := result.Fills
 			if err != nil {
 				t.Fatalf("ExecuteOnQuote returned error: %v", err)
 			}
@@ -352,7 +354,8 @@ func TestExecuteOnQuoteStopOrder(t *testing.T) {
 	var policy execution.ConservativeExecution
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			result, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			got := result.Fills
 			if err != nil {
 				t.Fatalf("ExecuteOnQuote returned error: %v", err)
 			}
@@ -517,7 +520,8 @@ func TestExecuteOnQuoteRejectsImpossibleInput(t *testing.T) {
 	var policy execution.ConservativeExecution
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			result, err := policy.ExecuteOnQuote(tc.order, tc.quote)
+			got := result.Fills
 			if !errors.Is(err, tc.wantClass) {
 				t.Fatalf("error class: got %v, want %v", err, tc.wantClass)
 			}
@@ -659,7 +663,8 @@ func TestPropertyFillIsNeverBetterThanTheBook(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		q := randomQuote(r)
 		o := randomOrder(r, q)
-		fills, err := policy.ExecuteOnQuote(o, q)
+		result, err := policy.ExecuteOnQuote(o, q)
+		fills := result.Fills
 		if err != nil {
 			t.Fatalf("iteration %d: legal input rejected: %v (order %+v quote %+v)", i, err, o, q)
 		}
@@ -693,7 +698,8 @@ func TestPropertyFillNeverExceedsOrderOrDisplayedSize(t *testing.T) {
 			available = q.BidSize
 		}
 
-		fills, err := policy.ExecuteOnQuote(o, q)
+		result, err := policy.ExecuteOnQuote(o, q)
+		fills := result.Fills
 		if err != nil {
 			t.Fatalf("iteration %d: legal input rejected: %v", i, err)
 		}
@@ -731,7 +737,8 @@ func TestPropertyLimitFillIsNeverOutsideTheLimit(t *testing.T) {
 		if o.Type != market.OrderTypeLimit {
 			continue
 		}
-		fills, err := policy.ExecuteOnQuote(o, q)
+		result, err := policy.ExecuteOnQuote(o, q)
+		fills := result.Fills
 		if err != nil {
 			t.Fatalf("iteration %d: legal input rejected: %v (order %+v quote %+v)", i, err, o, q)
 		}
@@ -767,7 +774,8 @@ func TestPropertyStopFillIsNeverBetterThanItsLevel(t *testing.T) {
 		if o.Type != market.OrderTypeStop {
 			continue
 		}
-		fills, err := policy.ExecuteOnQuote(o, q)
+		result, err := policy.ExecuteOnQuote(o, q)
+		fills := result.Fills
 		if err != nil {
 			t.Fatalf("iteration %d: legal input rejected: %v (order %+v quote %+v)", i, err, o, q)
 		}
@@ -799,7 +807,8 @@ func TestPropertyFillCarriesTheObservationTime(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		q := randomQuote(r)
 		o := randomOrder(r, q)
-		fills, err := policy.ExecuteOnQuote(o, q)
+		result, err := policy.ExecuteOnQuote(o, q)
+		fills := result.Fills
 		if err != nil {
 			t.Fatalf("iteration %d: legal input rejected: %v", i, err)
 		}
@@ -824,7 +833,8 @@ func TestPropertyExecutionIsDeterministic(t *testing.T) {
 		for i := 0; i < 500; i++ {
 			q := randomQuote(r)
 			o := randomOrder(r, q)
-			fills, err := policy.ExecuteOnQuote(o, q)
+			result, err := policy.ExecuteOnQuote(o, q)
+			fills := result.Fills
 			if err != nil {
 				t.Fatalf("run %d iteration %d: legal input rejected: %v", run, i, err)
 			}

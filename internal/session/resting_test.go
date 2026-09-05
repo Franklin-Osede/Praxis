@@ -310,3 +310,135 @@ func TestTheValuationContainsTheFillTheSameObservationCaused(t *testing.T) {
 			valued.EquityCts, valued.BalanceCts)
 	}
 }
+
+// Scenario: a stop that has triggered cannot untrigger
+//
+//	Given a sell stop for ten with only three contracts bid at its level
+//	When the level is reached, three fill and the other seven are cancelled
+//	And when the price comes back above the level, nothing more happens.
+//
+// A stop that reached its level has become a market order, and a market order
+// does not wait. Leaving the remainder working would let it untrigger, and the
+// trader would be protected by an instruction the market had already passed.
+func TestATriggeredStopDoesNotUntrigger(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	mustSubmit(t, s, order("entry", market.SideBuy, 10))
+	mustSubmit(t, s, stopOrder(t, "stop", market.SideSell, 10, 19_900))
+
+	// The level is reached, and the book shows three.
+	mustObserve(t, s, sized(4_000, 19_890, 19_891, 3))
+
+	if working := s.WorkingOrders(); len(working) != 0 {
+		t.Fatalf("working: got %+v, want a triggered stop gone", working)
+	}
+	if p, _ := s.Account().Position(mnq); p.NetQty != 7 {
+		t.Fatalf("position: got %d, want seven left unprotected", p.NetQty)
+	}
+
+	var cancelled session.OrderCancelled
+	for _, e := range s.Events() {
+		if c, ok := e.(session.OrderCancelled); ok && c.OrderID == "stop" {
+			cancelled = c
+		}
+	}
+	if cancelled.RemainingQty != 7 || cancelled.Reason != session.CancelledUnfillableRemainder {
+		t.Fatalf("cancellation: got %+v, want seven named as unfillable", cancelled)
+	}
+
+	// The price comes back. Nothing more may happen: the stop is gone.
+	before := s.JournalLen()
+	mustObserve(t, s, sized(5_000, 19_950, 19_951, 50))
+	for _, e := range s.Events()[before:] {
+		if f, ok := e.(session.FillProduced); ok && f.Fill.OrderID == "stop" {
+			t.Fatal("a cancelled stop filled again")
+		}
+	}
+	if p, _ := s.Account().Position(mnq); p.NetQty != 7 {
+		t.Fatalf("position: got %d, want it unchanged", p.NetQty)
+	}
+}
+
+// Scenario: a stop reaching its level with no liquidity is still triggered
+//
+//	Given a sell stop whose level is reached on an observation showing no
+//	  bid size
+//	Then nothing fills and the whole order is cancelled, because it
+//	  triggered.
+//
+// An empty slice of fills means two different things — never reached, and
+// reached with nothing to trade against — and only the second is irreversible.
+func TestAStopTriggeredWithNoLiquidityIsCancelledWhole(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	mustSubmit(t, s, order("entry", market.SideBuy, 4))
+	mustSubmit(t, s, stopOrder(t, "stop", market.SideSell, 4, 19_900))
+
+	mustObserve(t, s, market.Quote{
+		Instrument: mnq, Time: 4_000,
+		Bid: 19_890, Ask: 19_891, BidSize: 0, AskSize: 50,
+	})
+
+	if working := s.WorkingOrders(); len(working) != 0 {
+		t.Fatalf("working: got %+v, want the stop gone", working)
+	}
+	if p, _ := s.Account().Position(mnq); p.NetQty != 4 {
+		t.Fatalf("position: got %d, want nothing to have filled", p.NetQty)
+	}
+
+	var cancelled session.OrderCancelled
+	for _, e := range s.Events() {
+		if c, ok := e.(session.OrderCancelled); ok && c.OrderID == "stop" {
+			cancelled = c
+		}
+	}
+	if cancelled.RemainingQty != 4 {
+		t.Fatalf("cancellation: got %+v, want the whole order named", cancelled)
+	}
+}
+
+// A stop that has not reached its level keeps waiting, which is the case the
+// triggered rule must not swallow.
+func TestAnUntriggeredStopKeepsWaiting(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	mustSubmit(t, s, order("entry", market.SideBuy, 4))
+	mustSubmit(t, s, stopOrder(t, "stop", market.SideSell, 4, 19_900))
+
+	// Nowhere near it, and with no size either.
+	mustObserve(t, s, market.Quote{
+		Instrument: mnq, Time: 4_000,
+		Bid: 19_990, Ask: 19_991, BidSize: 0, AskSize: 0,
+	})
+
+	if working := s.WorkingOrders(); len(working) != 1 || working[0].Qty != 4 {
+		t.Fatalf("working: got %+v, want it still waiting in full", working)
+	}
+}
+
+// The fill and the cancellation both survive the journal.
+func TestATriggeredStopReconstructs(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	mustSubmit(t, s, order("entry", market.SideBuy, 10))
+	mustSubmit(t, s, stopOrder(t, "stop", market.SideSell, 10, 19_900))
+	mustObserve(t, s, sized(4_000, 19_890, 19_891, 3))
+
+	state, err := session.Replay(s.Events())
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if len(state.Working) != 0 {
+		t.Fatalf("working: got %+v, want nothing waiting", state.Working)
+	}
+	if err := session.Verify(s.Events()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !reflect.DeepEqual(state.Account.Positions(), s.Account().Positions()) {
+		t.Fatal("the reconstructed account differs")
+	}
+}

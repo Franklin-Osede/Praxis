@@ -108,6 +108,65 @@ figure is added by this decision alone — the identifier is derived and the
 result is a sum. What follows from it is the design of the protection events and
 one new counter, and those change the payload format.
 
+## Binding protection to an episode
+
+Protection is decided before the position exists, so `ProtectionPlaced` names
+the entry's order. Binding it to an episode is unambiguous only when the fill
+opens one from flat, and that is not the only case. An order carrying
+protection may add to an episode that already exists; two entries may be
+waiting when a third opens; an order that looked like an entry may end up
+reducing or closing because of what happened before it; and a fill may flip.
+
+**The binding follows the effect the fill actually had**, not what the order
+appeared to be:
+
+```text
+opened   -> bind to the episode this fill created
+added    -> bind to the episode already active
+flip     -> bind to the new episode, never to the one it closed
+reduced  -> the planned protection cannot activate
+closed   -> the planned protection cannot activate
+```
+
+Requiring protection to be placed only from flat was rejected: it would block
+an entry that adds to a position, which is exactly the behaviour worth
+measuring. Keeping protection per entry through its whole life was rejected
+because it needs exits allocated across entries, which is the lot tracking this
+ADR already refused.
+
+**Protection that cannot activate is cancelled, and the cancellation is
+recorded.** A plan that quietly evaporates is the same defect as the vanishing
+remainder: the log would hold a decision the engine never honoured.
+
+### Fixed before implementation
+
+- `ProtectionPlaced` with both levels at zero is invalid. It protects nothing
+  and would be indistinguishable from an entry that placed none.
+- Cancelling an entry that never executed ends its planned protection.
+- A partial fill activates protection over the exposure actually opened, not
+  over the quantity that was ordered.
+- Later fills of the same entry extend the protected quantity. They do not
+  create another episode and they do not create a second protection.
+- Stop and target are one-cancels-the-other. Either executing ends the other.
+- A partial execution reduces the sibling's quantity to what is left. Protection
+  can never close contracts that no longer exist.
+- Where both levels are reachable on one observation, the **stop** is evaluated
+  first, as ADR-004 already settles for an ambiguous bar.
+- Replacing a level from zero is placing it, not widening it. `Widened` compares
+  against a level that existed.
+- `Widened` is derived, so `Verify` and `Replay` recompute it from the levels
+  either side of the change rather than believing the field.
+
+### The state machine
+
+```text
+Planned   -> placed with an entry, before any fill
+Active    -> the entry's fill opened or added to an episode
+Replaced  -> levels changed while active
+Cancelled -> withdrawn, or the entry never opened exposure
+Executed  -> a level was reached and its sibling ended with it
+```
+
 ## The format change this implies
 
 `ConsecutiveLosingTrades` is a new field on `order_submitted`, and the

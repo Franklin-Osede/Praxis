@@ -600,3 +600,42 @@ func TestAV1JournalRefusesAV2Fact(t *testing.T) {
 		t.Fatalf("error: got %v, want %v", err, ErrUnsupportedInVersion)
 	}
 }
+
+// A v1 journal must refuse a v2 fact carried inside an otherwise valid line,
+// not drop it. Omitting the field would leave a line that reads perfectly and
+// says less than the event it came from.
+func TestAV1JournalRefusesAV2FieldInsideAValidLine(t *testing.T) {
+	path := tempJournal(t)
+	framed, err := EncodeBatch(1, []session.Event{SessionStartedFixture(1)}, EventVersionV1)
+	if err != nil {
+		t.Fatalf("EncodeBatch: %v", err)
+	}
+	if err := os.WriteFile(path, append(HeaderFor(EventVersionV1), framed...), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	w, err := OpenWriter(path, DurableEveryBatch)
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	defer w.Close()
+
+	withStreak := session.OrderSubmitted{
+		Envelope: session.Envelope{Time: 2_000, Sequence: 2, Kind: session.KindOrderSubmitted},
+		Order: market.Order{
+			ID: "o-1", Instrument: mnqInstrument(), Side: market.SideBuy,
+			Type: market.OrderTypeMarket, Qty: 1,
+		},
+		Context: session.OrderContext{ConsecutiveLosingTrades: 2},
+	}
+	if _, err := w.Append([]session.Event{withStreak}); !errors.Is(err, ErrUnsupportedInVersion) {
+		t.Fatalf("error: got %v, want %v", err, ErrUnsupportedInVersion)
+	}
+
+	// The same decision without the v2 fact is accepted, so the refusal is
+	// about the field and not about the event.
+	withStreak.Context.ConsecutiveLosingTrades = 0
+	if _, err := w.Append([]session.Event{withStreak}); err != nil {
+		t.Fatalf("a v1 decision was refused: %v", err)
+	}
+}

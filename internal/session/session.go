@@ -358,14 +358,14 @@ func (s *Session) offerToWorkingOrders(at market.LogicalTime) error {
 		attempt := w.order
 		attempt.Qty = w.remaining
 
-		fills, err := s.policy.ExecuteOnQuote(attempt, s.lastQuote)
+		result, err := s.policy.ExecuteOnQuote(attempt, s.lastQuote)
 		if err != nil {
 			return err
 		}
-		if err := s.consume(fills); err != nil {
+		if err := s.consume(result.Fills); err != nil {
 			return err
 		}
-		filled, err := s.applyAndRecord(at, fills)
+		filled, err := s.applyAndRecord(at, result.Fills)
 		if err != nil {
 			return err
 		}
@@ -373,10 +373,21 @@ func (s *Session) offerToWorkingOrders(at market.LogicalTime) error {
 		if err != nil {
 			return err
 		}
-		if remaining > 0 {
-			w.remaining = remaining
-			kept = append(kept, w)
+		if remaining <= 0 {
+			continue
 		}
+		// A stop that reached its level has become a market order, and a
+		// market order does not wait. Leaving it working would let it
+		// untrigger when the price came back, and the trader would be
+		// protected by an instruction the market had already passed.
+		if result.StopTriggered {
+			if err := s.cancelRemainder(at, w.order.ID, remaining); err != nil {
+				return err
+			}
+			continue
+		}
+		w.remaining = remaining
+		kept = append(kept, w)
 	}
 	s.working = kept
 	return nil
@@ -523,13 +534,14 @@ func (s *Session) submitOrder(o market.Order) error {
 	// Everything the command will do is computed and applied before any of it
 	// is recorded, so a refusal leaves no order in the log, no counter moved
 	// and no money changed.
-	fills, err := s.policy.ExecuteOnQuote(o, s.lastQuote)
+	result, err := s.policy.ExecuteOnQuote(o, s.lastQuote)
 	if err != nil {
 		return err
 	}
-	if err := s.consume(fills); err != nil {
+	if err := s.consume(result.Fills); err != nil {
 		return err
 	}
+	fills := result.Fills
 	var filled market.Qty
 	for _, f := range fills {
 		if filled, err = market.AddQty(filled, f.Qty); err != nil {
@@ -558,13 +570,8 @@ func (s *Session) submitOrder(o market.Order) error {
 	// remainder is cancelled, because resting it would mean inventing a price
 	// the trader never named.
 	if remaining > 0 {
-		if o.Type == market.OrderTypeMarket {
-			if err := s.record(at, KindOrderCancelled, func(e Envelope) Event {
-				return OrderCancelled{
-					Envelope: e, OrderID: o.ID, RemainingQty: remaining,
-					Reason: CancelledUnfillableRemainder,
-				}
-			}); err != nil {
+		if o.Type == market.OrderTypeMarket || result.StopTriggered {
+			if err := s.cancelRemainder(at, o.ID, remaining); err != nil {
 				return err
 			}
 		} else {
@@ -577,6 +584,17 @@ func (s *Session) submitOrder(o market.Order) error {
 		}
 	}
 	return s.revalue(at)
+}
+
+// cancelRemainder records the part of an order the book could not fill and
+// that will not wait for another observation.
+func (s *Session) cancelRemainder(at market.LogicalTime, orderID string, remaining market.Qty) error {
+	return s.record(at, KindOrderCancelled, func(e Envelope) Event {
+		return OrderCancelled{
+			Envelope: e, OrderID: orderID, RemainingQty: remaining,
+			Reason: CancelledUnfillableRemainder,
+		}
+	})
 }
 
 // countClose updates the behavioural counters from a closing leg. Only a leg

@@ -446,6 +446,18 @@ had not ended when the trader decided — and the next order sees the episode th
 flip closed. Attributing the later figure to the earlier decision would credit
 the trader with knowledge they did not have.
 
+### A triggered stop cannot untrigger
+
+A stop that reaches its level has become a market order, and a market order does
+not wait. What the book cannot fill at that moment is cancelled and recorded as
+an unfillable remainder, exactly as for a market order — never left working,
+because a later observation above the level would untrigger it and the trader
+would be protected by an instruction the market had already passed.
+
+This is why execution reports a result rather than fills alone: no slice of
+fills can tell a stop that was never reached from one that was reached with
+nothing to trade against, and only the second is irreversible.
+
 ### A journal is not believed, it is proved
 
 A log is not a source of truth because it is well formed. Every derived fact in
@@ -580,7 +592,11 @@ type MarketDataPort interface {
 }
 
 type ExecutionPolicy interface {
-    ExecuteOnQuote(o Order, q Quote) ([]Fill, error)
+    // Returns a Result and not fills alone, because an empty slice means two
+    // different things: a stop whose level was never reached, and a stop that
+    // reached it and found nothing to trade against. The first may wait; the
+    // second has already become a market order and cannot untrigger.
+    ExecuteOnQuote(o Order, q Quote) (Result, error)
 }
 
 type IntrabarResolutionPolicy interface {
@@ -784,12 +800,12 @@ Next, in order:
    submitted, and they are offered it before the account is revalued, so the
    valuation an observation records already contains what that observation
    caused.
-5. **The life of a protective level.** Its schema exists: `praxis.event.v2`
-   defines `ProtectionPlaced`, keyed to the entry's order because at the moment
-   of the decision there is no episode to key it to, and `ProtectionReplaced`
-   and `ProtectionCancelled`, keyed to the episode. What remains is the session
-   commands that emit them, the binding derived at the opening fill, and the
-   levels being executed rather than merely noted.
+5. **The life of a protective level.** Its schema exists in `praxis.event.v2`
+   and its rules are settled in ADR-013: the binding follows the effect the
+   fill actually had, protection that cannot activate is cancelled rather than
+   evaporating, stop and target are one-cancels-the-other, and `Widened` is
+   recomputed rather than believed. What remains is the commands that emit
+   them, the state machine, and the levels being executed rather than noted.
 6. **The counter is already carried**: `ConsecutiveLosingTrades` is recorded,
    verified and replayed.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop

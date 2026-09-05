@@ -18,6 +18,21 @@ var (
 	ErrInvalidQuote       = errors.New("execution: quote is not a valid domain value")
 )
 
+// Result is what an order did against one observation.
+//
+// Fills alone cannot say what happened, because an empty slice means two
+// different things: a stop whose level was never reached, and a stop that
+// reached it and found nothing to trade against. The first may wait; the second
+// has already become a market order and cannot untrigger.
+type Result struct {
+	// StopTriggered reports that a stop order's level was reached on this
+	// observation, whether or not any quantity filled. It is false for every
+	// other kind of order, which have no level to reach.
+	StopTriggered bool
+
+	Fills []market.Fill
+}
+
 // ConservativeExecution never grants the trader a price or a quantity the
 // observed book does not justify.
 type ConservativeExecution struct{}
@@ -44,15 +59,15 @@ type ConservativeExecution struct{}
 //
 // Neither finding no liquidity nor being unexecutable is an error: both return
 // no fills and no error.
-func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]market.Fill, error) {
+func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) (Result, error) {
 	if err := o.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidOrder, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrInvalidOrder, err)
 	}
 	if err := q.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidQuote, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrInvalidQuote, err)
 	}
 	if o.Instrument != q.Instrument {
-		return nil, ErrInstrumentMismatch
+		return Result{}, ErrInstrumentMismatch
 	}
 
 	touch, available := q.Bid, q.BidSize
@@ -60,17 +75,21 @@ func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]m
 		touch, available = q.Ask, q.AskSize
 	}
 
+	var result Result
 	price := touch
 	switch o.Type {
 	case market.OrderTypeLimit:
 		if !reachedLimit(o.Side, touch, o.LimitPrice) {
-			return nil, nil
+			return Result{}, nil
 		}
 		price = o.LimitPrice
 	case market.OrderTypeStop:
 		if !reachedStop(o.Side, touch, o.StopPrice) {
-			return nil, nil
+			return Result{}, nil
 		}
+		// Reported before the size is looked at, because a stop that reached
+		// its level with nothing to trade against has still triggered.
+		result.StopTriggered = true
 	}
 
 	filled := o.Qty
@@ -78,17 +97,18 @@ func (ConservativeExecution) ExecuteOnQuote(o market.Order, q market.Quote) ([]m
 		filled = available
 	}
 	if filled <= 0 {
-		return nil, nil
+		return result, nil
 	}
 
-	return []market.Fill{{
+	result.Fills = []market.Fill{{
 		OrderID:    o.ID,
 		Instrument: o.Instrument,
 		Time:       q.Time,
 		Side:       o.Side,
 		Price:      price,
 		Qty:        filled,
-	}}, nil
+	}}
+	return result, nil
 }
 
 // reachedLimit reports whether the touch on the taken side has come to the
