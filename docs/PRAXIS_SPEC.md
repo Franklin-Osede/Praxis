@@ -202,6 +202,26 @@ version is stable when its bytes stop changing rather than when anyone promises
 the next change will be the last. See
 [`docs/adr/013-position-episodes.md`](adr/013-position-episodes.md).
 
+### ADR-014 — Protection is an aggregate, not two prices
+
+A protective level has an identity, a quantity and a lifecycle of its own.
+Treating it as a pair of numbers on something else produced a schema its own
+producer could not honour: a planned protection could be neither moved nor
+withdrawn while its entry waited, a protective fill had no order to belong to,
+and `Executed` was terminal when a partial fill leaves exposure standing.
+
+References are a tagged union naming either the entry or the episode, never a
+zero episode used as a sentinel. Each leg is an order with a recorded,
+reproducible identifier, so a fill points at something that exists. The machine
+is `Planned → Active(stop?, target?, quantity) → Ended`, and execution is a
+reason for a transition rather than a state.
+
+`praxis.event.v3` is designed there and published **with** the commands that
+write it. The protection events in v2 were defined ahead of any producer, and
+that is precisely what let them be wrong: a schema is not proven until
+something both produces and consumes it. See
+[`docs/adr/014-protection-is-an-aggregate.md`](adr/014-protection-is-an-aggregate.md).
+
 ## 4. Domain rules
 
 ### Exact cost basis
@@ -800,14 +820,14 @@ Next, in order:
    submitted, and they are offered it before the account is revalued, so the
    valuation an observation records already contains what that observation
    caused.
-5. **The life of a protective level.** Its schema exists in `praxis.event.v2`
-   and its rules are settled in ADR-013: the binding follows the effect the
-   fill actually had, protection that cannot activate is cancelled rather than
-   evaporating, stop and target are one-cancels-the-other, and `Widened` is
-   recomputed rather than believed. What remains is the commands that emit
-   them, the state machine, and the levels being executed rather than noted.
-6. **The counter is already carried**: `ConsecutiveLosingTrades` is recorded,
-   verified and replayed.
+5. **The life of a protective level**, in five steps rather than one, split
+   along the machine of ADR-014: planned protection and its commands with no
+   execution; activation and binding by the fill's real effect; one-cancels-the-
+   other execution with partial quantities; verification, replay, resume and
+   persistence; and only then a human command. `praxis.event.v3` is published
+   with the first of these, not ahead of it.
+6. **Fourteen transition scenarios** must pass before the machine is believed,
+   listed in ADR-014, each ending in a replay and a resume.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.

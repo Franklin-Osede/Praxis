@@ -159,13 +159,16 @@ remainder: the log would hold a decision the engine never honoured.
 
 ### The state machine
 
-```text
-Planned   -> placed with an entry, before any fill
-Active    -> the entry's fill opened or added to an episode
-Replaced  -> levels changed while active
-Cancelled -> withdrawn, or the entry never opened exposure
-Executed  -> a level was reached and its sibling ended with it
-```
+Superseded by [ADR-014](014-protection-is-an-aggregate.md), which found three
+things this machine could not represent: a planned protection cannot be moved
+or withdrawn while its entry waits, a protective fill has no order to belong
+to, and `Executed` is not terminal when a level fills only partly and exposure
+remains. Protection turned out to be a small aggregate with an identity, a
+quantity and a life of its own, rather than two prices attached to something
+else.
+
+The binding rules above stand. What changes is that a protective level is a
+thing rather than a field.
 
 ## The format change this implies
 
@@ -178,7 +181,8 @@ and more importantly **a version is stable when its bytes stop changing, not
 when anyone promises the next change will be the last**. A writer and a command
 line can already produce v1 journals.
 
-So v1 keeps the schema it has, and these facts inaugurate **`praxis.event.v2`**:
+So v1 keeps the schema it has, and the counter inaugurates
+**`praxis.event.v2`**:
 
 - New journals are written in v2.
 - The compatibility table selects the codec, which is what it was built for.
@@ -191,4 +195,6 @@ Whether a v1 journal may be migrated so that a session can use protection is a
 separate decision, and is not taken here.
 
 This also exercises the version machinery now, while no journal holds anything
-worth losing.
+worth losing — which it did, twice: see ADR-014, where the protection events
+defined here turned out to be unwritable and moved to a version that will be
+published together with its producer.
