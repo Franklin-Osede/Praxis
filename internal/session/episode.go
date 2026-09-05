@@ -116,6 +116,44 @@ func (p *episodeProjection) indexOf(symbol string) int {
 	return -1
 }
 
+// foldPositionChange folds one position change into both projections and
+// reports what the change requires to be recorded next.
+//
+// It is one implementation with three callers — the live session, Replay and
+// Verify — for the reason every shared projection here exists: the glue is
+// eight lines of ordering that must be identical in all three, and the last
+// time it was copied it drifted in the one dimension the copies could not
+// agree on. `record` is how each caller discharges an obligation: the session
+// writes it, a reader queues it to demand of the journal next.
+//
+// flip says this close is the first half of a reversal, and knowFlip whether
+// the caller can tell. See consequencesOf.
+func foldPositionChange(
+	episodes *episodeProjection, protections *protectionProjection,
+	sequence uint64, fillOrderID string, change portfolio.PositionEvent,
+	flip, knowFlip bool, record func(owedEvent) error,
+) error {
+	symbol := change.Instrument.Symbol
+	// An episode's identity is the sequence of the change that opened it, so a
+	// change that opens one must be read after the fold and every other before.
+	episodeID, _ := episodes.episodeID(symbol)
+	if err := episodes.apply(sequence, change); err != nil {
+		return err
+	}
+	if change.Kind == portfolio.PositionOpened {
+		episodeID, _ = episodes.episodeID(symbol)
+	}
+
+	net := episodes.netQtyOf(symbol)
+	for _, owed := range protections.consequencesOf(fillOrderID, episodeID, change, net, flip, knowFlip) {
+		if err := record(owed); err != nil {
+			return err
+		}
+	}
+	protections.bind(fillOrderID, episodeID, change, net)
+	return nil
+}
+
 // consecutiveLosingTradesNow is the streak as it stands.
 //
 // A decision taken before an episode ends carries the streak that was true when

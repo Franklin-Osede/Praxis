@@ -496,26 +496,16 @@ func (s *Session) applyAndRecord(at market.LogicalTime, fills []market.Fill) (ma
 			if err := s.countClose(change); err != nil {
 				return 0, err
 			}
-			// The projection is fed the sequence the change was recorded at,
+			// A close with more of the same fill still to come is a reversal.
+			// The projections are fed the sequence the change was recorded at,
 			// which becomes the identity of any episode it opens.
-			symbol := change.Instrument.Symbol
-			episodeID, _ := s.episodes.episodeID(symbol)
-			if err := s.episodes.apply(s.sequence, change); err != nil {
+			flip := change.Kind == portfolio.PositionClosed && n+1 < len(effect.changes)
+			if err := foldPositionChange(&s.episodes, &s.protections, s.sequence, fill.OrderID,
+				change, flip, true, func(owed owedEvent) error {
+					return s.recordOwed(at, owed)
+				}); err != nil {
 				return 0, err
 			}
-			if change.Kind == portfolio.PositionOpened {
-				episodeID, _ = s.episodes.episodeID(symbol)
-			}
-
-			// A close with more of the same fill still to come is a reversal.
-			flip := change.Kind == portfolio.PositionClosed && n+1 < len(effect.changes)
-			net := s.episodes.netQtyOf(symbol)
-			for _, owed := range s.protections.consequencesOf(fill.OrderID, episodeID, change, net, flip, true) {
-				if err := s.recordOwed(at, owed); err != nil {
-					return 0, err
-				}
-			}
-			s.protections.bind(fill.OrderID, episodeID, change, net)
 		}
 	}
 	return filled, nil

@@ -42,16 +42,35 @@ import (
 
 // The event payload formats this package understands.
 //
-// A version is stable when its bytes stop changing, not when anyone promises
-// the next change will be the last. v1 is what a writer and a command line have
-// already been able to produce, so it keeps the schema it had; the position
-// episode counter inaugurated v2, protection v3, and the cancellation reasons
-// one-cancels-the-other execution needs inaugurate v4.
+// # When a change needs a new version
 //
-// A new reason is not a new field: it is a value a v3 reader has no name for
-// and would either refuse or, worse, guess at. So it goes in a version of its
-// own, published with the commands that first write it — the rule v3 was
-// corrected into and the reason it exists.
+// Adding a field to an existing line type is always a new version: it changes
+// bytes a reader of the old version has already been told how to parse.
+//
+// Adding an event type, or a value to an enumeration, may go in the current
+// version — but only while that version has never been written to a real
+// journal. That is what EventVersion means: it is the version being written,
+// and until something outside this repository holds those bytes, they are a
+// draft. Afterwards it is a new version, because a reader of the old one has
+// no name for what was added and would either refuse it or, worse, guess.
+//
+// The distinction has been got wrong once. Inserting SourceSequence into v1's
+// market_observed line was a field added to a shipped version, and the golden
+// was regenerated to match rather than the change refused. The bytes v1 froze
+// at f964088 no longer decode. That is recorded rather than hidden, and v1
+// means what f5d12a5 left it meaning.
+//
+// **Freezing starts at the first pilot journal.** Nothing outside this
+// repository has ever read a Praxis journal, so v1 through v3 are an exercise
+// in discipline rather than a compatibility guarantee, and saying otherwise
+// would be claiming a cost nobody has paid. From the first recorded session
+// onwards the guarantee is real, and testdata/goldens.sha256 is what makes
+// regenerating one cost something: changing a golden means changing two files,
+// and the second is unmissable in a review.
+//
+// The position episode counter inaugurated v2, protection v3, and the
+// cancellation reasons one-cancels-the-other execution needs inaugurate v4 —
+// each published with the commands that first write it.
 const (
 	EventVersionV1 = "praxis.event.v1"
 	EventVersionV2 = "praxis.event.v2"

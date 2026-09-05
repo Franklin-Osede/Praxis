@@ -568,15 +568,36 @@ a requirement rather than a coincidence. Where their obligations overlap,
 reversed a position, so it demands the same consequences with the end reason
 unchecked, and never a different one.
 
-**What is proved is what happened. What did not happen is mostly believed.**
-Every fill in the log is proved against the account. The *absence* of a fill is
-proved only where the book alone settles it: a protective leg cancelled for
-want of liquidity, and an order's remainder cancelled as unfillable, are both
-re-executed against the consumed book. A working order carried past an
-observation is not: nothing yet re-runs the observation against everything that
-was waiting for it, so a journal that omitted a fill the book would have given
-is accepted. That is the largest remaining hole in the proving machinery and it
-is the one direction that flatters a trader.
+**What did not happen is proved too.** Everything that filled is proved against
+the account. The *absence* of a fill was, for several slices, believed — and it
+is the only forgery direction that flatters a trader, because a journal in
+which a stop the market traded through is still waiting shows a loss that never
+happened, against a flat account no valuation contradicts.
+
+Three things now close it, all re-executing `ConservativeExecution` against the
+book **as it was left** rather than as it arrived:
+
+- a protective leg cancelled for want of liquidity must have reached its level
+  and found nothing;
+- an order's remainder cancelled as unfillable must belong to an order that can
+  leave one — a market order, or a stop that triggered — must match the fills
+  the journal itself records, and must meet a book with nothing left on it;
+- **everything still waiting when an observation ends must be unfillable**, and
+  no stop among them may be triggered.
+
+Judging against the consumed book is what makes the last one strict without a
+second copy of the resolution order. Everything that filled has already been
+taken out of the book, so what remains is exactly what the survivors were
+offered: a limit whose price the market reached but whose depth an order in
+front of it took has nothing to answer for, and a stop at the same level does,
+because triggering owes nothing to liquidity. Nothing is asked of an order no
+trading session was open to offer anything to, which is the same gate the live
+session applies.
+
+What is still believed is *how much* would have filled. A journal that
+under-reported the size of a fill the book would have given is not yet caught;
+proving that means running the whole resolution order inside the reader, and
+the shared fold this rests on is the first half of doing so.
 
 Verification uses checked arithmetic throughout, and a live session uses the
 same arithmetic on the same counters. A verifier that silently wrapped would

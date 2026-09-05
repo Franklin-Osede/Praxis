@@ -160,6 +160,11 @@ func Replay(events []Event) (*ReplayedState, error) {
 		// the decision that opened the exposure, not to the exposure alone.
 		fillOrderID string
 
+		// offered says the last observation was given to everything waiting for
+		// one, which is the condition under which what survived it has
+		// something to answer for.
+		offered bool
+
 		// submitted is every order the trader has submitted, with what is left
 		// of it. It answers membership and quantity for one identifier at a
 		// time and is never iterated to produce a result, which is why a map
@@ -232,25 +237,22 @@ func Replay(events []Event) (*ReplayedState, error) {
 					ErrFabricated, n, v.Change, pendingChanges[0])
 			}
 			pendingChanges = pendingChanges[1:]
-			// The episode projection runs on changes already proved against
-			// what applying the fill produced, so what it derives rests on
-			// facts rather than on the log's word for them.
-			symbol := v.Change.Instrument.Symbol
-			episodeID, _ := episodes.episodeID(symbol)
-			if err := episodes.apply(v.Sequence, v.Change); err != nil {
-				return nil, err
-			}
-			if v.Change.Kind == portfolio.PositionOpened {
-				episodeID, _ = episodes.episodeID(symbol)
-			}
+			// The projections run on changes already proved against what
+			// applying the fill produced, so what they derive rests on facts
+			// rather than on the log's word for them.
+			//
 			// What is left of this fill's effect says whether a close is a
 			// reversal, which is the one thing the ending of a protection
 			// turns on and the one thing a reader without the fills — Verify —
 			// cannot see.
 			flip := v.Change.Kind == portfolio.PositionClosed && len(pendingChanges) > 0
-			net := episodes.netQtyOf(symbol)
-			protections.owe(protections.consequencesOf(fillOrderID, episodeID, v.Change, net, flip, true)...)
-			protections.bind(fillOrderID, episodeID, v.Change, net)
+			if err := foldPositionChange(&episodes, &protections, v.Sequence, fillOrderID,
+				v.Change, flip, true, func(owed owedEvent) error {
+					protections.owe(owed)
+					return nil
+				}); err != nil {
+				return nil, err
+			}
 
 			state.ConsecutiveLosingTrades = episodes.consecutiveLosingTradesNow()
 			state.episodes = episodes
@@ -319,7 +321,19 @@ func Replay(events []Event) (*ReplayedState, error) {
 			pendingDecisions = pendingDecisions[1:]
 
 		case MarketObserved:
+			// Before this observation replaces the last one, everything that
+			// survived the last one has to account for surviving it.
+			if offered {
+				if err := proveNothingSurvivedFillable(state, &protections, started.Config.Instrument); err != nil {
+					return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				}
+			}
 			state.LastQuote, state.HasQuote, state.ObservedThisSession = v.Quote, true, true
+			// A session that is not open, or an evaluation that has ended, is
+			// offered nothing — so nothing that waited through it owes an
+			// explanation. This is the same gate the live session applies.
+			offered = state.SessionOpen && eval.State() != challenge.StateFailed &&
+				eval.State() != challenge.StatePassed
 
 		case OrderRested:
 			resting := v.Order
@@ -373,6 +387,11 @@ func Replay(events []Event) (*ReplayedState, error) {
 	}
 	if err := protections.settled(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFabricated, err)
+	}
+	if offered {
+		if err := proveNothingSurvivedFillable(state, &protections, started.Config.Instrument); err != nil {
+			return nil, fmt.Errorf("%w: the log ends and %v", ErrFabricated, err)
+		}
 	}
 
 	state.PlannedProtections = protections.snapshot()
@@ -456,7 +475,17 @@ func proveLegCancellation(protections *protectionProjection, book market.Quote, 
 	return nil
 }
 
-// proveOrderCancellation refuses a remainder the book could still have filled.
+// proveOrderCancellation refuses a remainder the book could still have filled,
+// and an order that could not have had an unfillable remainder at all.
+//
+// Only two things produce one: a market order, which does not rest because
+// resting it would invent a price the trader never named, and a stop that has
+// triggered and therefore cannot go back to waiting. A limit rests, always.
+//
+// The reason matters more than it looks. Relabelling "the trader withdrew their
+// stop" as "the system cancelled a remainder the book could not fill" launders
+// a discretionary decision into a mechanical event — and that decision is the
+// numerator of one of the hypotheses this whole log exists to measure.
 func proveOrderCancellation(submitted map[string]market.Order, book market.Quote, cancelled OrderCancelled) error {
 	if cancelled.Reason != CancelledUnfillableRemainder {
 		return nil
@@ -464,6 +493,10 @@ func proveOrderCancellation(submitted map[string]market.Order, book market.Quote
 	order, ok := submitted[cancelled.OrderID]
 	if !ok {
 		return nil
+	}
+	if order.Type == market.OrderTypeLimit {
+		return fmt.Errorf("%s is a limit order, and a limit rests rather than leaving an unfillable remainder",
+			cancelled.OrderID)
 	}
 	if cancelled.RemainingQty != order.Qty {
 		return fmt.Errorf("%s is cancelled with %d left, its fills leave %d",
@@ -473,9 +506,80 @@ func proveOrderCancellation(submitted map[string]market.Order, book market.Quote
 	if err != nil {
 		return err
 	}
+	if order.Type == market.OrderTypeStop && !result.StopTriggered {
+		return fmt.Errorf("%s is a stop cancelled as unfillable, and %d/%d never reached %d",
+			cancelled.OrderID, book.Bid, book.Ask, order.StopPrice)
+	}
 	if len(result.Fills) > 0 {
 		return fmt.Errorf("%s was cancelled as unfillable, and %d/%d still showed %d/%d for it",
 			cancelled.OrderID, book.Bid, book.Ask, book.BidSize, book.AskSize)
+	}
+	return nil
+}
+
+// proveNothingSurvivedFillable refuses a journal in which the market reached
+// something that was waiting and the log says nothing happened to it.
+//
+// Everything that happened is proved against the aggregates. This is the other
+// half: what did not happen. A journal could say a stop the market traded five
+// ticks through is still working, and until this nothing contradicted it — the
+// account is flat, so no valuation catches it, and the trader's loss simply
+// never occurs. It is the one forgery direction that flatters a trader, which
+// makes it the one worth closing first.
+//
+// It judges against the book **as it was left**, not as it arrived, so it makes
+// no claim about how much would have filled and needs no second copy of the
+// resolution order. Everything that actually filled has already been consumed;
+// what remains is exactly what the survivors were offered. A limit that could
+// not fill because an order ahead of it took the depth is therefore accepted,
+// and a stop the price reached is not, because triggering owes nothing to
+// liquidity.
+func proveNothingSurvivedFillable(state *ReplayedState, protections *protectionProjection, instrument market.Instrument) error {
+	if !state.HasQuote {
+		return nil
+	}
+	policy := execution.ConservativeExecution{}
+
+	for _, waiting := range state.Working {
+		result, err := policy.ExecuteOnQuote(waiting, state.LastQuote)
+		if err != nil {
+			return err
+		}
+		if result.StopTriggered {
+			return fmt.Errorf("%s is still working, and %d/%d reached its stop at %d",
+				waiting.ID, state.LastQuote.Bid, state.LastQuote.Ask, waiting.StopPrice)
+		}
+		if len(result.Fills) > 0 {
+			return fmt.Errorf("%s is still working, and %d/%d still showed %d/%d for it",
+				waiting.ID, state.LastQuote.Bid, state.LastQuote.Ask,
+				state.LastQuote.BidSize, state.LastQuote.AskSize)
+		}
+	}
+
+	for _, id := range protections.activeEpisodeIDs() {
+		active, ok := protections.activeFor(id)
+		if !ok {
+			continue
+		}
+		for _, which := range []legKind{legStop, legTarget} {
+			leg, ok := protectiveOrder(active, which, instrument)
+			if !ok {
+				continue
+			}
+			result, err := policy.ExecuteOnQuote(leg, state.LastQuote)
+			if err != nil {
+				return err
+			}
+			if result.StopTriggered {
+				return fmt.Errorf("%s still protects episode %d, and %d/%d reached its level at %d",
+					leg.ID, id, state.LastQuote.Bid, state.LastQuote.Ask, leg.StopPrice)
+			}
+			if len(result.Fills) > 0 {
+				return fmt.Errorf("%s still protects episode %d, and %d/%d still showed %d/%d for it",
+					leg.ID, id, state.LastQuote.Bid, state.LastQuote.Ask,
+					state.LastQuote.BidSize, state.LastQuote.AskSize)
+			}
+		}
 	}
 	return nil
 }
@@ -596,21 +700,17 @@ func Verify(events []Event) error {
 			if netQty, err = market.AddQty(netQty, signedQty(v.Change.Side, v.Change.Qty)); err != nil {
 				return err
 			}
-			symbol := v.Change.Instrument.Symbol
-			episodeID, _ := episodes.episodeID(symbol)
-			if err := episodes.apply(v.Sequence, v.Change); err != nil {
-				return err
-			}
-			if v.Change.Kind == portfolio.PositionOpened {
-				episodeID, _ = episodes.episodeID(symbol)
-			}
 			// Verify has the events and not the fills, so it cannot tell a
 			// reversal from an exit — the one thing an ending's reason turns
 			// on. It demands the same consequences with that reason unchecked,
 			// which is a prefix of what Replay demands.
-			net := episodes.netQtyOf(symbol)
-			protections.owe(protections.consequencesOf(fillOrderID, episodeID, v.Change, net, false, false)...)
-			protections.bind(fillOrderID, episodeID, v.Change, net)
+			if err := foldPositionChange(&episodes, &protections, v.Sequence, fillOrderID,
+				v.Change, false, false, func(owed owedEvent) error {
+					protections.owe(owed)
+					return nil
+				}); err != nil {
+				return err
+			}
 			if v.Change.Kind != portfolio.PositionReduced && v.Change.Kind != portfolio.PositionClosed {
 				continue
 			}

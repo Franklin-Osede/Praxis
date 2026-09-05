@@ -3,8 +3,10 @@ package session_test
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
+	"praxis/internal/challenge"
 	"praxis/internal/market"
 	"praxis/internal/session"
 )
@@ -248,4 +250,351 @@ func TestARemainderCancelledAsUnfillableIsProved(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Scenario: a discretionary withdrawal cannot be relabelled as a mechanical one
+//
+// Only two things leave an unfillable remainder: a market order, which does not
+// rest because resting it would invent a price the trader never named, and a
+// stop that has triggered and therefore cannot go back to waiting. A limit
+// rests, always.
+//
+// The reason is not decoration. Calling "the trader withdrew their stop" a
+// remainder the book could not fill turns a discretionary decision into a
+// mechanical event, and that decision is the numerator of a hypothesis this log
+// exists to measure. A journal that could spell one as the other would be
+// measuring the wrong thing while reading perfectly.
+func TestACancellationCannotBorrowTheWrongReason(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func(*testing.T) *session.Session
+	}{
+		{"a stop the market never reached", func(t *testing.T) *session.Session {
+			s := newSession(t)
+			mustOpen(t, s, 2_000, "d1")
+			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+			mustSubmit(t, s, order("long", market.SideBuy, 2))
+			mustSubmit(t, s, stopOrder(t, "protect", market.SideSell, 2, 19_000))
+			if err := s.CancelOrder("protect"); err != nil {
+				t.Fatalf("CancelOrder: %v", err)
+			}
+			return s
+		}},
+		{"a limit the trader took back", func(t *testing.T) *session.Session {
+			s := newSession(t)
+			mustOpen(t, s, 2_000, "d1")
+			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+			mustSubmit(t, s, limitOrder(t, "bid", market.SideBuy, 2, 19_000))
+			if err := s.CancelOrder("bid"); err != nil {
+				t.Fatalf("CancelOrder: %v", err)
+			}
+			return s
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.build(t)
+			events := s.Events()
+			at := indexOfKind(t, events, session.KindOrderCancelled, 1)
+			if got := events[at].(session.OrderCancelled).Reason; got != session.CancelledByTrader {
+				t.Fatalf("the fixture cancelled for %v, not by the trader", got)
+			}
+			checked(t, s)
+
+			// The forgery: the same cancellation, blamed on the book.
+			forged := events[at].(session.OrderCancelled)
+			forged.Reason = session.CancelledUnfillableRemainder
+			events[at] = forged
+
+			if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			}
+		})
+	}
+}
+
+// Scenario: an ending nothing owed still has to hold what it claims to hold
+//
+// A protection the trader withdraws produces an ending nothing derived, so the
+// owed queue never sees it and only Verify's own check stands between the log
+// and a forged pair of levels. Those levels are the whole record of what cover
+// existed at the moment it was given up.
+func TestAWithdrawalCannotMisstateWhatItGaveUp(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	mustProtect(t, s, limitOrder(t, "entry", market.SideBuy, 2, 19_000), 18_900, 19_500)
+	if err := s.CancelProtection(entryRef("entry")); err != nil {
+		t.Fatalf("CancelProtection: %v", err)
+	}
+	events := s.Events()
+	if err := session.Verify(events); err != nil {
+		t.Fatalf("the fixture does not verify: %v", err)
+	}
+
+	at := indexOfKind(t, events, session.KindProtectionEnded, 1)
+	ended := events[at].(session.ProtectionEnded)
+	if ended.Reason != session.ProtectionWithdrawnByTrader {
+		t.Fatalf("the fixture ended for %v, not by withdrawal", ended.Reason)
+	}
+	ended.StopPrice = 19_400
+	events[at] = ended
+
+	if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
+		t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+	}
+}
+
+// Scenario: something the market reached cannot simply go on waiting
+//
+// This is the forgery that was accepted until now, and it is the only class
+// that flatters a trader: everything that happened was proved against the
+// aggregates, and nothing that did not happen was proved against anything.
+//
+// The account is deliberately flat in the order cases, so that forging the
+// book changes no valuation and the survivor check is the only thing standing
+// between the log and the lie. A naked stop is unusual but legal, and it is the
+// cleanest way to say that.
+func TestSomethingTheMarketReachedCannotGoOnWaiting(t *testing.T) {
+	// waiting builds a journal with one resting order that the market did not
+	// reach, optionally followed by a further observation — so that both the
+	// per-observation check and the one at the end of the log are exercised.
+	waiting := func(t *testing.T, resting market.Order, andThen bool) *session.Session {
+		t.Helper()
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		mustSubmit(t, s, resting)
+		mustObserve(t, s, sized(4_000, 20_010, 20_011, 50))
+		if andThen {
+			mustObserve(t, s, sized(5_000, 20_020, 20_021, 50))
+		}
+		return s
+	}
+
+	forgeQuote := func(bid market.Ticks, size market.Qty) func(*testing.T, []session.Event) {
+		return func(t *testing.T, e []session.Event) {
+			at := indexOfKind(t, e, session.KindMarketObserved, 2)
+			v := e[at].(session.MarketObserved)
+			v.Quote.Bid, v.Quote.Ask = bid, bid+1
+			v.Quote.BidSize = size
+			e[at] = v
+		}
+	}
+
+	tests := []struct {
+		name    string
+		resting func(*testing.T) market.Order
+		forge   func(*testing.T, []session.Event)
+		says    string
+	}{
+		{
+			// Triggering owes nothing to liquidity, so an empty book is no
+			// excuse: the stop became a market order and cannot untrigger.
+			name:    "a stop the market went through, with nothing behind it",
+			resting: func(t *testing.T) market.Order { return stopOrder(t, "protect", market.SideSell, 5, 19_900) },
+			forge:   forgeQuote(19_800, 0),
+			says:    "reached its stop at",
+		},
+		{
+			name:    "a stop the market went through, with depth behind it",
+			resting: func(t *testing.T) market.Order { return stopOrder(t, "protect", market.SideSell, 5, 19_900) },
+			forge:   forgeQuote(19_800, 50),
+			says:    "reached its stop at",
+		},
+		{
+			// A limit is never triggered, so only the fills say it should have
+			// gone.
+			name:    "a limit the market came to",
+			resting: func(t *testing.T) market.Order { return limitOrder(t, "offer", market.SideSell, 5, 20_100) },
+			forge:   forgeQuote(20_150, 50),
+			says:    "still showed",
+		},
+	}
+
+	for _, tc := range tests {
+		for _, andThen := range []bool{false, true} {
+			where := "at the end of the log"
+			if andThen {
+				where = "with another observation after it"
+			}
+			t.Run(tc.name+", "+where, func(t *testing.T) {
+				honest := waiting(t, tc.resting(t), andThen)
+				if len(honest.WorkingOrders()) != 1 {
+					t.Fatalf("the fixture filled: %+v", honest.WorkingOrders())
+				}
+				checked(t, honest)
+
+				events := waiting(t, tc.resting(t), andThen).Events()
+				tc.forge(t, events)
+				_, err := session.Replay(events)
+				if !errors.Is(err, session.ErrFabricated) {
+					t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+				}
+				// And for the right reason, named precisely. A forged book
+				// that also moved a valuation would be caught by the wrong
+				// check entirely, and the two halves of this one — the level
+				// was reached, the depth was still there — subsume each other
+				// unless the test says which it expects.
+				if !strings.Contains(err.Error(), "is still working") || !strings.Contains(err.Error(), tc.says) {
+					t.Fatalf("rejected for another reason: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// The same for a protective leg, where the account cannot be flat — so the
+// forgery moves the level rather than the market, which changes no valuation.
+//
+// The two halves need different legs to separate them. A stop that the depth
+// would have filled has also been triggered, and triggering is checked first,
+// so only a target — which is a limit and is never triggered — can be reached
+// by the depth half alone.
+func TestAProtectiveLevelTheMarketReachedCannotGoOnWaiting(t *testing.T) {
+	honest := func(t *testing.T, bidDepth market.Qty) *session.Session {
+		t.Helper()
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, market.Quote{
+			Instrument: mnq, Time: 3_000, Bid: 20_000, Ask: 20_001,
+			BidSize: bidDepth, AskSize: 50,
+		})
+		mustProtect(t, s, order("entry", market.SideBuy, 5), 19_900, 20_400)
+		mustObserve(t, s, sized(4_000, 20_010, 20_011, 50))
+		return s
+	}
+
+	tests := []struct {
+		name     string
+		bidDepth market.Qty
+		forge    func(*session.ProtectionPlaced)
+		says     string
+	}{
+		{
+			// A stop above the market with nothing on the bid: it triggered,
+			// and triggering owes nothing to liquidity.
+			name: "a stop the market reached, with nothing behind it", bidDepth: 0,
+			forge: func(p *session.ProtectionPlaced) { p.StopPrice = 20_050 },
+			says:  "reached its level at",
+		},
+		{
+			// A target below the market with depth on the bid: nothing
+			// triggered, and only the depth says it should have gone.
+			name: "a target the market came to", bidDepth: 50,
+			forge: func(p *session.ProtectionPlaced) { p.TargetPrice = 19_950 },
+			says:  "still showed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := honest(t, tc.bidDepth)
+			if len(s.ActiveProtections()) != 1 {
+				t.Fatalf("the fixture has no protection: %+v", s.ActiveProtections())
+			}
+			checked(t, s)
+
+			events := honest(t, tc.bidDepth).Events()
+			at := indexOfKind(t, events, session.KindProtectionPlaced, 1)
+			placed := events[at].(session.ProtectionPlaced)
+			tc.forge(&placed)
+			events[at] = placed
+
+			_, err := session.Replay(events)
+			if !errors.Is(err, session.ErrFabricated) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			}
+			if !strings.Contains(err.Error(), "still protects episode") || !strings.Contains(err.Error(), tc.says) {
+				t.Fatalf("rejected for another reason: %v", err)
+			}
+		})
+	}
+}
+
+// Scenario: nothing is asked of an order no session was open to offer it to
+//
+// The live session offers an observation to what is waiting only while a
+// trading session is open and the evaluation has not ended. A reader that
+// demanded an explanation from an order nobody offered anything to would
+// reject a journal the engine itself produces.
+func TestAnOrderNobodyWasOfferedIsAskedNothing(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	mustSubmit(t, s, stopOrder(t, "protect", market.SideSell, 5, 19_900))
+	if err := s.EndTradingSession(4_000); err != nil {
+		t.Fatalf("EndTradingSession: %v", err)
+	}
+
+	// The market walks straight through the stop with no session open, so
+	// nothing is offered it and nothing happens to it.
+	mustObserve(t, s, sized(5_000, 19_800, 19_801, 50))
+	mustObserve(t, s, sized(6_000, 19_700, 19_701, 50))
+
+	if len(s.WorkingOrders()) != 1 {
+		t.Fatalf("working: got %+v, want the stop untouched", s.WorkingOrders())
+	}
+	checked(t, s)
+}
+
+// Scenario: a limit that could not fill because someone was ahead of it is
+//
+//	accepted
+//
+// The check judges against the book as it was left, not as it arrived, which
+// is why it can be this strict without a second copy of the resolution order.
+// Everything that filled has already been consumed; what remains is exactly
+// what the survivors were offered. A limit whose price the market reached but
+// whose depth an order in front of it took has nothing to answer for — and a
+// stop at the same level does, because triggering owes nothing to liquidity.
+func TestAnOrderStarvedByTheOneAheadOfItIsAccepted(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	// Two sell limits at the same price, submitted in order. The first one to
+	// be offered the book takes all three contracts it shows.
+	mustSubmit(t, s, order("long", market.SideBuy, 8))
+	mustSubmit(t, s, limitOrder(t, "ahead", market.SideSell, 3, 20_100))
+	mustSubmit(t, s, limitOrder(t, "behind", market.SideSell, 3, 20_100))
+	mustObserve(t, s, sized(4_000, 20_150, 20_151, 3))
+
+	working := s.WorkingOrders()
+	if len(working) != 1 || working[0].ID != "behind" {
+		t.Fatalf("working: got %+v, want only the order behind still waiting", working)
+	}
+	if position, _ := s.Account().Position(mnq); position.NetQty != 5 {
+		t.Fatalf("position: got %d, want only the order in front to have filled", position.NetQty)
+	}
+	// It survived an observation whose price it had reached, and the log is
+	// accepted, because the book it was actually offered was empty.
+	checked(t, s)
+}
+
+// The evaluation ending stops the offering too, and a reader that forgot it
+// would reject a journal the engine produces.
+func TestAnOrderIsAskedNothingOnceTheEvaluationHasEnded(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	// A buy stop far above the market, and a position large enough that the
+	// next observation ends the evaluation.
+	mustSubmit(t, s, stopOrder(t, "later", market.SideBuy, 1, 21_000))
+	mustSubmit(t, s, order("long", market.SideBuy, 10))
+
+	mustObserve(t, s, sized(4_000, 19_800, 19_801, 50))
+	if s.Challenge().State() != challenge.StateFailed {
+		t.Fatalf("the fixture did not end the evaluation: %v", s.Challenge().State())
+	}
+
+	// The market now walks through the resting stop. Nothing is offered it,
+	// because the evaluation is over.
+	mustObserve(t, s, sized(5_000, 21_100, 21_101, 50))
+	mustObserve(t, s, sized(6_000, 21_200, 21_201, 50))
+
+	if len(s.WorkingOrders()) != 1 {
+		t.Fatalf("working: got %+v, want the stop untouched", s.WorkingOrders())
+	}
+	checked(t, s)
 }
