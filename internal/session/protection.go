@@ -451,6 +451,22 @@ func (p *protectionProjection) legCancelled(orderID string) {
 	}
 }
 
+// legNamed finds the protection an identifier is a leg of, and which leg.
+func (p *protectionProjection) legNamed(orderID string) (activeProtection, legKind, bool) {
+	if orderID == "" {
+		return activeProtection{}, 0, false
+	}
+	for _, a := range p.active {
+		switch orderID {
+		case a.stopOrderID:
+			return a, legStop, true
+		case a.targetOrderID:
+			return a, legTarget, true
+		}
+	}
+	return activeProtection{}, 0, false
+}
+
 // activeEpisodeIDs is the order protections are offered an observation in.
 // It is a copy, because executing one protection can end another, and the
 // thing being walked must not be the thing being changed.

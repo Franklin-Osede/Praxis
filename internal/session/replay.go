@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"praxis/internal/challenge"
+	"praxis/internal/execution"
 	"praxis/internal/market"
 	"praxis/internal/portfolio"
 )
@@ -181,7 +182,8 @@ func Replay(events []Event) (*ReplayedState, error) {
 			return nil, fmt.Errorf("%w: event %d follows %d unrecorded challenge decisions",
 				ErrFabricated, n, len(pendingDecisions))
 		}
-		if _, err := protections.requireOwed(e); err != nil {
+		owedThis, err := protections.requireOwed(e)
+		if err != nil {
 			return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
 		}
 		state.LastSequence = header.Sequence
@@ -198,6 +200,11 @@ func Replay(events []Event) (*ReplayedState, error) {
 				return nil, err
 			}
 			fillOrderID = v.Fill.OrderID
+			// The book this observation showed is finite, and this fill just
+			// took part of it. What follows must meet what is left.
+			if state.LastQuote, err = consumeBook(state.LastQuote, []market.Fill{v.Fill}); err != nil {
+				return nil, err
+			}
 			// A fill from an order that never rested matches nothing here,
 			// which is correct: it was gone before it could wait.
 			if state.Working, err = reduceWorking(state.Working, v.Fill.OrderID, v.Fill.Qty); err != nil {
@@ -309,6 +316,13 @@ func Replay(events []Event) (*ReplayedState, error) {
 
 		case OrderCancelled:
 			state.Working = removeWorking(state.Working, v.OrderID)
+			// A cancellation nothing owed is one the book itself has to
+			// explain, and for a protective leg the book still can.
+			if !owedThis {
+				if err := proveLegCancellation(&protections, state.LastQuote, started.Config.Instrument, v); err != nil {
+					return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				}
+			}
 			protections.entryGone(v.OrderID)
 			protections.legCancelled(v.OrderID)
 
@@ -373,6 +387,57 @@ func owedConsequenceStandsHere(e Event, protections *protectionProjection) bool 
 		return true
 	}
 	return false
+}
+
+// proveLegCancellation re-executes a protective leg against the book as it
+// stood and refuses a cancellation the market could not have produced.
+//
+// A stop that reaches its level with nothing behind it leaves no position
+// change, so for a while this was believed. It never had to be: Replay holds
+// the observation, the leg's side, price and quantity, and what earlier fills
+// took out of the book, and ConservativeExecution is a pure function of those.
+// StopTriggered exists precisely to separate a level never reached from a level
+// reached with no liquidity, which is the difference a forged cancellation
+// depends on going unnoticed.
+//
+// The gap it closes was real: a journal could say a stop was withdrawn as
+// unfillable while the quote that was supposed to have triggered it never came
+// near the level, and nothing would have contradicted it.
+//
+// It applies only to a cancellation nothing owed, and only to a protective leg.
+// A leg's remainder cancelled after a partial fill is already owed and proved
+// from the position change; a trader's own order is still believed, because the
+// book at the moment its remainder was cancelled is not the book its fills met.
+func proveLegCancellation(protections *protectionProjection, book market.Quote, instrument market.Instrument, cancelled OrderCancelled) error {
+	active, which, ok := protections.legNamed(cancelled.OrderID)
+	if !ok {
+		return nil
+	}
+	order, ok := protectiveOrder(active, which, instrument)
+	if !ok {
+		return nil
+	}
+	result, err := execution.ConservativeExecution{}.ExecuteOnQuote(order, book)
+	if err != nil {
+		return err
+	}
+	if !result.StopTriggered {
+		return fmt.Errorf("%s was cancelled as unfillable, and %d/%d never reached %d",
+			cancelled.OrderID, book.Bid, book.Ask, order.StopPrice)
+	}
+	if len(result.Fills) > 0 {
+		return fmt.Errorf("%s was cancelled whole, and %d/%d still showed %d/%d for it",
+			cancelled.OrderID, book.Bid, book.Ask, book.BidSize, book.AskSize)
+	}
+	if cancelled.RemainingQty != order.Qty {
+		return fmt.Errorf("%s is cancelled with %d left, the protection covered %d",
+			cancelled.OrderID, cancelled.RemainingQty, order.Qty)
+	}
+	if cancelled.Reason != CancelledUnfillableRemainder {
+		return fmt.Errorf("%s is cancelled for %v; a leg that reached its level with nothing behind it ends as %v",
+			cancelled.OrderID, cancelled.Reason, CancelledUnfillableRemainder)
+	}
+	return nil
 }
 
 // checkValuation rebuilds a recorded valuation from the account and the last

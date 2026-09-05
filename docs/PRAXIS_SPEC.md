@@ -263,7 +263,20 @@ cancels its sibling `by_oco` and ends the aggregate `executed`; a manual exit
 cancels both `position_closed`. The two reasons are distinguished because a log
 that spelled them alike could not tell a stop that worked from one the trader
 overtook. They are values no earlier version has a name for, so they inaugurate
-`praxis.event.v4`, published with the commands that first write them. The protection events in v2 were defined ahead of any producer, and
+`praxis.event.v4`, published with the commands that first write them.
+
+Every part of a protective tail is recomputed rather than believed, including
+the one transition that leaves no position change: a stop that reached its level
+and found nothing. `Replay` re-executes the leg against the book as it stood and
+demands the level was reached, that nothing was left on it, and that the whole
+cover was withdrawn. That needs the book as it stood, so **`Replay` consumes the
+displayed size from the fills the journal records**, exactly as a live session
+does — without which a resumed session would inherit the quote as it arrived
+rather than as it was left, and could trade depth the interrupted run had
+already spent. A trader's own cancelled remainder is still believed: the book
+when it was written is not the book its fills met.
+
+The protection events in v2 were defined ahead of any producer, and
 that is precisely what let them be wrong: a schema is not proven until
 something both produces and consumes it. See
 [`docs/adr/014-protection-is-an-aggregate.md`](adr/014-protection-is-an-aggregate.md).
@@ -873,8 +886,9 @@ Next, in order:
    partial quantities. `praxis.event.v3` is published by the commands that
    place, change and withdraw; `praxis.event.v4` by the execution that needed
    cancellation reasons no earlier version has a name for.
-6. **The eighteen transition scenarios** listed in ADR-014 all pass. One rule
-   in them has no test and says so: with a two-sided quote a protection's two
+6. **The eighteen transition scenarios** listed in ADR-014 all pass, and every
+   protective transition is proved against the market rather than believed.
+   One rule has no test and says so: with a two-sided quote a protection's two
    levels cannot both be reachable, so "the stop wins" waits for bar
    observations. A property test pins the impossibility in the meantime.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop

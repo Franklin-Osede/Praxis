@@ -414,25 +414,40 @@ func (s *Session) offerObservation(at market.LogicalTime) error {
 }
 
 // consume takes what filled out of the observation's displayed size.
-//
-// One observation shows a finite book. Several waiting orders and a newly
-// submitted one all draw from the same displayed size, and once it is gone
-// nothing more fills until the next observation. Letting each of them take the
-// full size would hand the same contracts to everybody, which is the largest
-// possible way for a simulator to invent liquidity.
 func (s *Session) consume(fills []market.Fill) error {
+	consumed, err := consumeBook(s.lastQuote, fills)
+	if err != nil {
+		return err
+	}
+	s.lastQuote = consumed
+	return nil
+}
+
+// consumeBook takes what filled out of an observation's displayed size.
+//
+// One observation shows a finite book. Several waiting orders, a protective
+// leg and a newly submitted order all draw from the same displayed size, and
+// once it is gone nothing more fills until the next observation. Letting each
+// of them take the full size would hand the same contracts to everybody, which
+// is the largest possible way for a simulator to invent liquidity.
+//
+// Replay consumes it too, from the fills the journal records. A reconstruction
+// that started each observation from the untouched quote would resume with
+// depth the interrupted run had already spent, and would let Replay believe a
+// cancellation the book at that moment could not have produced.
+func consumeBook(q market.Quote, fills []market.Fill) (market.Quote, error) {
 	for _, f := range fills {
 		var err error
 		if f.Side == market.SideBuy {
-			s.lastQuote.AskSize, err = market.AddQty(s.lastQuote.AskSize, -f.Qty)
+			q.AskSize, err = market.AddQty(q.AskSize, -f.Qty)
 		} else {
-			s.lastQuote.BidSize, err = market.AddQty(s.lastQuote.BidSize, -f.Qty)
+			q.BidSize, err = market.AddQty(q.BidSize, -f.Qty)
 		}
 		if err != nil {
-			return err
+			return market.Quote{}, err
 		}
 	}
-	return nil
+	return q, nil
 }
 
 // fillEffect is everything one fill did, held together.

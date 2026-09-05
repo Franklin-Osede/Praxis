@@ -303,11 +303,30 @@ inaugurate **`praxis.event.v4`**, published with the commands that first write
 them — the rule v3 was corrected into. A v3 writer refuses them and a v3 reader
 refuses to guess at them.
 
-A stop that reached its level and found nothing has still triggered, and there
-is no position change to derive that from: its cancellation is recorded and
-believed. Everything else in a protective tail is recomputed — which order,
-how much was left on it, why, and what the protection was holding when it
-ended.
+Everything in a protective tail is recomputed — which order was cancelled, how
+much was left on it, why, and what the protection was holding when it ended.
+
+A stop that reached its level and found nothing has still triggered, and leaves
+no position change behind. That one was believed for a slice, and it did not
+have to be: `Replay` holds the observation, the leg's side, price and quantity,
+and what earlier fills took out of the book, and `ConservativeExecution` is a
+pure function of those. `StopTriggered` exists precisely to separate a level
+never reached from a level reached with no liquidity, which is the difference a
+forged cancellation would depend on going unnoticed. `Replay` therefore
+re-executes the leg against the book as it stood and demands the level was
+reached, that nothing was left on it, and that the whole cover was withdrawn as
+unfillable.
+
+That check needs the book as it stood, so `Replay` consumes it from the fills
+the journal records, exactly as the session does. It was not doing so, and the
+consequence was larger than the check: a resumed session inherited the quote as
+it arrived rather than as it was left, and could trade depth the interrupted run
+had already spent.
+
+A trader's own order is still believed when its remainder is cancelled. The
+book at the moment that cancellation was written is not the book its fills met,
+so re-executing it would be checking against the wrong state; proving those
+needs the offer-time book, and that is a separate decision.
 
 ### Fills that are not protective adjust it too
 
