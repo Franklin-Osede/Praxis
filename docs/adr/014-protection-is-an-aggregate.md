@@ -62,16 +62,37 @@ entry fills is ordinary, and it is behaviour worth measuring: making the trader
 cancel and resubmit the whole entry would erase the very decision the
 experiment is about.
 
-### Each leg is an order with a name
+### Each leg is an order with a name, and no name is ever reused
 
-`ProtectionPlaced` records `StopOrderID` and `TargetOrderID`. They are derived
-from the entry's identifier — `<entry>:stop` and `<entry>:target` — so they are
-reproducible on replay, and they are recorded explicitly so that a fill, an
-OCO cancellation and a reconstruction all point at something that exists rather
-than at a convention a reader has to know.
+`ProtectionPlaced` records `StopOrderID` and `TargetOrderID` explicitly, so a
+fill, an OCO cancellation and a reconstruction all point at something that
+exists rather than at a convention a reader has to know.
 
-The session refuses any order whose identifier is already in use by a working
-order or a protective leg, so a trader cannot name an order into a collision.
+They are drawn from a **reserved namespace**, keyed by the sequence of the
+`ProtectionPlaced` event that created them:
+
+```text
+praxis:<sequence>:stop
+praxis:<sequence>:target
+```
+
+Deriving them from the entry's identifier was the first idea and is worse: it
+depends on what the trader called the entry, and a trader can call an entry
+anything. A sequence is globally unique by construction, owes nothing to the
+entry's length or content, and reproduces on replay because replay assigns the
+same sequences. An order whose identifier begins with `praxis:` is refused at
+submission, so the namespace belongs to the system alone.
+
+**No identifier is ever reused, in the whole journal.** Refusing collisions
+only with orders currently working is not enough: an order that finished having
+used a name leaves that name attributable, and a later order taking it would
+make grouping fills by decision ambiguous again — which is the thing the
+identifier exists for.
+
+Replay therefore reconstructs the set of identifiers a journal has used, and
+`Resume` carries it. A map is the right structure for that: it answers only
+membership and is never iterated to produce a result, so rule 4 is not in
+question.
 
 ### The state machine
 
@@ -95,6 +116,61 @@ both legs cancelled  -> Ended
 The second line is the one that made this necessary: a stop that reached its
 level has triggered and cannot untrigger (ADR-004), so its remainder is
 cancelled — and the target survives over what is left.
+
+### Only one protection governs an episode
+
+An entry carrying protection may fill into an episode that already has some.
+Two plans then exist for one position, and none of the obvious answers is
+honest: keeping both is protection per lot, which ADR-013 rejected; silently
+replacing the old one changes the whole episode without naming the change; and
+ignoring the new one makes a recorded decision disappear.
+
+The plan therefore activates or is explicitly ended, according to what the fill
+did:
+
+```text
+opened                          activate over the new episode
+added, episode unprotected      activate over the whole resulting episode
+added, episode already protected  the new plan does not activate; it is ended
+                                  with a stated reason, and the existing
+                                  protection extends its quantity
+flip                            end the old episode's protection; activate the
+                                plan over the new episode
+reduced or closed               end the plan: it opened no exposure
+```
+
+A trader who wants different levels on a position that already has them uses
+`ReplaceProtection`. The change is then named as the decision it actually was,
+rather than arriving disguised as an entry.
+
+Ending a plan always carries a reason, and the reasons are facts about what the
+system did rather than about why anyone did anything:
+
+```go
+type ProtectionEndReason uint8
+
+const (
+    ProtectionWithdrawnByTrader ProtectionEndReason = iota + 1
+    ProtectionEntryCancelled
+    ProtectionDidNotOpenExposure
+    ProtectionAlreadyActive
+    ProtectionPositionClosed
+    ProtectionFlipped
+    ProtectionExecuted
+)
+```
+
+### Once active, the episode governs
+
+After the first fill activates a plan, the entry's reference stops governing
+it. Further changes name the episode.
+
+The entry's remainder may still be working, and its later fills **extend the
+protected quantity and nothing else**. They do not reactivate the plan and they
+do not restore the levels it was placed with. Without that rule a replacement
+made after a partial fill would be silently undone by the next fill of the same
+entry — the trader would see the levels they had already moved away from, put
+back by an event they did not cause.
 
 ### Fills that are not protective adjust it too
 
@@ -149,6 +225,12 @@ replay and a resume:
 13. A flip — the old protection ends before the new episode's begins.
 14. A resume in each of `Planned`, `Active` with both legs, `Active` with one,
     and after `Ended`.
+15. An entry filling into an episode that is already protected — the new plan
+    ends with `ProtectionAlreadyActive` and the existing quantity grows.
+16. A partial entry fill, then a replacement by episode, then the entry's
+    remainder filling — the replaced levels stand and only the quantity grows.
+17. An identifier reused after its order finished — refused.
+18. An order submitted under the `praxis:` namespace — refused.
 
 ## Consequences
 
@@ -163,3 +245,7 @@ planned protection and its commands with no execution; activation and binding by
 the fill's real effect; one-cancels-the-other execution with partial
 quantities; then verification, replay, resume and persistence; and only then a
 human command.
+
+The first of those is small and its exit criterion is small: a planned
+protection can be placed, changed, withdrawn, persisted and reconstructed
+exactly, while its entry is still waiting. Nothing executes a level yet.

@@ -211,8 +211,14 @@ withdrawn while its entry waited, a protective fill had no order to belong to,
 and `Executed` was terminal when a partial fill leaves exposure standing.
 
 References are a tagged union naming either the entry or the episode, never a
-zero episode used as a sentinel. Each leg is an order with a recorded,
-reproducible identifier, so a fill points at something that exists. The machine
+zero episode used as a sentinel. Each leg is an order named from a reserved
+`praxis:` namespace keyed by the event's own sequence, recorded explicitly and
+reproducible on replay, and **no identifier is ever reused in a journal** —
+refusing only collisions with orders currently working would let a finished
+name come back and make grouping fills by decision ambiguous again. Exactly one
+protection governs an episode: a plan that fills into an already protected
+position does not activate, it ends with a stated reason and the existing
+quantity grows. The machine
 is `Planned → Active(stop?, target?, quantity) → Ended`, and execution is a
 reason for a transition rather than a state.
 
