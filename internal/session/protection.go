@@ -64,23 +64,57 @@ type activeProtection struct {
 	long         bool
 }
 
-// owedEnding is a protection ending that the events so far require.
+// owedEvent is a fact the events so far require next, in order.
 //
 // The session records them; Replay and Verify recompute them and demand the
 // journal holds exactly these, in this order, immediately. It is the same
 // double entry the position changes already have: a derived fact is recomputed
 // from what caused it rather than believed.
-type owedEnding struct {
+//
+// Protection produces short tails — a leg's remainder cancelled, the sibling
+// cancelled with it, the aggregate ended — so an owing is either a
+// cancellation or an ending.
+type owedEvent struct {
+	kind Kind
+
+	// An owed cancellation.
+	orderID      string
+	remainingQty market.Qty
+	cancelReason CancelReason
+
+	// An owed ending.
 	ref         ProtectionRef
 	stopPrice   market.Ticks
 	targetPrice market.Ticks
-	reason      ProtectionEndReason
+	endReason   ProtectionEndReason
 
-	// checkReason says the owing knows why. Verify can see that a closing
-	// episode's protection must end without seeing the fill, and the fill is
-	// the only thing the reason turns on — a reversal ends it flipped, and
-	// anything else ends it closed.
+	// checkReason says the owing knows why an aggregate ended. Verify can see
+	// that a closing episode's protection must end without seeing the fill,
+	// and whether the fill reversed is the only thing the reason turns on.
 	checkReason bool
+}
+
+func owedCancel(orderID string, remaining market.Qty, reason CancelReason) owedEvent {
+	return owedEvent{
+		kind: KindOrderCancelled, orderID: orderID,
+		remainingQty: remaining, cancelReason: reason,
+	}
+}
+
+func owedEnd(ref ProtectionRef, stop, target market.Ticks, reason ProtectionEndReason, checkReason bool) owedEvent {
+	return owedEvent{
+		kind: KindProtectionEnded, ref: ref,
+		stopPrice: stop, targetPrice: target,
+		endReason: reason, checkReason: checkReason,
+	}
+}
+
+func entryReference(orderID string) ProtectionRef {
+	return ProtectionRef{Kind: ProtectionRefEntry, OrderID: orderID}
+}
+
+func episodeReference(id uint64) ProtectionRef {
+	return ProtectionRef{Kind: ProtectionRefEpisode, EpisodeID: id}
 }
 
 // protectionProjection derives the protections a journal describes.
@@ -101,11 +135,11 @@ type protectionProjection struct {
 	// result, which is why a map is the right structure here.
 	usedOrderIDs map[string]bool
 
-	// owed holds the endings the events so far require, in order. The very next
-	// event must be the first of them: an ending and the fact that caused it
-	// are one decision, so a reader that allowed anything between them would be
-	// allowing a journal the producer cannot write.
-	owed []owedEnding
+	// owed holds the events the facts so far require, in order. The very next
+	// event must be the first of them: a consequence and the fact that caused
+	// it are one decision, so a reader that allowed anything between them would
+	// be allowing a journal the producer cannot write.
+	owed []owedEvent
 }
 
 func (p *protectionProjection) init() {
@@ -276,53 +310,86 @@ func (p *protectionProjection) applyEnded(e ProtectionEnded) error {
 	return nil
 }
 
-// endingsAfter is what a position change requires to be ended, in the order the
-// endings must be recorded. It changes nothing: an ending is an event, and only
-// an event removes a protection.
+// consequencesOf is what a position change requires to be recorded next, in
+// order. It changes nothing: a leg goes when an OrderCancelled says so and an
+// aggregate goes when a ProtectionEnded says so, and both are events.
 //
 // flip says this close is the first half of a reversal — the same fill opens
 // the other side. It is knowable only from the whole effect of a fill, which is
 // why the effect is assembled before any of it is written down. Deciding on the
 // close alone would end the plan as having opened no exposure, a moment before
 // the exposure it opens.
-func (p *protectionProjection) endingsAfter(entryOrderID string, episodeID uint64, change portfolio.PositionEvent, flip bool) []owedEnding {
-	var owed []owedEnding
+//
+// knowFlip says the caller can tell a reversal from an exit. Verify holds the
+// events and not the fills, so it cannot; it is given the same list with the
+// end reason unchecked and without the arriving plan's ending, which is a
+// prefix of what a caller that knows demands.
+func (p *protectionProjection) consequencesOf(
+	fillOrderID string, episodeID uint64, change portfolio.PositionEvent,
+	netQty market.Qty, flip, knowFlip bool,
+) []owedEvent {
+	var owed []owedEvent
 	endPlan := func(reason ProtectionEndReason) {
-		if planned, ok := p.plannedFor(entryOrderID); ok {
-			owed = append(owed, owedEnding{
-				ref:       ProtectionRef{Kind: ProtectionRefEntry, OrderID: entryOrderID},
-				stopPrice: planned.stopPrice, targetPrice: planned.targetPrice,
-				reason: reason, checkReason: true,
-			})
+		if planned, ok := p.plannedFor(fillOrderID); ok {
+			owed = append(owed, owedEnd(entryReference(fillOrderID),
+				planned.stopPrice, planned.targetPrice, reason, true))
 		}
 	}
 
+	active, hasActive := p.activeFor(episodeID)
+	// A fill from one of the protection's own legs is the protection working,
+	// which is a different fact from the position going away underneath it.
+	protective := hasActive && fillOrderID != "" &&
+		(fillOrderID == active.stopOrderID || fillOrderID == active.targetOrderID)
+
 	switch change.Kind {
 	case portfolio.PositionClosed:
-		// The episode is over, so whatever was protecting it is over with it.
-		if active, ok := p.activeFor(episodeID); ok {
-			reason := ProtectionPositionClosed
-			if flip {
-				reason = ProtectionFlipped
+		if hasActive {
+			// Every leg still standing goes. The one that executed has no
+			// remainder to cancel: it filled the position away.
+			reason := CancelledPositionClosed
+			if protective {
+				reason = CancelledByOCO
 			}
-			owed = append(owed, owedEnding{
-				ref:       ProtectionRef{Kind: ProtectionRefEpisode, EpisodeID: episodeID},
-				stopPrice: active.stopPrice, targetPrice: active.targetPrice,
-				reason: reason, checkReason: true,
-			})
+			for _, leg := range []string{active.stopOrderID, active.targetOrderID} {
+				if leg != "" && leg != fillOrderID {
+					owed = append(owed, owedCancel(leg, active.protectedQty, reason))
+				}
+			}
+
+			endReason, checkReason := ProtectionPositionClosed, true
+			switch {
+			case protective:
+				endReason = ProtectionExecuted
+			case flip:
+				endReason = ProtectionFlipped
+			case !knowFlip:
+				checkReason = false
+			}
+			owed = append(owed, owedEnd(episodeReference(episodeID),
+				active.stopPrice, active.targetPrice, endReason, checkReason))
 		}
 		// A plan on the closing order opened nothing — unless the same fill is
-		// about to open the other side, which the plan then covers.
-		if !flip {
+		// about to open the other side, which the plan then covers. A caller
+		// that cannot tell demands nothing here rather than guessing.
+		if knowFlip && !flip {
 			endPlan(ProtectionDidNotOpenExposure)
 		}
+
 	case portfolio.PositionReduced:
+		// A stop that reached its level has triggered and cannot untrigger, so
+		// what the book could not fill does not go back to waiting. A target
+		// is a limit and keeps waiting over what is left.
+		if protective && fillOrderID == active.stopOrderID {
+			owed = append(owed, owedCancel(active.stopOrderID, absQty(netQty), CancelledUnfillableRemainder))
+		}
 		endPlan(ProtectionDidNotOpenExposure)
+
 	case portfolio.PositionIncreased:
 		// A plan arriving at an episode that already has cover does not
 		// silently replace it and is not kept beside it: it is ended, said out
 		// loud, and the protection already there grows to the new exposure.
-		if _, ok := p.activeFor(episodeID); ok {
+		if hasActive {
 			endPlan(ProtectionAlreadyActive)
 		}
 	}
@@ -365,6 +432,36 @@ func (p *protectionProjection) bind(entryOrderID string, episodeID uint64, chang
 	}
 }
 
+// legCancelled removes a leg from whichever protection owns it. A level that is
+// gone is zero, which is what the rest of the domain already means by an unset
+// price, so nothing offers it an observation again.
+func (p *protectionProjection) legCancelled(orderID string) {
+	if orderID == "" {
+		return
+	}
+	for n := range p.active {
+		switch orderID {
+		case p.active[n].stopOrderID:
+			p.active[n].stopPrice, p.active[n].stopOrderID = 0, ""
+			return
+		case p.active[n].targetOrderID:
+			p.active[n].targetPrice, p.active[n].targetOrderID = 0, ""
+			return
+		}
+	}
+}
+
+// activeEpisodeIDs is the order protections are offered an observation in.
+// It is a copy, because executing one protection can end another, and the
+// thing being walked must not be the thing being changed.
+func (p *protectionProjection) activeEpisodeIDs() []uint64 {
+	out := make([]uint64, 0, len(p.active))
+	for _, a := range p.active {
+		out = append(out, a.episodeID)
+	}
+	return out
+}
+
 func absQty(q market.Qty) market.Qty {
 	if q < 0 {
 		return -q
@@ -382,43 +479,85 @@ func (p *protectionProjection) entryGone(orderID string) {
 	if !ok {
 		return
 	}
-	p.owe(owedEnding{
-		ref:       ProtectionRef{Kind: ProtectionRefEntry, OrderID: orderID},
-		stopPrice: planned.stopPrice, targetPrice: planned.targetPrice,
-		reason: ProtectionEntryCancelled, checkReason: true,
-	})
+	p.owe(owedEnd(entryReference(orderID), planned.stopPrice, planned.targetPrice,
+		ProtectionEntryCancelled, true))
 }
 
-func (p *protectionProjection) owe(endings ...owedEnding) {
-	p.owed = append(p.owed, endings...)
+func (p *protectionProjection) owe(events ...owedEvent) {
+	p.owed = append(p.owed, events...)
 }
 
-// requireEnding refuses any event standing between a fact and the ending it
-// requires.
-func (p *protectionProjection) requireEnding(e Event) error {
+// requireOwed refuses any event standing between a fact and what it requires,
+// and reports whether this event was the thing owed.
+//
+// A caller needs to know: an ending that was owed has already had its levels
+// checked here, against the protection as it stood when the fact that ended it
+// happened — which is before the legs that fact cancels were taken off it.
+func (p *protectionProjection) requireOwed(e Event) (bool, error) {
 	if len(p.owed) == 0 {
-		return nil
+		return false, nil
 	}
 	want := p.owed[0]
-	// This first branch is for the diagnostic alone: an event of another kind
-	// would fail the reference check below anyway, on a zero value, and say so
-	// far less usefully. Naming what actually stood in the way is what a reader
-	// of a rejected journal needs.
+	// The first branch is for the diagnostic alone: an event of another kind
+	// fails the checks below anyway, on a zero value, and says so far less
+	// usefully. Naming what actually stood in the way is what a reader of a
+	// rejected journal needs.
+	if e.Header().Kind != want.kind {
+		return false, fmt.Errorf("%w: %+v owes a %v and a %v followed instead",
+			ErrProtectionOutlivedEntry, want.describe(), want.kind, e.Header().Kind)
+	}
+
+	if want.kind == KindOrderCancelled {
+		cancelled, ok := e.(OrderCancelled)
+		if !ok {
+			return false, fmt.Errorf("%w: a %T is tagged as a cancellation", ErrProtectionOutlivedEntry, e)
+		}
+		if cancelled.OrderID != want.orderID {
+			return false, fmt.Errorf("%w: %s owes a cancellation and %s was cancelled instead",
+				ErrProtectionOutlivedEntry, want.orderID, cancelled.OrderID)
+		}
+		if cancelled.RemainingQty != want.remainingQty {
+			return false, fmt.Errorf("%w: %s is cancelled with %d left, the events before it say %d",
+				ErrProtectionOutlivedEntry, want.orderID, cancelled.RemainingQty, want.remainingQty)
+		}
+		if cancelled.Reason != want.cancelReason {
+			return false, fmt.Errorf("%w: %s is cancelled for %v, the events before it say %v",
+				ErrProtectionOutlivedEntry, want.orderID, cancelled.Reason, want.cancelReason)
+		}
+		p.owed = p.owed[1:]
+		return true, nil
+	}
+
 	ended, ok := e.(ProtectionEnded)
 	if !ok {
-		return fmt.Errorf("%w: %+v owes an ending and a %v followed instead",
-			ErrProtectionOutlivedEntry, want.ref, e.Header().Kind)
+		return false, fmt.Errorf("%w: a %T is tagged as an ending", ErrProtectionOutlivedEntry, e)
 	}
 	if ended.Ref != want.ref {
-		return fmt.Errorf("%w: the ending owed to %+v names %+v instead",
+		return false, fmt.Errorf("%w: the ending owed to %+v names %+v instead",
 			ErrProtectionOutlivedEntry, want.ref, ended.Ref)
 	}
-	if want.checkReason && ended.Reason != want.reason {
-		return fmt.Errorf("%w: %+v ends with reason %v, the events before it say %v",
-			ErrProtectionOutlivedEntry, want.ref, ended.Reason, want.reason)
+	if want.checkReason && ended.Reason != want.endReason {
+		return false, fmt.Errorf("%w: %+v ends with reason %v, the events before it say %v",
+			ErrProtectionOutlivedEntry, want.ref, ended.Reason, want.endReason)
+	}
+	if ended.StopPrice != want.stopPrice || ended.TargetPrice != want.targetPrice {
+		return false, fmt.Errorf("%w: %+v ends holding %d/%d, the events before it say %d/%d",
+			ErrProtectionOutlivedEntry, want.ref, ended.StopPrice, ended.TargetPrice,
+			want.stopPrice, want.targetPrice)
 	}
 	p.owed = p.owed[1:]
-	return nil
+	return true, nil
+}
+
+// describe names what an owing is about, for a reader of a rejection.
+func (o owedEvent) describe() string {
+	if o.kind == KindOrderCancelled {
+		return o.orderID
+	}
+	if o.ref.Kind == ProtectionRefEpisode {
+		return fmt.Sprintf("episode %d", o.ref.EpisodeID)
+	}
+	return o.ref.OrderID
 }
 
 // settled reports a stream that stopped owing an ending it never wrote.
@@ -426,7 +565,8 @@ func (p *protectionProjection) settled() error {
 	if len(p.owed) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: the log ends owing the ending of %+v", ErrProtectionOutlivedEntry, p.owed[0].ref)
+	return fmt.Errorf("%w: the log ends owing a %v about %s",
+		ErrProtectionOutlivedEntry, p.owed[0].kind, p.owed[0].describe())
 }
 
 // PlannedProtection is what a reader outside the package sees.
@@ -631,6 +771,11 @@ func (s *Session) submitOrderWithProtection(o market.Order, stop, target market.
 	if err := s.executeOrder(prepared); err != nil {
 		return err
 	}
+	// The protection meets the observation that activated it, not the next
+	// one: an entry that filled through a gap may already be past its stop.
+	if err := s.resolveProtection(prepared.at); err != nil {
+		return err
+	}
 	return s.revalue(prepared.at)
 }
 
@@ -742,6 +887,25 @@ func (s *Session) endPlanFor(at market.LogicalTime, entryOrderID string) error {
 	}, ref, ProtectionEntryCancelled)
 }
 
+// recordOwed writes what a fact required and folds it in.
+func (s *Session) recordOwed(at market.LogicalTime, owed owedEvent) error {
+	if owed.kind == KindOrderCancelled {
+		if err := s.record(at, KindOrderCancelled, func(e Envelope) Event {
+			return OrderCancelled{
+				Envelope: e, OrderID: owed.orderID,
+				RemainingQty: owed.remainingQty, Reason: owed.cancelReason,
+			}
+		}); err != nil {
+			return err
+		}
+		s.protections.legCancelled(owed.orderID)
+		return nil
+	}
+	return s.recordProtectionEnded(at, protectionLevels{
+		stopPrice: owed.stopPrice, targetPrice: owed.targetPrice,
+	}, owed.ref, owed.endReason)
+}
+
 // recordProtectionEnded writes an ending and folds it in. Its caller has
 // already resolved the protection and decided the command may proceed.
 func (s *Session) recordProtectionEnded(at market.LogicalTime, levels protectionLevels, ref ProtectionRef, reason ProtectionEndReason) error {
@@ -838,3 +1002,102 @@ func (s *Session) PlannedProtections() []PlannedProtection { return s.protection
 // ActiveProtections returns the protections bound to an open episode, in the
 // order they were activated.
 func (s *Session) ActiveProtections() []ActiveProtection { return s.protections.activeSnapshot() }
+
+// legKind says which of a protection's two legs is being offered an
+// observation.
+type legKind uint8
+
+const (
+	legStop legKind = iota + 1
+	legTarget
+)
+
+// protectiveOrder is the order a leg would be against this observation, and
+// whether that level exists at all.
+//
+// It is built fresh from the protection's state each time rather than held as a
+// working order, because the quantity a leg covers is the episode's exposure
+// and that changes underneath it: a leg kept as an order would have to be
+// rewritten on every fill, and the two copies would eventually disagree.
+func protectiveOrder(a activeProtection, which legKind, instrument market.Instrument) (market.Order, bool) {
+	// A protection closes the position, so it trades against it.
+	side := market.SideSell
+	if !a.long {
+		side = market.SideBuy
+	}
+	switch which {
+	case legStop:
+		if a.stopPrice == 0 {
+			return market.Order{}, false
+		}
+		o, err := market.NewStopOrder(a.stopOrderID, instrument, side, a.protectedQty, a.stopPrice)
+		return o, err == nil
+	default:
+		if a.targetPrice == 0 {
+			return market.Order{}, false
+		}
+		o, err := market.NewLimitOrder(a.targetOrderID, instrument, side, a.protectedQty, a.targetPrice)
+		return o, err == nil
+	}
+}
+
+// resolveProtection offers the observation to every active protection, the stop
+// before the target.
+//
+// The order is fixed and it is the conservative one. Without a real queue
+// position there is nothing in the data that says which of two reachable levels
+// the market would have taken first, and a simulator that chose the target
+// would be handing the trader the better of two outcomes it cannot know.
+//
+// It runs on the same observation that activated a protection, not the next
+// one. An entry that filled through a gap may already be past its stop, and
+// waiting would grant a survival the market never gave. The entry and the stop
+// of a long trade against different sides of the book, so each keeps its own
+// displayed size.
+func (s *Session) resolveProtection(at market.LogicalTime) error {
+	for _, id := range s.protections.activeEpisodeIDs() {
+		for _, which := range []legKind{legStop, legTarget} {
+			if err := s.executeLeg(at, id, which); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Session) executeLeg(at market.LogicalTime, episodeID uint64, which legKind) error {
+	// The sibling may have closed the position a moment ago, and the episode
+	// may have gone with it.
+	active, ok := s.protections.activeFor(episodeID)
+	if !ok {
+		return nil
+	}
+	order, ok := protectiveOrder(active, which, s.cfg.Instrument)
+	if !ok {
+		return nil
+	}
+
+	result, err := s.policy.ExecuteOnQuote(order, s.lastQuote)
+	if err != nil {
+		return err
+	}
+	if len(result.Fills) == 0 && !result.StopTriggered {
+		return nil
+	}
+	if err := s.consume(result.Fills); err != nil {
+		return err
+	}
+	if _, err := s.applyAndRecord(at, result.Fills); err != nil {
+		return err
+	}
+
+	// A stop that reached its level and found nothing at all has still
+	// triggered, and a triggered stop cannot untrigger. There is no position
+	// change to derive that from, so it is recorded here; a stop that filled in
+	// part leaves a change behind, and the ending of what remains is derived
+	// from it like everything else.
+	if result.StopTriggered && len(result.Fills) == 0 {
+		return s.recordOwed(at, owedCancel(order.ID, order.Qty, CancelledUnfillableRemainder))
+	}
+	return nil
+}

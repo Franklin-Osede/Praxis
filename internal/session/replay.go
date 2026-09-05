@@ -173,7 +173,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 		}
 		lastTime = header.Time
 
-		if _, ok := e.(PositionChanged); !ok && len(pendingChanges) > 0 && !owedEndingStandsHere(e, &protections) {
+		if _, ok := e.(PositionChanged); !ok && len(pendingChanges) > 0 && !owedConsequenceStandsHere(e, &protections) {
 			return nil, fmt.Errorf("%w: event %d follows a fill whose %d changes were not recorded",
 				ErrFabricated, n, len(pendingChanges))
 		}
@@ -181,7 +181,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 			return nil, fmt.Errorf("%w: event %d follows %d unrecorded challenge decisions",
 				ErrFabricated, n, len(pendingDecisions))
 		}
-		if err := protections.requireEnding(e); err != nil {
+		if _, err := protections.requireOwed(e); err != nil {
 			return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
 		}
 		state.LastSequence = header.Sequence
@@ -229,8 +229,9 @@ func Replay(events []Event) (*ReplayedState, error) {
 			// turns on and the one thing a reader without the fills — Verify —
 			// cannot see.
 			flip := v.Change.Kind == portfolio.PositionClosed && len(pendingChanges) > 0
-			protections.owe(protections.endingsAfter(fillOrderID, episodeID, v.Change, flip)...)
-			protections.bind(fillOrderID, episodeID, v.Change, episodes.netQtyOf(symbol))
+			net := episodes.netQtyOf(symbol)
+			protections.owe(protections.consequencesOf(fillOrderID, episodeID, v.Change, net, flip, true)...)
+			protections.bind(fillOrderID, episodeID, v.Change, net)
 
 			state.ConsecutiveLosingTrades = episodes.consecutiveLosingTradesNow()
 			state.episodes = episodes
@@ -309,6 +310,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 		case OrderCancelled:
 			state.Working = removeWorking(state.Working, v.OrderID)
 			protections.entryGone(v.OrderID)
+			protections.legCancelled(v.OrderID)
 
 		case OrderSubmitted:
 			if state.OrdersThisSession, err = addOrders(state.OrdersThisSession, 1); err != nil {
@@ -351,19 +353,26 @@ func Replay(events []Event) (*ReplayedState, error) {
 	return state, nil
 }
 
-// owedEndingStandsHere allows the one thing that may come between two changes
-// of a single fill: the ending of a protection that those changes require.
+// owedConsequenceStandsHere allows the only things that may come between two
+// changes of a single fill: what those changes require.
 //
-// A reversal reads close, ending, open, because the protection the close undoes
-// must be gone before the protection the open activates begins. Nothing else
-// may stand there, and which ending is owed is settled immediately afterwards.
+// A reversal reads close, the old protection's legs cancelled, the old
+// protection ended, then open — because what the close undoes must be gone
+// before what the open activates begins. Nothing else may stand there, and
+// which consequence is owed is settled immediately afterwards.
 //
-// The second half of the condition is defence in depth: refusing an ending
+// The second half of the condition is defence in depth: refusing a consequence
 // nobody owes cannot be shown by forgery, because a journal that puts one there
 // has to displace something else, and the displacement is caught first.
-func owedEndingStandsHere(e Event, protections *protectionProjection) bool {
-	_, ok := e.(ProtectionEnded)
-	return ok && len(protections.owed) > 0
+func owedConsequenceStandsHere(e Event, protections *protectionProjection) bool {
+	if len(protections.owed) == 0 {
+		return false
+	}
+	switch e.(type) {
+	case ProtectionEnded, OrderCancelled:
+		return true
+	}
+	return false
 }
 
 // checkValuation rebuilds a recorded valuation from the account and the last
@@ -460,8 +469,9 @@ func Verify(events []Event) error {
 	)
 
 	for _, e := range events {
-		if err := protections.requireEnding(e); err != nil {
-			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+		owedThis, owedErr := protections.requireOwed(e)
+		if owedErr != nil {
+			return fmt.Errorf("%w: %v", ErrContradictoryLog, owedErr)
 		}
 
 		switch v := e.(type) {
@@ -489,19 +499,13 @@ func Verify(events []Event) error {
 			if v.Change.Kind == portfolio.PositionOpened {
 				episodeID, _ = episodes.episodeID(symbol)
 			}
-			// Verify has the events and not the fills, so it demands only what
-			// the events alone establish: an episode that closed can have no
-			// protection left over. Why it ended — a reversal or an exit — is
-			// what the fill decides, and Replay is what proves it.
-			if v.Change.Kind == portfolio.PositionClosed {
-				if active, ok := protections.activeFor(episodeID); ok {
-					protections.owe(owedEnding{
-						ref:       ProtectionRef{Kind: ProtectionRefEpisode, EpisodeID: episodeID},
-						stopPrice: active.stopPrice, targetPrice: active.targetPrice,
-					})
-				}
-			}
-			protections.bind(fillOrderID, episodeID, v.Change, episodes.netQtyOf(symbol))
+			// Verify has the events and not the fills, so it cannot tell a
+			// reversal from an exit — the one thing an ending's reason turns
+			// on. It demands the same consequences with that reason unchecked,
+			// which is a prefix of what Replay demands.
+			net := episodes.netQtyOf(symbol)
+			protections.owe(protections.consequencesOf(fillOrderID, episodeID, v.Change, net, false, false)...)
+			protections.bind(fillOrderID, episodeID, v.Change, net)
 			if v.Change.Kind != portfolio.PositionReduced && v.Change.Kind != portfolio.PositionClosed {
 				continue
 			}
@@ -541,6 +545,7 @@ func Verify(events []Event) error {
 
 		case OrderCancelled:
 			protections.entryGone(v.OrderID)
+			protections.legCancelled(v.OrderID)
 
 		case ProtectionPlaced:
 			if err := protections.applyPlaced(v); err != nil {
@@ -575,8 +580,11 @@ func Verify(events []Event) error {
 			}
 
 		case ProtectionEnded:
+			// An ending that was owed has had its levels checked already,
+			// against the protection as it stood before the legs that same
+			// fact cancelled were taken off it.
 			current, ok := protections.levelsFor(v.Ref)
-			if ok && (v.StopPrice != current.stopPrice || v.TargetPrice != current.targetPrice) {
+			if ok && !owedThis && (v.StopPrice != current.stopPrice || v.TargetPrice != current.targetPrice) {
 				return fmt.Errorf("%w: an ending records levels %d/%d, the events before it say %d/%d",
 					ErrContradictoryLog, v.StopPrice, v.TargetPrice, current.stopPrice, current.targetPrice)
 			}

@@ -212,7 +212,11 @@ func TestAReversalEndsTheOldProtectionThenActivatesTheNew(t *testing.T) {
 	if got, want := kinds(s.Events()[before:]), []session.Kind{
 		session.KindOrderSubmitted, session.KindProtectionPlaced,
 		session.KindFillProduced,
-		session.KindPositionChanged, session.KindProtectionEnded,
+		session.KindPositionChanged,
+		// The legs of the protection the reversal undid go before it does,
+		// and before the change that opens what replaces it.
+		session.KindOrderCancelled, session.KindOrderCancelled,
+		session.KindProtectionEnded,
 		session.KindPositionChanged,
 		session.KindAccountValued,
 	}; !reflect.DeepEqual(got, want) {

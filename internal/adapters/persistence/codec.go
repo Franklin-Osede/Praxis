@@ -45,20 +45,28 @@ import (
 // A version is stable when its bytes stop changing, not when anyone promises
 // the next change will be the last. v1 is what a writer and a command line have
 // already been able to produce, so it keeps the schema it had; the position
-// episode counter and the protection events inaugurate v2.
+// episode counter inaugurated v2, protection v3, and the cancellation reasons
+// one-cancels-the-other execution needs inaugurate v4.
+//
+// A new reason is not a new field: it is a value a v3 reader has no name for
+// and would either refuse or, worse, guess at. So it goes in a version of its
+// own, published with the commands that first write it — the rule v3 was
+// corrected into and the reason it exists.
 const (
 	EventVersionV1 = "praxis.event.v1"
 	EventVersionV2 = "praxis.event.v2"
 	EventVersionV3 = "praxis.event.v3"
+	EventVersionV4 = "praxis.event.v4"
 
 	// EventVersion is what a new journal is written in.
-	EventVersion = EventVersionV3
+	EventVersion = EventVersionV4
 )
 
-// ErrUnsupportedInVersion reports an event, or a field, that the payload
+// ErrUnsupportedInVersion reports an event, a field or a value that the payload
 // version in use has no way to express. A v1 journal cannot carry a losing
-// trade streak and a v2 journal cannot carry protection: they honestly lack
-// those facts rather than pretending to hold them.
+// trade streak, a v2 journal cannot carry protection, and a v3 journal cannot
+// say that a leg was cancelled by its sibling: they honestly lack those facts
+// rather than pretending to hold them.
 var ErrUnsupportedInVersion = errors.New("persistence: this payload version cannot express that event")
 
 // Limits checked before memory is reserved, so a corrupt length cannot ask for

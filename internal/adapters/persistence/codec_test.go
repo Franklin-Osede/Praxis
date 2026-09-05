@@ -32,6 +32,7 @@ func TestDecodeOfEncodeIsTheIdentity(t *testing.T) {
 		{persistence.EventVersionV1, everyEventType()},
 		{persistence.EventVersionV2, everyEventTypeV2()},
 		{persistence.EventVersionV3, everyEventTypeV3()},
+		{persistence.EventVersionV4, everyEventTypeV4()},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			payload, err := persistence.EncodeEvents(tc.events, tc.version)
@@ -70,6 +71,31 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 		t.Fatalf("protection under v3: %v", err)
 	}
 
+	// A reason is a value, not a field, and an older version has no name for
+	// it. Writing it under v3 would produce a line a v3 reader must reject, so
+	// the writer refuses first.
+	byOCO := session.OrderCancelled{
+		Envelope: session.Envelope{Time: 1, Sequence: 1, Kind: session.KindOrderCancelled},
+		OrderID:  "praxis:1:target", RemainingQty: 3, Reason: session.CancelledByOCO,
+	}
+	for _, older := range []string{persistence.EventVersionV1, persistence.EventVersionV2, persistence.EventVersionV3} {
+		if _, err := persistence.EncodeEvents([]session.Event{byOCO}, older); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
+			t.Fatalf("by_oco under %s: got %v, want %v", older, err, persistence.ErrUnsupportedInVersion)
+		}
+	}
+	if _, err := persistence.EncodeEvents([]session.Event{byOCO}, persistence.EventVersionV4); err != nil {
+		t.Fatalf("by_oco under v4: %v", err)
+	}
+	// And an older reader refuses the name rather than guessing at it, even
+	// though the rest of the line is one it understands perfectly.
+	v4Line, err := persistence.EncodeEvents([]session.Event{byOCO}, persistence.EventVersionV4)
+	if err != nil {
+		t.Fatalf("EncodeEvents: %v", err)
+	}
+	if _, err := persistence.DecodeEvents(v4Line, persistence.EventVersionV3); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
+		t.Fatalf("v3 read a v4 reason: got %v, want %v", err, persistence.ErrUnsupportedInVersion)
+	}
+
 	// A streak that v1 has no field for is refused rather than quietly lost.
 	var withStreak []session.Event
 	for _, e := range everyEventTypeV3() {
@@ -90,6 +116,9 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 		{"testdata/golden-events-v3.txt", persistence.EventVersionV1},
 		{"testdata/golden-events-v3.txt", persistence.EventVersionV2},
 		{"testdata/golden-events.txt", persistence.EventVersionV2},
+		{"testdata/golden-events-v4.txt", persistence.EventVersionV1},
+		{"testdata/golden-events-v4.txt", persistence.EventVersionV2},
+		{"testdata/golden-events-v4.txt", persistence.EventVersionV3},
 	} {
 		if _, err := persistence.DecodeEvents(goldenFor(t, cross.path), cross.as); err == nil {
 			t.Fatalf("%s was read as %s", cross.path, cross.as)
@@ -110,6 +139,7 @@ func TestEncodeOfDecodeReproducesTheBytes(t *testing.T) {
 		{persistence.EventVersionV1, "testdata/golden-events.txt"},
 		{persistence.EventVersionV2, "testdata/golden-events-v2.txt"},
 		{persistence.EventVersionV3, "testdata/golden-events-v3.txt"},
+		{persistence.EventVersionV4, "testdata/golden-events-v4.txt"},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			canonical := goldenFor(t, tc.path)
@@ -143,6 +173,7 @@ func TestTheGoldenBytesAreTheFormat(t *testing.T) {
 		{persistence.EventVersionV1, everyEventType(), "testdata/golden-events.txt", 11},
 		{persistence.EventVersionV2, everyEventTypeV2(), "testdata/golden-events-v2.txt", 11},
 		{persistence.EventVersionV3, everyEventTypeV3(), "testdata/golden-events-v3.txt", 14},
+		{persistence.EventVersionV4, everyEventTypeV4(), "testdata/golden-events-v4.txt", 16},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			payload, err := persistence.EncodeEvents(tc.events, tc.version)

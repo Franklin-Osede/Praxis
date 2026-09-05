@@ -98,7 +98,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		kind = session.KindOrderCancelled
 		event = session.OrderCancelled{
 			Envelope: envelope(at, sequence, kind),
-			OrderID:  r.id(), RemainingQty: r.qty(), Reason: r.cancelReason(),
+			OrderID:  r.id(), RemainingQty: r.qty(), Reason: r.cancelReason(version),
 		}
 
 	case typeFillProduced:
@@ -331,12 +331,23 @@ func (r *reader) side() market.Side {
 	return market.SideUnspecified
 }
 
-func (r *reader) cancelReason() session.CancelReason {
+// cancelReason reads a reason the payload's own version has a name for.
+//
+// A reason introduced later is refused rather than accepted, because a reader
+// that took it would be reading a file it does not understand and saying it
+// did: the version on the container is the reader's only warning that the
+// bytes may hold something it cannot represent.
+func (r *reader) cancelReason(version string) session.CancelReason {
 	s := r.next()
 	for k, name := range cancelReasonNames {
-		if name == s {
-			return k
+		if name != s {
+			continue
 		}
+		if since, later := cancelReasonsSince[k]; later && !knows(version, since) {
+			r.fail(fmt.Errorf("%w: %s has no name for %q", ErrUnsupportedInVersion, version, s))
+			return 0
+		}
+		return k
 	}
 	r.fail(fmt.Errorf("%w: cancellation reason %q", ErrSyntax, s))
 	return 0

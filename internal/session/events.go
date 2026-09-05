@@ -188,9 +188,20 @@ const (
 	CancelledByTrader CancelReason = iota + 1
 
 	// CancelledUnfillableRemainder: the part of a market order the book could
-	// not fill. A market order does not rest, because resting one would mean
-	// inventing a price the trader never named.
+	// not fill, and what is left of a stop that has triggered. A market order
+	// does not rest, because resting one would mean inventing a price the
+	// trader never named, and a triggered stop cannot untrigger.
 	CancelledUnfillableRemainder
+
+	// CancelledByOCO: the sibling of a protective leg that executed. One leg
+	// closing the position leaves the other with nothing to close.
+	CancelledByOCO
+
+	// CancelledPositionClosed: a protective leg whose position went away
+	// without it — a manual exit, or a reversal. The observable cause differs
+	// from OCO even though both ends are the same, and a log that spelled them
+	// alike could not tell a stop that worked from one that was overtaken.
+	CancelledPositionClosed
 )
 
 func (r CancelReason) String() string {
@@ -199,6 +210,10 @@ func (r CancelReason) String() string {
 		return "by trader"
 	case CancelledUnfillableRemainder:
 		return "unfillable remainder"
+	case CancelledByOCO:
+		return "by one-cancels-the-other"
+	case CancelledPositionClosed:
+		return "position closed"
 	default:
 		return "unspecified"
 	}

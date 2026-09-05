@@ -349,13 +349,24 @@ func (s *Session) Observe(q market.Quote, sourceSequence uint64) error {
 	return s.command(func() error { return s.observe(q, sourceSequence) })
 }
 
-// offerToWorkingOrders gives an observation to every waiting order, in the
-// order they were submitted.
+// offerObservation gives an observation to everything waiting for one: the
+// protections already standing, then every working order in the order it was
+// submitted, with each order's own protection resolved before the next order
+// is offered anything.
+//
+// The interleaving is the point. A working order can fill and activate a
+// protection whose stop this same observation has already passed; leaving every
+// protection to the end would let the next working order take the liquidity
+// that stop should have found. Priority to the protection is the conservative
+// reading, and it is the one the whole engine already takes.
 //
 // It runs before the account is revalued, so the valuation the evaluation sees
 // already contains anything a stop just did. Revaluing first would report an
 // equity that had not yet felt the fill the same observation caused.
-func (s *Session) offerToWorkingOrders(at market.LogicalTime) error {
+func (s *Session) offerObservation(at market.LogicalTime) error {
+	if err := s.resolveProtection(at); err != nil {
+		return err
+	}
 	// A fresh slice, not s.working[:0]: reusing the backing array would
 	// overwrite the entry being read while the loop is still walking it.
 	kept := make([]workingOrder, 0, len(s.working))
@@ -378,21 +389,25 @@ func (s *Session) offerToWorkingOrders(at market.LogicalTime) error {
 		if err != nil {
 			return err
 		}
-		if remaining <= 0 {
-			continue
-		}
+		switch {
+		case remaining <= 0:
 		// A stop that reached its level has become a market order, and a
 		// market order does not wait. Leaving it working would let it
 		// untrigger when the price came back, and the trader would be
 		// protected by an instruction the market had already passed.
-		if result.StopTriggered {
+		case result.StopTriggered:
 			if err := s.cancelRemainder(at, w.order.ID, remaining); err != nil {
 				return err
 			}
-			continue
+		default:
+			w.remaining = remaining
+			kept = append(kept, w)
 		}
-		w.remaining = remaining
-		kept = append(kept, w)
+		// Whatever this order just did to the position, its protection meets
+		// the same observation before the next order sees any of it.
+		if err := s.resolveProtection(at); err != nil {
+			return err
+		}
 	}
 	s.working = kept
 	return nil
@@ -479,14 +494,13 @@ func (s *Session) applyAndRecord(at market.LogicalTime, fills []market.Fill) (ma
 
 			// A close with more of the same fill still to come is a reversal.
 			flip := change.Kind == portfolio.PositionClosed && n+1 < len(effect.changes)
-			for _, owed := range s.protections.endingsAfter(fill.OrderID, episodeID, change, flip) {
-				if err := s.recordProtectionEnded(at, protectionLevels{
-					stopPrice: owed.stopPrice, targetPrice: owed.targetPrice,
-				}, owed.ref, owed.reason); err != nil {
+			net := s.episodes.netQtyOf(symbol)
+			for _, owed := range s.protections.consequencesOf(fill.OrderID, episodeID, change, net, flip, true) {
+				if err := s.recordOwed(at, owed); err != nil {
 					return 0, err
 				}
 			}
-			s.protections.bind(fill.OrderID, episodeID, change, s.episodes.netQtyOf(symbol))
+			s.protections.bind(fill.OrderID, episodeID, change, net)
 		}
 	}
 	return filled, nil
@@ -510,7 +524,7 @@ func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 	s.lastQuote, s.hasQuote, s.observedThisSession = q, true, true
 
 	if s.sessionOpen && !s.ended() {
-		if err := s.offerToWorkingOrders(q.Time); err != nil {
+		if err := s.offerObservation(q.Time); err != nil {
 			return err
 		}
 	}
@@ -548,6 +562,9 @@ func (s *Session) submitOrder(o market.Order) error {
 		return err
 	}
 	if err := s.executeOrder(prepared); err != nil {
+		return err
+	}
+	if err := s.resolveProtection(prepared.at); err != nil {
 		return err
 	}
 	return s.revalue(prepared.at)

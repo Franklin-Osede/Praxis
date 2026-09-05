@@ -55,6 +55,16 @@ var (
 	cancelReasonNames = map[session.CancelReason]string{
 		session.CancelledByTrader:            "by_trader",
 		session.CancelledUnfillableRemainder: "unfillable_remainder",
+		session.CancelledByOCO:               "by_oco",
+		session.CancelledPositionClosed:      "position_closed",
+	}
+
+	// cancelReasonsSince says which version first had a name for a reason. A
+	// reader of an older version has no name for it, so an older writer must
+	// refuse it rather than produce a line that reader would reject.
+	cancelReasonsSince = map[session.CancelReason]string{
+		session.CancelledByOCO:          EventVersionV4,
+		session.CancelledPositionClosed: EventVersionV4,
 	}
 	decisionKindNames = map[challenge.EventKind]string{
 		challenge.ChallengeActivated: "activated", challenge.SessionReferenceEstablished: "session_reference_established",
@@ -131,6 +141,9 @@ func encodeEvent(e session.Event, version string) (string, error) {
 	case session.OrderCancelled:
 		if header.Kind != session.KindOrderCancelled {
 			return "", ErrKindMismatch
+		}
+		if err := requireCancelReason(version, v.Reason); err != nil {
+			return "", err
 		}
 		f.name(typeOrderCancelled).at(header)
 		f.id(v.OrderID).int(int64(v.RemainingQty)).cancelReason(v.Reason)
@@ -243,6 +256,25 @@ func (f *fields) uint(v uint64) *fields {
 func requireProtection(version string) error {
 	if version == EventVersionV1 || version == EventVersionV2 {
 		return fmt.Errorf("%w: %s has no protection", ErrUnsupportedInVersion, version)
+	}
+	return nil
+}
+
+// versionOrder is how versions compare. It is an explicit table and not a
+// parse of the string, because an ordering derived from a name would start
+// deciding things about names nobody chose it to decide.
+var versionOrder = map[string]int{
+	EventVersionV1: 1, EventVersionV2: 2, EventVersionV3: 3, EventVersionV4: 4,
+}
+
+func knows(version string, since string) bool {
+	return versionOrder[version] >= versionOrder[since]
+}
+
+func requireCancelReason(version string, reason session.CancelReason) error {
+	since, later := cancelReasonsSince[reason]
+	if later && !knows(version, since) {
+		return fmt.Errorf("%w: %s has no name for %q", ErrUnsupportedInVersion, version, cancelReasonNames[reason])
 	}
 	return nil
 }

@@ -1,8 +1,10 @@
 # ADR-014 — Protection is an aggregate, not two prices
 
-Status: accepted. `praxis.event.v3` is published by the commands that place,
-change and withdraw a protection, and a plan now becomes active from the real
-effect of a fill. One-cancels-the-other execution is the slice after it.
+Status: accepted and implemented. `praxis.event.v3` is published by the
+commands that place, change and withdraw a protection; a plan becomes active
+from the real effect of a fill; and `praxis.event.v4` is published by
+one-cancels-the-other execution, which needed cancellation reasons no earlier
+version has a name for.
 
 ## What this corrects
 
@@ -244,6 +246,69 @@ made after a partial fill would be silently undone by the next fill of the same
 entry — the trader would see the levels they had already moved away from, put
 back by an event they did not cause.
 
+### Execution meets the observation that activated it
+
+A protection is offered the same observation that activated it, not the next
+one. An entry that filled through a gap may already be past its stop, and
+waiting would grant a survival the market never gave.
+
+Within one observation the order is fixed:
+
+```text
+protections already standing
+each working order, in the order it was submitted
+    its fills
+    its protection, resolved before the next order is offered anything
+revalue
+```
+
+The interleaving is the point. A working order can fill and activate a stop
+this same observation has already passed; leaving every protection to the end
+would let the next working order take the liquidity that stop should have
+found. The stop goes first within a protection for the same reason: without a
+real queue position nothing in the data says which of two reachable levels the
+market took first, and a simulator that chose the target would hand the trader
+the better of two outcomes it cannot know.
+
+That priority has no test yet, because with a two-sided quote the situation
+cannot be constructed: a long's stop needs a bid at or below its level and its
+target a bid at or above a higher one. A property test pins that instead —
+which is also what would break first if the geometry rule were relaxed, and
+that is the failure that would let the priority start to matter. Bars will make
+it constructible.
+
+A leg is built fresh from the protection's state each time rather than held as
+a working order. The quantity it covers is the episode's exposure and that
+changes underneath it, so a leg kept as an order would have to be rewritten on
+every fill, and the two copies would eventually disagree.
+
+### Every leg ends with an event
+
+```text
+target fills 3 of 10     both legs stand over 7
+stop fills 3 of 10       the stop's remainder of 7 is cancelled,
+                         unfillable_remainder; the target stands over 7
+stop through, book empty the whole 10 is cancelled, unfillable_remainder;
+                         the position is untouched
+either leg closes 10     the sibling is cancelled by_oco, the aggregate ends
+                         executed
+a manual exit closes 10  both legs are cancelled position_closed, the
+                         aggregate ends position_closed
+```
+
+`by_oco` and `position_closed` both end a leg, and the observable cause is not
+the same: a log that spelled them alike could not tell a stop that worked from
+one the trader overtook. They are values a v3 reader has no name for, so they
+inaugurate **`praxis.event.v4`**, published with the commands that first write
+them — the rule v3 was corrected into. A v3 writer refuses them and a v3 reader
+refuses to guess at them.
+
+A stop that reached its level and found nothing has still triggered, and there
+is no position change to derive that from: its cancellation is recorded and
+believed. Everything else in a protective tail is recomputed — which order,
+how much was left on it, why, and what the protection was holding when it
+ended.
+
 ### Fills that are not protective adjust it too
 
 - A manual partial exit reduces the protected quantity.
@@ -295,11 +360,11 @@ replay and a resume:
 7. An addition from a different entry — the protected quantity grows. ✓
 8. A manual partial exit — the protected quantity shrinks. ✓
 9. A manual full exit — the protection ends with the position. ✓
-10. A target filling wholly — the stop is cancelled with it.
+10. A target filling wholly — the stop is cancelled with it. ✓
 11. A stop filling partly for want of depth — its remainder is cancelled, the
-    target survives over what is left, the episode stays open.
+    target survives over what is left, the episode stays open. ✓
 12. A stop reaching its level with no liquidity at all — the whole leg is
-    cancelled, the target survives.
+    cancelled, the target survives. ✓
 13. A flip — the old protection ends before the new episode's begins. ✓
 14. A resume in each of `Planned`, `Active` with both legs, `Active` with one,
     and after `Ended`. ✓
@@ -333,6 +398,5 @@ before activation rather than with it: the ending of a plan whose entry was
 cancelled, and the ordering that puts `ProtectionPlaced` before the fill.
 Neither is about activation, and both are what activation had to stand on.
 
-Ten and eleven and twelve are the remaining scenarios, and all three are
-execution. Nothing yet executes a level: what is settled is which protection
-governs which exposure, and how much.
+Every scenario above now passes. What remains is not protection: it is a human
+command, and then the pilot sessions the experiment is actually for.

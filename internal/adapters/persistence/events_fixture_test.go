@@ -52,6 +52,22 @@ func everyEventTypeV3() []session.Event {
 	)
 }
 
+// everyEventTypeV4 adds the cancellation reasons one-cancels-the-other
+// execution needs. A reason is a value and not a field, and a reader of an
+// older version has no name for it, which is why it takes a version of its own.
+func everyEventTypeV4() []session.Event {
+	return append(everyEventTypeV3(),
+		session.OrderCancelled{
+			Envelope: session.Envelope{Time: 9_000, Sequence: 15, Kind: session.KindOrderCancelled},
+			OrderID:  "praxis:12:target", RemainingQty: 7, Reason: session.CancelledByOCO,
+		},
+		session.OrderCancelled{
+			Envelope: session.Envelope{Time: 9_000, Sequence: 16, Kind: session.KindOrderCancelled},
+			OrderID:  "praxis:12:stop", RemainingQty: 10, Reason: session.CancelledPositionClosed,
+		},
+	)
+}
+
 // everyEventType is one instance of each of the nine events, with every field
 // set to a distinguishable value so a golden file pins each one's position.
 func everyEventType() []session.Event {

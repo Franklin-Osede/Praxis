@@ -244,7 +244,26 @@ opens. Only an event ever removes a protection — folding a change never does �
 which is what lets `Verify`, holding the events but not the fills, reach the
 same state as `Replay`, holding both. The two legs must also be on the right
 sides of each other, or they do each other's job and both can be reachable in a
-single observation. One-cancels-the-other execution is the slice after it. The protection events in v2 were defined ahead of any producer, and
+single observation.
+
+**A protection meets the observation that activated it**, not the next one: an
+entry that filled through a gap may already be past its stop. Within one
+observation the protections already standing go first, then each working order
+in turn with its own protection resolved before the next order is offered
+anything — otherwise the next order takes the liquidity that stop should have
+found. Inside a protection the stop goes before the target, because without a
+real queue position nothing says which of two reachable levels the market took
+first, and choosing the target would hand the trader the better of two outcomes
+the engine cannot know.
+
+Every leg ends with an event. A partially filled stop has its remainder
+cancelled — it triggered and cannot untrigger — while a partially filled target
+leaves both legs standing over what is left. A leg that closes the position
+cancels its sibling `by_oco` and ends the aggregate `executed`; a manual exit
+cancels both `position_closed`. The two reasons are distinguished because a log
+that spelled them alike could not tell a stop that worked from one the trader
+overtook. They are values no earlier version has a name for, so they inaugurate
+`praxis.event.v4`, published with the commands that first write them. The protection events in v2 were defined ahead of any producer, and
 that is precisely what let them be wrong: a schema is not proven until
 something both produces and consumes it. See
 [`docs/adr/014-protection-is-an-aggregate.md`](adr/014-protection-is-an-aggregate.md).
@@ -847,13 +866,17 @@ Next, in order:
    submitted, and they are offered it before the account is revalued, so the
    valuation an observation records already contains what that observation
    caused.
-5. **The life of a protective level**, continuing. Planned protection and its
-   commands are done and `praxis.event.v3` is published by them. What remains:
-   activation and binding by the fill's real effect; one-cancels-the-other
-   execution with partial quantities; then a human command.
-6. **Eighteen transition scenarios** are listed in ADR-014. The four that
-   concern a protection whose entry is still waiting now pass; the rest wait
-   for activation.
+5. **The life of a protective level**, done. Levels are planned with an entry
+   in one batch, moved and withdrawn while it waits, ended with it if it is
+   cancelled, activated by what a fill actually did, and executed
+   one-cancels-the-other against the observation that activated them, with
+   partial quantities. `praxis.event.v3` is published by the commands that
+   place, change and withdraw; `praxis.event.v4` by the execution that needed
+   cancellation reasons no earlier version has a name for.
+6. **The eighteen transition scenarios** listed in ADR-014 all pass. One rule
+   in them has no test and says so: with a two-sided quote a protection's two
+   levels cannot both be reachable, so "the stop wins" waits for bar
+   observations. A property test pins the impossibility in the meantime.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
    and target, position, balance and equity, and the evaluation's status.
    Nothing else until ten sessions have been traded.
