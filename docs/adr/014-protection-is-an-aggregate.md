@@ -161,6 +161,27 @@ const (
 )
 ```
 
+### A plan never outlives its entry
+
+A protection planned against an order that no longer exists could never
+activate, and a session that went on reporting it would be offering the trader
+cover they do not have. The entry's cancellation and the ending of its plan are
+therefore one decision and one batch, in that order:
+
+```text
+OrderCancelled   reason=by_trader | unfillable_remainder
+ProtectionEnded  ref=entry, reason=entry_cancelled
+```
+
+`Replay` and `Verify` both demand it, and demand it of the position and not
+merely of the totals: a log holding every ending it owes can still be false
+about which cancellation each one answered. The ending is the very next event.
+
+The rule asks whether the plan is still *planned* rather than assuming. Once a
+plan has activated, the episode governs it and the entry disappearing means
+nothing — a partly filled entry whose remainder is cancelled keeps protecting
+what it opened.
+
 ### Once active, the episode governs
 
 After the first fill activates a plan, the entry's reference stops governing
@@ -213,11 +234,11 @@ codec, and this is the second time it has earned its place.
 Each is a transition the machine has to name, and every one of them ends with a
 replay and a resume:
 
-1. An entry that never executes, cancelled — its planned protection ends.
+1. An entry that never executes, cancelled — its planned protection ends. ✓
 2. An entry that never executes, left waiting — the protection is still
-   planned, and a later fill activates it.
-3. A stop moved while the entry is still waiting.
-4. Protection withdrawn while the entry keeps waiting.
+   planned, and a later fill activates it. (Planned ✓)
+3. A stop moved while the entry is still waiting. ✓
+4. Protection withdrawn while the entry keeps waiting. ✓
 5. A partial entry fill — protection covers what opened, not what was ordered.
 6. A later fill of the same entry — the protected quantity grows, no second
    protection appears.
@@ -256,3 +277,9 @@ human command.
 The first of those is small and its exit criterion is small: a planned
 protection can be placed, changed, withdrawn, persisted and reconstructed
 exactly, while its entry is still waiting. Nothing executes a level yet.
+
+Two things belong to the join between that slice and the next, and were done
+before activation rather than with it: the ending of a plan whose entry was
+cancelled, and the ordering that puts `ProtectionPlaced` before the fill.
+Neither is about activation, and both are what activation would have to stand
+on.

@@ -226,7 +226,14 @@ reason for a transition rather than a state.
 `praxis.event.v3` is published together with the commands that write it: an
 entry and its levels are submitted as one command and therefore one durable
 batch, and a planned protection can be changed or withdrawn while its entry
-waits. Activation, protected quantities and execution are the slices after it. The protection events in v2 were defined ahead of any producer, and
+waits. Within that batch the protection is recorded **between the decision and
+its first fill**, because activation binds a plan to what the fill actually did
+and a plan written afterwards could only be tied to it by inferring causation
+backwards from ordering. **A plan never outlives its entry**: cancelling the
+entry — by the trader, or because a market order's remainder could not fill —
+ends the plan in the same batch, in that order, and `Replay` and `Verify` both
+refuse a journal in which anything else stands between the two. Activation,
+protected quantities and execution are the slices after it. The protection events in v2 were defined ahead of any producer, and
 that is precisely what let them be wrong: a schema is not proven until
 something both produces and consumes it. See
 [`docs/adr/014-protection-is-an-aggregate.md`](adr/014-protection-is-an-aggregate.md).

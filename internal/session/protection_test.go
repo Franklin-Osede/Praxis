@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 
@@ -460,5 +461,421 @@ func TestTighteningAStopIsNotAWidening(t *testing.T) {
 	}
 	if err := session.Verify(s.Events()); err != nil {
 		t.Fatalf("Verify: %v", err)
+	}
+}
+
+// Scenario: a plan never outlives the entry it was placed with
+//
+//	Given a resting entry that carries a stop and a target
+//	When the entry is cancelled
+//	Then the cancellation and the ending of its plan are one batch, in that
+//	  order, and nothing is left planned.
+//
+// A plan whose entry is gone names an order that no longer exists. It could
+// never activate, and until this it was still reported as a protection —
+// something the trader would read as cover they did not have.
+func TestCancellingAProtectedEntryEndsItsPlan(t *testing.T) {
+	s := protectedSession(t, 18_900, 19_500)
+	before := s.JournalLen()
+
+	if err := s.CancelOrder("entry"); err != nil {
+		t.Fatalf("CancelOrder: %v", err)
+	}
+	if planned := s.PlannedProtections(); len(planned) != 0 {
+		t.Fatalf("a plan outlived its entry: %+v", planned)
+	}
+
+	produced := s.Events()[before:]
+	if got, want := kinds(produced), []session.Kind{
+		session.KindOrderCancelled, session.KindProtectionEnded,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the batch is\n got: %v\nwant: %v", got, want)
+	}
+
+	cancelled, ok := produced[0].(session.OrderCancelled)
+	if !ok || cancelled.Reason != session.CancelledByTrader {
+		t.Fatalf("cancellation: got %+v", produced[0])
+	}
+	ended, ok := produced[1].(session.ProtectionEnded)
+	if !ok {
+		t.Fatalf("ending: got %+v", produced[1])
+	}
+	if ended.Reason != session.ProtectionEntryCancelled {
+		t.Fatalf("reason: got %v, want %v", ended.Reason, session.ProtectionEntryCancelled)
+	}
+	if ended.Ref != entryRef("entry") {
+		t.Fatalf("reference: got %+v, want the entry", ended.Ref)
+	}
+	// The levels it died holding are the ones it was last given.
+	if ended.StopPrice != 18_900 || ended.TargetPrice != 19_500 {
+		t.Fatalf("levels: got %d/%d, want 18900/19500", ended.StopPrice, ended.TargetPrice)
+	}
+
+	if err := session.Verify(s.Events()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	state, err := session.Replay(s.Events())
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if len(state.PlannedProtections) != 0 {
+		t.Fatalf("a reconstructed plan outlived its entry: %+v", state.PlannedProtections)
+	}
+	resumed, err := session.Resume(state, nil)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if len(resumed.PlannedProtections()) != 0 {
+		t.Fatal("a resumed session kept a plan whose entry was cancelled")
+	}
+}
+
+// Scenario: a journal in which a plan outlived its entry is refused
+//
+// The rule is worth nothing if only the producer keeps it. Both the truncated
+// case — the log simply ends — and the interrupted case — some other event
+// arrives where the ending should be — are forgeries a reader must reject.
+func TestAJournalCannotCancelAnEntryAndKeepItsPlan(t *testing.T) {
+	build := func(t *testing.T) []session.Event {
+		t.Helper()
+		s := protectedSession(t, 18_900, 19_500)
+		if err := s.CancelOrder("entry"); err != nil {
+			t.Fatalf("CancelOrder: %v", err)
+		}
+		return s.Events()
+	}
+
+	t.Run("the log ends there", func(t *testing.T) {
+		events := build(t)
+		if _, ok := events[len(events)-1].(session.ProtectionEnded); !ok {
+			t.Fatalf("the last event is %T, not the ending this forges away", events[len(events)-1])
+		}
+		forged := events[:len(events)-1]
+
+		if _, err := session.Replay(forged); !errors.Is(err, session.ErrFabricated) {
+			t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+		}
+		if err := session.Verify(forged); !errors.Is(err, session.ErrContradictoryLog) {
+			t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+		}
+	})
+
+	t.Run("something else stands in its place", func(t *testing.T) {
+		events := build(t)
+		last := len(events) - 1
+		header := events[last].Header()
+		// A structurally impeccable event, at the right sequence and time,
+		// naming an order nothing is waiting for.
+		events[last] = session.OrderCancelled{
+			Envelope: session.Envelope{
+				Time: header.Time, Sequence: header.Sequence, Kind: session.KindOrderCancelled,
+			},
+			OrderID: "somebody-else", RemainingQty: 1, Reason: session.CancelledByTrader,
+		}
+
+		if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
+			t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+		}
+		if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
+			t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+		}
+	})
+}
+
+// twoCancelledEntries is a journal in which two protected entries are each
+// cancelled, so that every ending exists somewhere in the log. It is the fixture
+// the ordering forgeries need: a rule that only counted endings would accept
+// all of them.
+func twoCancelledEntries(t *testing.T) []session.Event {
+	t.Helper()
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	for _, id := range []string{"a", "b"} {
+		if err := s.SubmitOrderWithProtection(limitOrder(t, id, market.SideBuy, 2, 19_000), 18_900, 19_500); err != nil {
+			t.Fatalf("SubmitOrderWithProtection %s: %v", id, err)
+		}
+	}
+	for _, id := range []string{"a", "b"} {
+		if err := s.CancelOrder(id); err != nil {
+			t.Fatalf("CancelOrder %s: %v", id, err)
+		}
+	}
+	if err := session.Verify(s.Events()); err != nil {
+		t.Fatalf("the fixture does not verify: %v", err)
+	}
+	return s.Events()
+}
+
+// swapPayloads exchanges two events, leaving each envelope where it was, so the
+// log stays contiguous in sequence and in time and only the order of the facts
+// is forged.
+func swapPayloads(t *testing.T, events []session.Event, i, j int) {
+	t.Helper()
+	restamp := func(e session.Event, at session.Envelope) session.Event {
+		switch v := e.(type) {
+		case session.OrderCancelled:
+			v.Envelope = session.Envelope{Time: at.Time, Sequence: at.Sequence, Kind: session.KindOrderCancelled}
+			return v
+		case session.ProtectionEnded:
+			v.Envelope = session.Envelope{Time: at.Time, Sequence: at.Sequence, Kind: session.KindProtectionEnded}
+			return v
+		default:
+			t.Fatalf("this forgery does not know how to move a %T", e)
+			return nil
+		}
+	}
+	here, there := events[i].Header(), events[j].Header()
+	events[i], events[j] = restamp(events[j], here), restamp(events[i], there)
+}
+
+func indexOfKind(t *testing.T, events []session.Event, k session.Kind, nth int) int {
+	t.Helper()
+	seen := 0
+	for n, e := range events {
+		if e.Header().Kind != k {
+			continue
+		}
+		seen++
+		if seen == nth {
+			return n
+		}
+	}
+	t.Fatalf("no %v number %d in the log", k, nth)
+	return -1
+}
+
+// Scenario: an ending belongs to the cancellation it followed
+//
+// Counting endings is not enough. A log can hold every ending it owes and still
+// be false about which cancellation each one answered, or let something else
+// stand between the two — and a reader that only checked the totals would
+// accept both. The cancellation and the ending are one decision, so the ending
+// is the very next thing.
+func TestAnEndingMustFollowTheCancellationItAnswers(t *testing.T) {
+	tests := []struct {
+		name  string
+		forge func(*testing.T, []session.Event)
+	}{
+		{"an ending answering the wrong cancellation", func(t *testing.T, e []session.Event) {
+			swapPayloads(t, e,
+				indexOfKind(t, e, session.KindProtectionEnded, 1),
+				indexOfKind(t, e, session.KindProtectionEnded, 2))
+		}},
+		{"a cancellation standing between the two", func(t *testing.T, e []session.Event) {
+			swapPayloads(t, e,
+				indexOfKind(t, e, session.KindProtectionEnded, 1),
+				indexOfKind(t, e, session.KindOrderCancelled, 2))
+		}},
+		{"an ending that claims another reason", func(t *testing.T, e []session.Event) {
+			at := indexOfKind(t, e, session.KindProtectionEnded, 1)
+			ended := e[at].(session.ProtectionEnded)
+			ended.Reason = session.ProtectionWithdrawnByTrader
+			e[at] = ended
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := twoCancelledEntries(t)
+			tc.forge(t, events)
+
+			if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			}
+			if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
+				t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+			}
+		})
+	}
+}
+
+// Scenario: a protection is placed before the fill that will activate it
+//
+//	Given an entry submitted with levels that executes immediately
+//	Then ProtectionPlaced stands between the decision and its first fill.
+//
+// Activation binds a plan to what the fill actually did. A plan recorded after
+// the fill could not be bound to it: the episode would already have opened
+// against a projection that had never heard of the plan, and the causal link
+// would have to be inferred backwards from a later event.
+func TestAProtectionIsPlacedBeforeItsFill(t *testing.T) {
+	// Each case fills at once, and differs in what happens to what is left.
+	tests := []struct {
+		name  string
+		entry func(*testing.T) market.Order
+		size  market.Qty
+		want  []session.Kind
+	}{
+		{
+			name:  "a market entry, filled whole",
+			entry: func(t *testing.T) market.Order { return order("entry", market.SideBuy, 2) },
+			size:  50,
+			want: []session.Kind{
+				session.KindOrderSubmitted, session.KindProtectionPlaced,
+				session.KindFillProduced, session.KindPositionChanged,
+				session.KindAccountValued,
+			},
+		},
+		{
+			name: "a limit already executable",
+			entry: func(t *testing.T) market.Order {
+				return limitOrder(t, "entry", market.SideBuy, 2, 20_100)
+			},
+			size: 50,
+			want: []session.Kind{
+				session.KindOrderSubmitted, session.KindProtectionPlaced,
+				session.KindFillProduced, session.KindPositionChanged,
+				session.KindAccountValued,
+			},
+		},
+		{
+			name: "a limit the book fills in part",
+			entry: func(t *testing.T) market.Order {
+				return limitOrder(t, "entry", market.SideBuy, 5, 20_100)
+			},
+			size: 2,
+			want: []session.Kind{
+				session.KindOrderSubmitted, session.KindProtectionPlaced,
+				session.KindFillProduced, session.KindPositionChanged,
+				session.KindOrderRested, session.KindAccountValued,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSession(t)
+			mustOpen(t, s, 2_000, "d1")
+			mustObserve(t, s, sized(3_000, 20_000, 20_001, tc.size))
+			before := s.JournalLen()
+
+			if err := s.SubmitOrderWithProtection(tc.entry(t), 19_900, 20_400); err != nil {
+				t.Fatalf("SubmitOrderWithProtection: %v", err)
+			}
+			if got := kinds(s.Events()[before:]); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the batch is\n got: %v\nwant: %v", got, tc.want)
+			}
+			if err := session.Verify(s.Events()); err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if _, err := session.Replay(s.Events()); err != nil {
+				t.Fatalf("Replay: %v", err)
+			}
+		})
+	}
+}
+
+// Scenario: an entry that could not fill at all takes its plan with it
+//
+//	Given a protected market entry meeting a book with nothing on it
+//	Then the entry's whole remainder is cancelled and its plan ends with it.
+//
+// Cancelling the remainder is the other way an entry stops existing. The plan
+// is asked of the projection rather than assumed, so once activation arrives a
+// partly filled entry whose remainder is cancelled will keep protecting what
+// it opened — this case is the one where nothing opened.
+func TestAnEntryThatFillsNothingTakesItsPlanWithIt(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, market.Quote{
+		Instrument: mnq, Time: 3_000,
+		Bid: 20_000, Ask: 20_001, BidSize: 50, AskSize: 0,
+	})
+	before := s.JournalLen()
+
+	if err := s.SubmitOrderWithProtection(order("entry", market.SideBuy, 2), 19_900, 20_400); err != nil {
+		t.Fatalf("SubmitOrderWithProtection: %v", err)
+	}
+
+	if got, want := kinds(s.Events()[before:]), []session.Kind{
+		session.KindOrderSubmitted, session.KindProtectionPlaced,
+		session.KindOrderCancelled, session.KindProtectionEnded,
+		session.KindAccountValued,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the batch is\n got: %v\nwant: %v", got, want)
+	}
+	if planned := s.PlannedProtections(); len(planned) != 0 {
+		t.Fatalf("a plan outlived an entry that never existed in the book: %+v", planned)
+	}
+	if err := session.Verify(s.Events()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	state, err := session.Replay(s.Events())
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if len(state.PlannedProtections) != 0 {
+		t.Fatalf("reconstructed a plan with no entry: %+v", state.PlannedProtections)
+	}
+}
+
+// Scenario: a failure after the protection was recorded takes the whole batch
+//
+//	Given a protected entry whose fill the account cannot represent
+//	Then the session stops, and the store holds every earlier command whole
+//	  and nothing at all of this one.
+//
+// The protection is now recorded before the fill, so this branch runs with a
+// ProtectionPlaced already in the journal. Half a batch reaching the store
+// would leave a protection whose entry never happened.
+func TestAFailureAfterTheProtectionLosesTheWholeBatch(t *testing.T) {
+	committer := &failOnce{failAt: -1}
+	s, err := session.New(config(), 1_000, committer)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mustOpen(t, s, 2_000, "d1")
+	huge := market.Quote{
+		Instrument: mnq, Time: 3_000,
+		Bid: 20_000, Ask: 20_001,
+		BidSize: math.MaxInt64, AskSize: math.MaxInt64,
+	}
+	mustObserve(t, s, huge)
+	committed := len(committer.batches)
+
+	entry := order("entry", market.SideBuy, math.MaxInt64)
+	err = s.SubmitOrderWithProtection(entry, 19_900, 20_400)
+	if !errors.Is(err, session.ErrSessionNeedsRecovery) {
+		t.Fatalf("error: got %v, want %v", err, session.ErrSessionNeedsRecovery)
+	}
+	if !errors.Is(err, market.ErrOverflow) {
+		t.Fatalf("the cause is not reported: %v", err)
+	}
+	if len(committer.batches) != committed {
+		t.Fatal("a batch reached the store from a command that failed")
+	}
+	// The point of the case: the journal had already spoken about the
+	// protection when the account refused the fill.
+	var recorded bool
+	for _, e := range s.Events() {
+		if _, ok := e.(session.ProtectionPlaced); ok {
+			recorded = true
+		}
+	}
+	if !recorded {
+		t.Fatal("the failure happened before the protection was recorded, so this proves nothing")
+	}
+
+	// What the store does hold is a whole journal, with no entry and no
+	// protection in it.
+	var confirmed []session.Event
+	for _, b := range committer.batches {
+		confirmed = append(confirmed, b...)
+	}
+	state, err := session.Replay(confirmed)
+	if err != nil {
+		t.Fatalf("Replay of the confirmed batches: %v", err)
+	}
+	if len(state.PlannedProtections) != 0 {
+		t.Fatalf("the store holds a protection from a command that failed: %+v", state.PlannedProtections)
+	}
+	// And the name is unspent: nothing was recorded, so nothing claimed it.
+	resumed, err := session.Resume(state, committer)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if err := resumed.SubmitOrder(order("entry", market.SideBuy, 1)); err != nil {
+		t.Fatalf("the failed command spent its identifier: %v", err)
 	}
 }

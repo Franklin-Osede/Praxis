@@ -16,6 +16,12 @@ var (
 	ErrProtectionNotPlanned = errors.New("session: that protection is no longer planned")
 	ErrReservedNamespace    = errors.New("session: order identifiers beginning with praxis: belong to the system")
 	ErrOrderIDReused        = errors.New("session: this order identifier has already been used")
+
+	// ErrProtectionOutlivedEntry reports a journal in which an entry was
+	// cancelled and the protection planned with it was not ended. The plan
+	// names an order that is gone, so a reader replaying that log would carry
+	// forward cover that can never be placed.
+	ErrProtectionOutlivedEntry = errors.New("session: a planned protection outlived its entry")
 )
 
 // reservedPrefix is the namespace the system draws protective order names
@@ -48,6 +54,13 @@ type protectionProjection struct {
 	// usedOrderIDs answers membership only and is never iterated to produce a
 	// result, which is why a map is the right structure here.
 	usedOrderIDs map[string]bool
+
+	// awaitingEnd is the entry whose cancellation left a plan behind. The very
+	// next event must be that plan's ending: they are one decision, so a
+	// reader that allowed anything between them would be allowing a journal
+	// the producer cannot write. An identifier is never empty, so the empty
+	// string means there is nothing owed.
+	awaitingEnd string
 }
 
 func (p *protectionProjection) init() {
@@ -158,6 +171,53 @@ func (p *protectionProjection) applyEnded(e ProtectionEnded) error {
 	return nil
 }
 
+// entryGone notes that an order has been cancelled. If it carried a plan that
+// never activated, the ending of that plan is now owed.
+//
+// A plan that has activated is not touched: the episode governs it, and the
+// entry's remainder disappearing means nothing to what it already opened.
+func (p *protectionProjection) entryGone(orderID string) {
+	if p.indexOfEntry(orderID) >= 0 {
+		p.awaitingEnd = orderID
+	}
+}
+
+// requireEnding refuses any event standing between an entry's cancellation and
+// the ending of the plan it left behind.
+func (p *protectionProjection) requireEnding(e Event) error {
+	owed := p.awaitingEnd
+	if owed == "" {
+		return nil
+	}
+	// This first branch is for the diagnostic alone: an event of another kind
+	// would fail the reference check below anyway, on a zero value, and say so
+	// far less usefully. Naming what actually stood in the way is what a reader
+	// of a rejected journal needs.
+	ended, ok := e.(ProtectionEnded)
+	if !ok {
+		return fmt.Errorf("%w: %s was cancelled and a %v followed instead of the ending",
+			ErrProtectionOutlivedEntry, owed, e.Header().Kind)
+	}
+	if ended.Ref.Kind != ProtectionRefEntry || ended.Ref.OrderID != owed {
+		return fmt.Errorf("%w: %s was cancelled and the ending that followed names %+v",
+			ErrProtectionOutlivedEntry, owed, ended.Ref)
+	}
+	if ended.Reason != ProtectionEntryCancelled {
+		return fmt.Errorf("%w: %s was cancelled and its plan ends with reason %v",
+			ErrProtectionOutlivedEntry, owed, ended.Reason)
+	}
+	p.awaitingEnd = ""
+	return nil
+}
+
+// settled reports a stream that stopped owing an ending it never wrote.
+func (p *protectionProjection) settled() error {
+	if p.awaitingEnd == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: %s was cancelled and the log ends", ErrProtectionOutlivedEntry, p.awaitingEnd)
+}
+
 // PlannedProtection is what a reader outside the package sees.
 type PlannedProtection struct {
 	EntryOrderID  string
@@ -264,6 +324,15 @@ func (s *Session) SubmitOrderWithProtection(o market.Order, stop, target market.
 	return s.command(func() error { return s.submitOrderWithProtection(o, stop, target) })
 }
 
+// The protection is recorded between the decision and its first fill, which is
+// why the entry is prepared, recorded and executed in three steps rather than
+// submitted whole.
+//
+// A plan written after the fill could not be bound to it. The episode would
+// already have opened against a projection that had never heard of the plan,
+// and the link between the two would have to be inferred backwards from a
+// later event — which is guessing at causation from ordering, the thing a
+// journal exists to make unnecessary.
 func (s *Session) submitOrderWithProtection(o market.Order, stop, target market.Ticks) error {
 	// Every refusal happens before anything is recorded, so a rejected command
 	// leaves no order, no protection, no reserved name, no counter moved and
@@ -275,18 +344,33 @@ func (s *Session) submitOrderWithProtection(o market.Order, stop, target market.
 	// identifier is the more fundamental one: the protection exists only
 	// because the order does, and naming the derived fault would send a reader
 	// looking for a protection that was never the problem.
-	if err := s.submitOrder(o); err != nil {
+	prepared, err := s.prepareOrder(o)
+	if err != nil {
 		return err
 	}
+	if err := s.recordOrder(prepared); err != nil {
+		return err
+	}
+	if err := s.placeProtection(prepared.at, o.ID, stop, target); err != nil {
+		return err
+	}
+	if err := s.executeOrder(prepared); err != nil {
+		return err
+	}
+	return s.revalue(prepared.at)
+}
 
-	// The names come from the sequence the journal actually assigns this
-	// event, taken inside the builder rather than guessed at by counting how
-	// many events a command ought to have produced first.
+// placeProtection records the levels planned with an entry.
+//
+// The names come from the sequence the journal actually assigns this event,
+// taken inside the builder rather than guessed at by counting how many events
+// a command ought to have produced first.
+func (s *Session) placeProtection(at market.LogicalTime, entryOrderID string, stop, target market.Ticks) error {
 	var placed ProtectionPlaced
-	if err := s.record(s.lastQuote.Time, KindProtectionPlaced, func(e Envelope) Event {
+	if err := s.record(at, KindProtectionPlaced, func(e Envelope) Event {
 		stopID, targetID := legNames(e.Sequence, stop, target)
 		placed = ProtectionPlaced{
-			Envelope: e, EntryOrderID: o.ID,
+			Envelope: e, EntryOrderID: entryOrderID,
 			StopPrice: stop, TargetPrice: target,
 			StopOrderID: stopID, TargetOrderID: targetID,
 		}
@@ -365,6 +449,32 @@ func (s *Session) endProtection(ref ProtectionRef, reason ProtectionEndReason) e
 		return err
 	}
 
+	return s.recordProtectionEnded(at, planned, ref, reason)
+}
+
+// endPlanFor ends the protection planned against an entry that no longer
+// exists, and does nothing when there is none.
+//
+// A plan cannot outlive its entry. It names an order that is gone, so nothing
+// could ever activate it, and until it was ended the session went on reporting
+// it — cover the trader would read as theirs and does not have.
+//
+// It asks the projection rather than assuming, because once a plan activates
+// the episode governs it and the entry's disappearance means nothing: a
+// partially filled entry whose remainder is cancelled keeps protecting what it
+// opened.
+func (s *Session) endPlanFor(at market.LogicalTime, entryOrderID string) error {
+	planned, ok := s.protections.plannedFor(entryOrderID)
+	if !ok {
+		return nil
+	}
+	ref := ProtectionRef{Kind: ProtectionRefEntry, OrderID: entryOrderID}
+	return s.recordProtectionEnded(at, planned, ref, ProtectionEntryCancelled)
+}
+
+// recordProtectionEnded writes an ending and folds it in. Its caller has
+// already resolved the protection and decided the command may proceed.
+func (s *Session) recordProtectionEnded(at market.LogicalTime, planned plannedProtection, ref ProtectionRef, reason ProtectionEndReason) error {
 	ended := ProtectionEnded{
 		Ref: ref, StopPrice: planned.stopPrice, TargetPrice: planned.targetPrice,
 		Reason: reason,

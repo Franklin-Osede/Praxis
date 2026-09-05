@@ -494,43 +494,77 @@ func (s *Session) SubmitOrder(o market.Order) error {
 	return s.command(func() error { return s.submitOrder(o) })
 }
 
+// preparedOrder is everything a submission has decided before any of it is
+// recorded: the context it was taken in, what the book would give it, and what
+// would be left over.
+//
+// Preparation and recording are separate because an order may carry a
+// protection, and the protection has to be written between the decision and
+// its first fill. Reusing the whole of submitOrder cannot do that, and writing
+// the entry a second time inside the protected path would be two producers of
+// one event, which is exactly how two journals come to disagree.
+type preparedOrder struct {
+	order     market.Order
+	context   OrderContext
+	at        market.LogicalTime
+	result    execution.Result
+	remaining market.Qty
+}
+
 func (s *Session) submitOrder(o market.Order) error {
+	prepared, err := s.prepareOrder(o)
+	if err != nil {
+		return err
+	}
+	if err := s.recordOrder(prepared); err != nil {
+		return err
+	}
+	if err := s.executeOrder(prepared); err != nil {
+		return err
+	}
+	return s.revalue(prepared.at)
+}
+
+// prepareOrder refuses everything a submission cannot do and computes
+// everything it will do. It changes nothing: no order in the log, no counter
+// moved, no money touched, no name spent.
+func (s *Session) prepareOrder(o market.Order) (preparedOrder, error) {
 	if !s.sessionOpen {
-		return ErrNoSessionOpen
+		return preparedOrder{}, ErrNoSessionOpen
 	}
 	if s.ended() {
-		return ErrChallengeEnded
+		return preparedOrder{}, ErrChallengeEnded
 	}
 	if o.Instrument != s.cfg.Instrument {
-		return ErrWrongInstrument
+		return preparedOrder{}, ErrWrongInstrument
 	}
 	if err := o.Validate(); err != nil {
-		return err
+		return preparedOrder{}, err
 	}
 	// An order executes against an observation of this trading session. The
 	// last book of a previous session is stale, and using it would also place
 	// the fill before the boundary in logical time.
 	if !s.observedThisSession {
-		return ErrNoMarketObserved
+		return preparedOrder{}, ErrNoMarketObserved
 	}
 	if strings.HasPrefix(o.ID, reservedPrefix) {
-		return fmt.Errorf("%w: %s", ErrReservedNamespace, o.ID)
+		return preparedOrder{}, fmt.Errorf("%w: %s", ErrReservedNamespace, o.ID)
 	}
 	if s.isWorking(o.ID) {
-		return fmt.Errorf("%w: %s", ErrDuplicateOrderID, o.ID)
+		return preparedOrder{}, fmt.Errorf("%w: %s", ErrDuplicateOrderID, o.ID)
 	}
 	if s.protections.used(o.ID) {
-		return fmt.Errorf("%w: %s", ErrOrderIDReused, o.ID)
+		return preparedOrder{}, fmt.Errorf("%w: %s", ErrOrderIDReused, o.ID)
 	}
 	at := s.lastQuote.Time
 	if err := s.journal.ValidateNext(at, s.sequence+1); err != nil {
-		return err
+		return preparedOrder{}, err
 	}
 
 	position, _ := s.account.Position(s.cfg.Instrument)
 	balance, equity, err := s.value()
 	if err != nil {
-		return err
+		return preparedOrder{}, err
 	}
 	context := OrderContext{
 		BalanceCts:                 balance,
@@ -542,73 +576,78 @@ func (s *Session) submitOrder(o market.Order) error {
 		ConsecutiveLosingTrades:    s.episodes.consecutiveLosingTradesNow(),
 	}
 
-	// Everything the command will do is computed and applied before any of it
-	// is recorded, so a refusal leaves no order in the log, no counter moved
-	// and no money changed.
 	result, err := s.policy.ExecuteOnQuote(o, s.lastQuote)
 	if err != nil {
-		return err
+		return preparedOrder{}, err
 	}
-	if err := s.consume(result.Fills); err != nil {
-		return err
-	}
-	fills := result.Fills
 	var filled market.Qty
-	for _, f := range fills {
+	for _, f := range result.Fills {
 		if filled, err = market.AddQty(filled, f.Qty); err != nil {
-			return err
+			return preparedOrder{}, err
 		}
 	}
 	remaining, err := market.AddQty(o.Qty, -filled)
 	if err != nil {
-		return err
+		return preparedOrder{}, err
 	}
+	return preparedOrder{order: o, context: context, at: at, result: result, remaining: remaining}, nil
+}
 
-	if err := s.record(at, KindOrderSubmitted, func(e Envelope) Event {
-		return OrderSubmitted{Envelope: e, Order: o, Context: context}
+// recordOrder writes the decision and moves what the decision alone moves.
+func (s *Session) recordOrder(p preparedOrder) error {
+	if err := s.record(p.at, KindOrderSubmitted, func(e Envelope) Event {
+		return OrderSubmitted{Envelope: e, Order: p.order, Context: p.context}
 	}); err != nil {
 		return err
 	}
-	if err := s.protections.claim(o.ID); err != nil {
+	if err := s.protections.claim(p.order.ID); err != nil {
 		return err
 	}
-	if s.ordersThisSession, err = addOrders(s.ordersThisSession, 1); err != nil {
-		return err
-	}
-	if _, err := s.applyAndRecord(at, fills); err != nil {
-		return err
-	}
+	var err error
+	s.ordersThisSession, err = addOrders(s.ordersThisSession, 1)
+	return err
+}
 
+// executeOrder takes what filled out of the book, applies it, and records what
+// became of the rest.
+func (s *Session) executeOrder(p preparedOrder) error {
+	if err := s.consume(p.result.Fills); err != nil {
+		return err
+	}
+	if _, err := s.applyAndRecord(p.at, p.result.Fills); err != nil {
+		return err
+	}
+	if p.remaining <= 0 {
+		return nil
+	}
 	// What the book could not fill is a fact either way, and the log says
 	// which. A limit or a stop waits for a later observation; a market order's
 	// remainder is cancelled, because resting it would mean inventing a price
 	// the trader never named.
-	if remaining > 0 {
-		if o.Type == market.OrderTypeMarket || result.StopTriggered {
-			if err := s.cancelRemainder(at, o.ID, remaining); err != nil {
-				return err
-			}
-		} else {
-			if err := s.record(at, KindOrderRested, func(e Envelope) Event {
-				return OrderRested{Envelope: e, Order: o, RestingQty: remaining}
-			}); err != nil {
-				return err
-			}
-			s.working = append(s.working, workingOrder{order: o, remaining: remaining})
-		}
+	if p.order.Type == market.OrderTypeMarket || p.result.StopTriggered {
+		return s.cancelRemainder(p.at, p.order.ID, p.remaining)
 	}
-	return s.revalue(at)
+	if err := s.record(p.at, KindOrderRested, func(e Envelope) Event {
+		return OrderRested{Envelope: e, Order: p.order, RestingQty: p.remaining}
+	}); err != nil {
+		return err
+	}
+	s.working = append(s.working, workingOrder{order: p.order, remaining: p.remaining})
+	return nil
 }
 
 // cancelRemainder records the part of an order the book could not fill and
 // that will not wait for another observation.
 func (s *Session) cancelRemainder(at market.LogicalTime, orderID string, remaining market.Qty) error {
-	return s.record(at, KindOrderCancelled, func(e Envelope) Event {
+	if err := s.record(at, KindOrderCancelled, func(e Envelope) Event {
 		return OrderCancelled{
 			Envelope: e, OrderID: orderID, RemainingQty: remaining,
 			Reason: CancelledUnfillableRemainder,
 		}
-	})
+	}); err != nil {
+		return err
+	}
+	return s.endPlanFor(at, orderID)
 }
 
 // countClose updates the behavioural counters from a closing leg. Only a leg
@@ -686,7 +725,7 @@ func (s *Session) cancelOrder(id string) error {
 			return err
 		}
 		s.working = append(s.working[:n], s.working[n+1:]...)
-		return nil
+		return s.endPlanFor(at, id)
 	}
 	return fmt.Errorf("%w: %s", ErrNoSuchOrder, id)
 }

@@ -174,6 +174,9 @@ func Replay(events []Event) (*ReplayedState, error) {
 			return nil, fmt.Errorf("%w: event %d follows %d unrecorded challenge decisions",
 				ErrFabricated, n, len(pendingDecisions))
 		}
+		if err := protections.requireEnding(e); err != nil {
+			return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+		}
 		state.LastSequence = header.Sequence
 
 		switch v := e.(type) {
@@ -284,6 +287,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 
 		case OrderCancelled:
 			state.Working = removeWorking(state.Working, v.OrderID)
+			protections.entryGone(v.OrderID)
 
 		case OrderSubmitted:
 			if state.OrdersThisSession, err = addOrders(state.OrdersThisSession, 1); err != nil {
@@ -313,6 +317,9 @@ func Replay(events []Event) (*ReplayedState, error) {
 	if len(pendingChanges) > 0 || len(pendingDecisions) > 0 {
 		return nil, fmt.Errorf("%w: the log ends with %d position changes and %d decisions unrecorded",
 			ErrFabricated, len(pendingChanges), len(pendingDecisions))
+	}
+	if err := protections.settled(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrFabricated, err)
 	}
 
 	state.PlannedProtections = protections.snapshot()
@@ -411,6 +418,10 @@ func Verify(events []Event) error {
 	)
 
 	for _, e := range events {
+		if err := protections.requireEnding(e); err != nil {
+			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+		}
+
 		switch v := e.(type) {
 		case SessionOpened:
 			// A new session's counters reset, and so does the valuation. A
@@ -465,6 +476,9 @@ func Verify(events []Event) error {
 			}
 			sides[v.Order.ID] = v.Order.Side == market.SideBuy
 
+		case OrderCancelled:
+			protections.entryGone(v.OrderID)
+
 		case ProtectionPlaced:
 			if err := protections.applyPlaced(v); err != nil {
 				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
@@ -500,6 +514,9 @@ func Verify(events []Event) error {
 				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
 			}
 		}
+	}
+	if err := protections.settled(); err != nil {
+		return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
 	}
 	return nil
 }
