@@ -159,6 +159,12 @@ func Replay(events []Event) (*ReplayedState, error) {
 		// read belong to. A change does not name it, and protection binds to
 		// the decision that opened the exposure, not to the exposure alone.
 		fillOrderID string
+
+		// submitted is every order the trader has submitted, with what is left
+		// of it. It answers membership and quantity for one identifier at a
+		// time and is never iterated to produce a result, which is why a map
+		// is the right structure.
+		submitted = map[string]market.Order{}
 	)
 
 	for n, e := range events {
@@ -200,6 +206,12 @@ func Replay(events []Event) (*ReplayedState, error) {
 				return nil, err
 			}
 			fillOrderID = v.Fill.OrderID
+			if o, ok := submitted[v.Fill.OrderID]; ok {
+				if o.Qty, err = market.AddQty(o.Qty, -v.Fill.Qty); err != nil {
+					return nil, err
+				}
+				submitted[v.Fill.OrderID] = o
+			}
 			// The book this observation showed is finite, and this fill just
 			// took part of it. What follows must meet what is left.
 			if state.LastQuote, err = consumeBook(state.LastQuote, []market.Fill{v.Fill}); err != nil {
@@ -322,11 +334,15 @@ func Replay(events []Event) (*ReplayedState, error) {
 				if err := proveLegCancellation(&protections, state.LastQuote, started.Config.Instrument, v); err != nil {
 					return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
 				}
+				if err := proveOrderCancellation(submitted, state.LastQuote, v); err != nil {
+					return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				}
 			}
 			protections.entryGone(v.OrderID)
 			protections.legCancelled(v.OrderID)
 
 		case OrderSubmitted:
+			submitted[v.Order.ID] = v.Order
 			if state.OrdersThisSession, err = addOrders(state.OrdersThisSession, 1); err != nil {
 				return nil, err
 			}
@@ -436,6 +452,30 @@ func proveLegCancellation(protections *protectionProjection, book market.Quote, 
 	if cancelled.Reason != CancelledUnfillableRemainder {
 		return fmt.Errorf("%s is cancelled for %v; a leg that reached its level with nothing behind it ends as %v",
 			cancelled.OrderID, cancelled.Reason, CancelledUnfillableRemainder)
+	}
+	return nil
+}
+
+// proveOrderCancellation refuses a remainder the book could still have filled.
+func proveOrderCancellation(submitted map[string]market.Order, book market.Quote, cancelled OrderCancelled) error {
+	if cancelled.Reason != CancelledUnfillableRemainder {
+		return nil
+	}
+	order, ok := submitted[cancelled.OrderID]
+	if !ok {
+		return nil
+	}
+	if cancelled.RemainingQty != order.Qty {
+		return fmt.Errorf("%s is cancelled with %d left, its fills leave %d",
+			cancelled.OrderID, cancelled.RemainingQty, order.Qty)
+	}
+	result, err := execution.ConservativeExecution{}.ExecuteOnQuote(order, book)
+	if err != nil {
+		return err
+	}
+	if len(result.Fills) > 0 {
+		return fmt.Errorf("%s was cancelled as unfillable, and %d/%d still showed %d/%d for it",
+			cancelled.OrderID, book.Bid, book.Ask, book.BidSize, book.AskSize)
 	}
 	return nil
 }

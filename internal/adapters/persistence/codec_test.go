@@ -110,20 +110,50 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 		t.Fatalf("a streak under v1: got %v, want %v", err, persistence.ErrUnsupportedInVersion)
 	}
 
-	// And reading one version's bytes as the other is refused, not guessed at.
-	for _, cross := range []struct{ path, as string }{
-		{"testdata/golden-events-v2.txt", persistence.EventVersionV1},
-		{"testdata/golden-events-v3.txt", persistence.EventVersionV1},
-		{"testdata/golden-events-v3.txt", persistence.EventVersionV2},
-		{"testdata/golden-events.txt", persistence.EventVersionV2},
-		{"testdata/golden-events-v4.txt", persistence.EventVersionV1},
-		{"testdata/golden-events-v4.txt", persistence.EventVersionV2},
-		{"testdata/golden-events-v4.txt", persistence.EventVersionV3},
-	} {
-		if _, err := persistence.DecodeEvents(goldenFor(t, cross.path), cross.as); err == nil {
-			t.Fatalf("%s was read as %s", cross.path, cross.as)
+	// Reading a payload as an OLDER version is refused rather than guessed at,
+	// in every direction. That is the property, and every ordered pair is
+	// tried rather than a chosen few, because a table that listed some of them
+	// would pin whichever ones happened to pass.
+	//
+	// The reverse does not hold and is not claimed. A version that only adds
+	// event types or values leaves an older payload a valid subset of itself,
+	// so v2 bytes read as v3 decode perfectly; a version that adds a field to
+	// an existing line does not, so v1 bytes read as v2 are refused. Which of
+	// those a given step was is a fact about that step, not a rule. Nothing
+	// inside a payload says which version it is — the frame carries that, and
+	// the frame is what a reader must believe.
+	rank := map[string]int{
+		persistence.EventVersionV1: 1, persistence.EventVersionV2: 2,
+		persistence.EventVersionV3: 3, persistence.EventVersionV4: 4,
+	}
+	goldens := map[string]string{
+		persistence.EventVersionV1: "testdata/golden-events.txt",
+		persistence.EventVersionV2: "testdata/golden-events-v2.txt",
+		persistence.EventVersionV3: "testdata/golden-events-v3.txt",
+		persistence.EventVersionV4: "testdata/golden-events-v4.txt",
+	}
+	versions := []string{
+		persistence.EventVersionV1, persistence.EventVersionV2,
+		persistence.EventVersionV3, persistence.EventVersionV4,
+	}
+	for _, wrote := range versions {
+		for _, readAs := range versions {
+			if rank[readAs] >= rank[wrote] {
+				continue
+			}
+			if _, err := persistence.DecodeEvents(goldenFor(t, goldens[wrote]), readAs); err == nil {
+				t.Fatalf("%s bytes were read as the older %s", wrote, readAs)
+			}
 		}
 	}
+
+	// And the asymmetry is written down rather than left to be discovered: a
+	// payload mislabelled as a later version can decode silently and
+	// completely, which is why the frame's version is not advisory.
+	if _, err := persistence.DecodeEvents(goldenFor(t, goldens[persistence.EventVersionV2]), persistence.EventVersionV3); err != nil {
+		t.Fatalf("v2 bytes no longer read as v3, so the asymmetry this documents has changed: %v", err)
+	}
+
 }
 
 // Scenario: the encoding is canonical

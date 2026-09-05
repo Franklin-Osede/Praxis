@@ -558,6 +558,26 @@ forged realised amount can be made internally coherent by adjusting every
 context after it; `Verify` accepts that log and `Replay` refuses it, because
 the account that produced the fill never realised that amount.
 
+**Neither reader dominates the other, and a caller needs both.** `Replay`
+proves what the aggregates produced. `Verify` proves the derived fields a
+decision carries — the context on an order, whether a stop widened, the levels
+a protection was holding when it ended — none of which `Replay` recomputes.
+`praxis replay` and `praxis store repair` run both, in that order, and that is
+a requirement rather than a coincidence. Where their obligations overlap,
+`Verify`'s are a prefix of `Replay`'s: `Verify` cannot see whether a fill
+reversed a position, so it demands the same consequences with the end reason
+unchecked, and never a different one.
+
+**What is proved is what happened. What did not happen is mostly believed.**
+Every fill in the log is proved against the account. The *absence* of a fill is
+proved only where the book alone settles it: a protective leg cancelled for
+want of liquidity, and an order's remainder cancelled as unfillable, are both
+re-executed against the consumed book. A working order carried past an
+observation is not: nothing yet re-runs the observation against everything that
+was waiting for it, so a journal that omitted a fill the book would have given
+is accepted. That is the largest remaining hole in the proving machinery and it
+is the one direction that flatters a trader.
+
 Verification uses checked arithmetic throughout, and a live session uses the
 same arithmetic on the same counters. A verifier that silently wrapped would
 accept a corrupt log for exactly the reason it exists to reject one, and two

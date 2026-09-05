@@ -244,6 +244,78 @@ func TestInexactCostAllocationRoundsAgainstTheTrader(t *testing.T) {
 	}
 }
 
+// Scenario: a short's cost allocation rounds against the trader too
+//
+// A short's basis is negative, and Go truncates a negative quotient toward
+// zero — which removes less of the basis than the exact share, and therefore
+// realises less. That is the direction the rule requires, and it is a
+// different code path from the long case: the existing long test passes under
+// an implementation that rounds a short the wrong way.
+func TestAShortsCostAllocationAlsoRoundsAgainstTheTrader(t *testing.T) {
+	a := newAccount(t)
+	apply(t, a,
+		fill(market.SideSell, 2, 100),
+		fill(market.SideSell, 1, 101),
+	)
+	// Two contracts at 100 and one at 101, each tick worth 50 cents.
+	wantPosition(t, a, -3, -15_050)
+
+	apply(t, a, fill(market.SideBuy, 1, 100))
+
+	// One third of -15050 is -5016.67. Removing -5017 would leave the trader
+	// with 17 cents; removing -5016 leaves 16, and 16 is the honest figure.
+	wantPosition(t, a, -2, -10_034)
+	if a.RealisedCts() != 16 {
+		t.Fatalf("realised: got %d, want 16 (the exact figure is 16.67 in the trader's favour)", a.RealisedCts())
+	}
+}
+
+// Property: closing a position in pieces removes exactly the basis it had
+//
+// Whatever order and however many pieces, the shares taken out of the cost
+// basis add up to the basis that was there. A rounding rule that leaked in
+// either direction would show up here as a residue, and a rule that leaked
+// consistently in the trader's favour is the failure this project cares most
+// about.
+func TestPropertyPartialClosesRemoveExactlyTheBasis(t *testing.T) {
+	random := rand.New(rand.NewSource(20260905))
+
+	for run := 0; run < 400; run++ {
+		long := random.Intn(2) == 0
+		entry, exit := market.SideBuy, market.SideSell
+		if !long {
+			entry, exit = market.SideSell, market.SideBuy
+		}
+
+		a := newAccount(t)
+		var opened market.Qty
+		for legs := 1 + random.Intn(3); legs > 0; legs-- {
+			qty := market.Qty(1 + random.Intn(4))
+			apply(t, a, fill(entry, qty, market.Ticks(20_000+random.Intn(20))))
+			opened += qty
+		}
+		position, _ := a.Position(mnq)
+		basis := position.CostBasisCts
+
+		var removed market.Cents
+		for opened > 0 {
+			qty := market.Qty(1 + random.Intn(int(opened)))
+			before, _ := a.Position(mnq)
+			apply(t, a, fill(exit, qty, market.Ticks(20_000+random.Intn(20))))
+			after, _ := a.Position(mnq)
+			removed += before.CostBasisCts - after.CostBasisCts
+			opened -= qty
+		}
+
+		if removed != basis {
+			t.Fatalf("run %d: closing removed %d of a basis of %d", run, removed, basis)
+		}
+		if position, _ := a.Position(mnq); position.CostBasisCts != 0 {
+			t.Fatalf("run %d: a flat position holds a basis of %d", run, position.CostBasisCts)
+		}
+	}
+}
+
 // Scenario: closing in pieces realises exactly what closing at once would
 func TestPartialClosesConserveRealisedPnL(t *testing.T) {
 	pieces := newAccount(t)
@@ -295,6 +367,38 @@ func TestEquity(t *testing.T) {
 	}
 	if equity != 5_000_000+2_000-350+4_500 {
 		t.Fatalf("equity: got %d, want 5006150", equity)
+	}
+}
+
+// Scenario: unrealised P&L is measured against the exact basis, never the
+//
+//	average price
+//
+// AvgPx is a rounded display figure and the position knows it — the comment on
+// it says so. This is the case where the difference shows: three contracts
+// whose basis is 15050 have an average of 100.33, which truncates to 100, and
+// a valuation taken against 100 would report the position as flat when it is
+// fifty cents down. UnrealisedCts feeds equity, and equity is what every loss
+// rule reads, so the error would be a drawdown the trader never had to survive.
+func TestUnrealisedIsMeasuredAgainstTheExactBasis(t *testing.T) {
+	a := newAccount(t)
+	apply(t, a,
+		fill(market.SideBuy, 2, 100),
+		fill(market.SideBuy, 1, 101),
+	)
+	wantPosition(t, a, 3, 15_050)
+
+	position, _ := a.Position(mnq)
+	if position.AvgPx() != 100 {
+		t.Fatalf("the fixture does not truncate: AvgPx is %d, want 100", position.AvgPx())
+	}
+
+	got, err := a.UnrealisedCts([]portfolio.Mark{{Instrument: mnq, Price: 100}})
+	if err != nil {
+		t.Fatalf("UnrealisedCts: %v", err)
+	}
+	if got != -50 {
+		t.Fatalf("unrealised: got %d, want -50 — the average price says 0, and the average price is rounded", got)
 	}
 }
 

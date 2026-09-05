@@ -189,3 +189,63 @@ func TestAStopFindsWhatAnEarlierOrderLeft(t *testing.T) {
 		t.Fatal("a resumed session traded a different book from the one it inherited")
 	}
 }
+
+// Scenario: a remainder cancelled as unfillable is proved against the book
+//
+//	Given an order that took everything the book showed and had the rest
+//	  cancelled
+//	When the observation is forged to have shown more
+//	Then Replay refuses it.
+//
+// The book at the moment a remainder is cancelled is the right book to judge it
+// against, and for a while this was believed to be the wrong one. The fills are
+// recorded before the cancellation and Replay consumes them, so what is left is
+// exactly what the remainder met: if anything is still there, the remainder was
+// not unfillable and the order should have taken it.
+func TestARemainderCancelledAsUnfillableIsProved(t *testing.T) {
+	honest := func(t *testing.T) *session.Session {
+		t.Helper()
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 3))
+		mustSubmit(t, s, order("o1", market.SideBuy, 5))
+		return s
+	}
+
+	t.Run("the market agrees, and it is accepted", func(t *testing.T) {
+		s := honest(t)
+		if got, want := cancellations(s.Events()), []cancellation{
+			{"o1", 2, "unfillable remainder"},
+		}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("cancellations\n got: %v\nwant: %v", got, want)
+		}
+		checked(t, s)
+	})
+
+	tests := []struct {
+		name  string
+		forge func(*testing.T, []session.Event)
+	}{
+		{"the book had shown more than it gave", func(t *testing.T, e []session.Event) {
+			at := indexOfKind(t, e, session.KindMarketObserved, 1)
+			v := e[at].(session.MarketObserved)
+			v.Quote.AskSize = 10
+			e[at] = v
+		}},
+		{"a different quantity was withdrawn", func(t *testing.T, e []session.Event) {
+			at := indexOfKind(t, e, session.KindOrderCancelled, 1)
+			v := e[at].(session.OrderCancelled)
+			v.RemainingQty = 1
+			e[at] = v
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := honest(t).Events()
+			tc.forge(t, events)
+			if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			}
+		})
+	}
+}
