@@ -598,3 +598,164 @@ func TestAnOrderIsAskedNothingOnceTheEvaluationHasEnded(t *testing.T) {
 	}
 	checked(t, s)
 }
+
+// Scenario: a fill is re-executed against the book it met
+//
+// A fill's price is the plainest place the rule "execution lies in favour of
+// the market, never the trader" can be broken and leave no trace: a market buy
+// recorded ten ticks below the ask is ten ticks of free improvement, and every
+// later check agrees with it, because the fill is what fed the account and a
+// valuation compares the account with itself.
+//
+// Quantity is recomputable for the same reason the book is consumed at all: a
+// fill is exactly what the policy produced against the book at that moment, and
+// every earlier fill has already been taken out of it.
+func TestAFillIsReExecutedAgainstTheBookItMet(t *testing.T) {
+	honest := func(t *testing.T) *session.Session {
+		t.Helper()
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_010, 3))
+		mustSubmit(t, s, order("o1", market.SideBuy, 5))
+		return s
+	}
+
+	t.Run("the book agrees, and it is accepted", func(t *testing.T) {
+		s := honest(t)
+		var got market.Fill
+		for _, e := range s.Events() {
+			if v, ok := e.(session.FillProduced); ok {
+				got = v.Fill
+			}
+		}
+		// It crossed the spread and took only the depth the quote showed.
+		if got.Price != 20_010 || got.Qty != 3 {
+			t.Fatalf("fill: got %d at %d, want 3 at the ask of 20010", got.Qty, got.Price)
+		}
+		checked(t, s)
+	})
+
+	tests := []struct {
+		name  string
+		forge func(*market.Fill)
+		says  string
+	}{
+		{"a better price than the market offered", func(f *market.Fill) { f.Price = 20_000 }, "would have given it 20010"},
+		{"more depth than the book showed", func(f *market.Fill) { f.Qty = 5 }, "would have given it 3"},
+		{"a fill nobody's order produced", func(f *market.Fill) { f.OrderID = "ghost" }, "nothing submitted it"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := honest(t).Events()
+			at := indexOfKind(t, events, session.KindFillProduced, 1)
+			produced := events[at].(session.FillProduced)
+			tc.forge(&produced.Fill)
+			events[at] = produced
+
+			_, err := session.Replay(events)
+			if !errors.Is(err, session.ErrFabricated) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			}
+			if !strings.Contains(err.Error(), tc.says) {
+				t.Fatalf("rejected for another reason: %v", err)
+			}
+		})
+	}
+}
+
+// Scenario: a book cannot be overdrawn
+//
+// Execution stops at the size an observation displayed, so a live session
+// cannot produce this. A journal can, and a book driven negative is the
+// arithmetic saying a fill took depth that was never there. Nothing looks at
+// the leftovers unless something is still waiting on them, which is why this
+// has to be the subtraction's own business.
+func TestAFillCannotTakeMoreThanTheBookShowed(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_010, 3))
+	mustSubmit(t, s, order("o1", market.SideBuy, 3))
+	events := s.Events()
+
+	// The observation is forged to have shown less than it gave. The fill's own
+	// re-execution catches it first; the subtraction is what would have caught
+	// it if nothing else did.
+	for _, tc := range []struct {
+		name string
+		size market.Qty
+		says string
+	}{
+		{"a book that showed less", 1, "would have given it 1"},
+		{"a book that showed nothing at all", 0, "would have given it nothing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forged := make([]session.Event, len(events))
+			copy(forged, events)
+			at := indexOfKind(t, forged, session.KindMarketObserved, 1)
+			observed := forged[at].(session.MarketObserved)
+			observed.Quote.AskSize = tc.size
+			forged[at] = observed
+
+			_, err := session.Replay(forged)
+			if !errors.Is(err, session.ErrFabricated) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			}
+			if !strings.Contains(err.Error(), tc.says) {
+				t.Fatalf("rejected for another reason: %v", err)
+			}
+		})
+	}
+
+	// And the subtraction refuses it on its own terms.
+	overdrawn := []market.Fill{
+		{OrderID: "o1", Instrument: mnq, Time: 3_000, Side: market.SideBuy, Price: 20_010, Qty: 3},
+	}
+	if _, err := session.ConsumeBookForTest(sized(3_000, 20_000, 20_010, 1), overdrawn); !errors.Is(err, session.ErrOverdrawnBook) {
+		t.Fatalf("consuming: got %v, want %v", err, session.ErrOverdrawnBook)
+	}
+}
+
+// Scenario: an order cannot simply stop being mentioned
+//
+// Every order reaches one of three ends: it fills, it is cancelled, or it is
+// still waiting when the log stops. One that reaches none is invisible to every
+// other check — it never enters the working set, so nothing asks it to account
+// for surviving an observation, and it moved no money, so no valuation
+// disagrees. A marketable limit the log quietly forgets is a decision the
+// trader made and the record does not contain.
+func TestAnOrderCannotSimplyStopBeingMentioned(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	mustSubmit(t, s, limitOrder(t, "o1", market.SideBuy, 5, 20_100))
+
+	// Everything the fill caused is cut out, and the valuation is adjusted to
+	// the flat account that leaves — so the log is coherent with its own lie.
+	var kept []session.Event
+	for _, e := range s.Events() {
+		switch e.(type) {
+		case session.FillProduced, session.PositionChanged:
+			continue
+		}
+		kept = append(kept, e)
+	}
+	events := renumber(kept)
+	for n, e := range events {
+		if v, ok := e.(session.AccountValued); ok {
+			v.BalanceCts, v.EquityCts = 5_000_000, 5_000_000
+			events[n] = v
+		}
+	}
+
+	// Verify sees nothing wrong: every context still adds up.
+	if err := session.Verify(events); err != nil {
+		t.Fatalf("the forgery is not internally coherent, so it proves less than it should: %v", err)
+	}
+	_, err := session.Replay(events)
+	if !errors.Is(err, session.ErrFabricated) {
+		t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+	}
+	if !strings.Contains(err.Error(), "neither rests nor cancels it") {
+		t.Fatalf("rejected for another reason: %v", err)
+	}
+}

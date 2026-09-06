@@ -165,11 +165,13 @@ func Replay(events []Event) (*ReplayedState, error) {
 		// something to answer for.
 		offered bool
 
-		// submitted is every order the trader has submitted, with what is left
-		// of it. It answers membership and quantity for one identifier at a
-		// time and is never iterated to produce a result, which is why a map
-		// is the right structure.
-		submitted = map[string]market.Order{}
+		// submitted is every order the trader has submitted that has not yet
+		// reached an end, with what is left of it. The map answers membership
+		// and quantity for one identifier at a time; the slice is the order
+		// they were submitted in, so that what the check reports never depends
+		// on iteration order.
+		submitted   = map[string]market.Order{}
+		outstanding []string
 	)
 
 	for n, e := range events {
@@ -211,6 +213,11 @@ func Replay(events []Event) (*ReplayedState, error) {
 				return nil, err
 			}
 			fillOrderID = v.Fill.OrderID
+			// The fill is re-executed against the book it met, before that
+			// book is reduced by it.
+			if err := proveFill(submitted, &protections, state, started.Config.Instrument, v.Fill); err != nil {
+				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+			}
 			if o, ok := submitted[v.Fill.OrderID]; ok {
 				if o.Qty, err = market.AddQty(o.Qty, -v.Fill.Qty); err != nil {
 					return nil, err
@@ -352,11 +359,13 @@ func Replay(events []Event) (*ReplayedState, error) {
 					return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
 				}
 			}
+			delete(submitted, v.OrderID)
 			protections.entryGone(v.OrderID)
 			protections.legCancelled(v.OrderID)
 
 		case OrderSubmitted:
 			submitted[v.Order.ID] = v.Order
+			outstanding = append(outstanding, v.Order.ID)
 			if state.OrdersThisSession, err = addOrders(state.OrdersThisSession, 1); err != nil {
 				return nil, err
 			}
@@ -392,6 +401,9 @@ func Replay(events []Event) (*ReplayedState, error) {
 		if err := proveNothingSurvivedFillable(state, &protections, started.Config.Instrument); err != nil {
 			return nil, fmt.Errorf("%w: the log ends and %v", ErrFabricated, err)
 		}
+	}
+	if err := proveEveryOrderEnded(submitted, outstanding, state.Working); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrFabricated, err)
 	}
 
 	state.PlannedProtections = protections.snapshot()
@@ -513,6 +525,86 @@ func proveOrderCancellation(submitted map[string]market.Order, book market.Quote
 	if len(result.Fills) > 0 {
 		return fmt.Errorf("%s was cancelled as unfillable, and %d/%d still showed %d/%d for it",
 			cancelled.OrderID, book.Bid, book.Ask, book.BidSize, book.AskSize)
+	}
+	return nil
+}
+
+// proveEveryOrderEnded refuses a journal in which an order was submitted and
+// then simply stopped being mentioned.
+//
+// Every order reaches one of three ends: it fills, it is cancelled, or it is
+// still waiting when the log stops. An order that reaches none of them is
+// invisible to every other check — it never enters the working set, so nothing
+// asks it to account for surviving an observation, and it moved no money, so no
+// valuation disagrees. A marketable limit that the log quietly forgets is a
+// decision the trader made and the record does not contain.
+func proveEveryOrderEnded(submitted map[string]market.Order, outstanding []string, working []market.Order) error {
+	waiting := map[string]bool{}
+	for _, o := range working {
+		waiting[o.ID] = true
+	}
+	for _, id := range outstanding {
+		order, live := submitted[id]
+		if !live || order.Qty == 0 || waiting[id] {
+			continue
+		}
+		return fmt.Errorf("%s was submitted, %d of it never filled, and the log neither rests nor cancels it",
+			id, order.Qty)
+	}
+	return nil
+}
+
+// proveFill refuses a fill the book could not have given, at a price it could
+// not have given, or from an order nobody submitted.
+//
+// The price is the gap this closes, and it is the plainest violation of
+// "execution lies in favour of the market, never the trader" the log could
+// hold: a market buy recorded ten ticks below the ask is ten ticks of free
+// improvement, and the account is perfectly consistent with it afterwards
+// because the fill is what fed the account. A valuation compares the account
+// with itself and finds no quarrel.
+//
+// Quantity is recomputable for the same reason the book is consumed: a fill is
+// exactly what the policy produced against the book at that moment, and every
+// earlier fill has already been taken out of it. What this cannot see is which
+// of two competing orders was offered the scarce depth first — the journal's
+// own ordering decides that, and re-running the whole resolution is what would
+// settle it.
+func proveFill(submitted map[string]market.Order, protections *protectionProjection,
+	state *ReplayedState, instrument market.Instrument, fill market.Fill) error {
+
+	order, known := submitted[fill.OrderID]
+	if !known {
+		active, which, isLeg := protections.legNamed(fill.OrderID)
+		if !isLeg {
+			return fmt.Errorf("%s produced a fill and nothing submitted it", fill.OrderID)
+		}
+		if order, known = protectiveOrder(active, which, instrument); !known {
+			return fmt.Errorf("%s produced a fill and the level it names is not set", fill.OrderID)
+		}
+	}
+
+	result, err := execution.ConservativeExecution{}.ExecuteOnQuote(order, state.LastQuote)
+	if err != nil {
+		return err
+	}
+	if len(result.Fills) == 0 {
+		return fmt.Errorf("%s filled %d at %d, and %d/%d showing %d/%d would have given it nothing",
+			fill.OrderID, fill.Qty, fill.Price,
+			state.LastQuote.Bid, state.LastQuote.Ask, state.LastQuote.BidSize, state.LastQuote.AskSize)
+	}
+	want := result.Fills[0]
+	if fill.Price != want.Price {
+		return fmt.Errorf("%s filled at %d, and %d/%d would have given it %d",
+			fill.OrderID, fill.Price, state.LastQuote.Bid, state.LastQuote.Ask, want.Price)
+	}
+	if fill.Qty != want.Qty {
+		return fmt.Errorf("%s filled %d, and %d/%d showing %d/%d would have given it %d",
+			fill.OrderID, fill.Qty,
+			state.LastQuote.Bid, state.LastQuote.Ask, state.LastQuote.BidSize, state.LastQuote.AskSize, want.Qty)
+	}
+	if fill.Side != want.Side || fill.Time != want.Time || fill.Instrument != want.Instrument {
+		return fmt.Errorf("%s records %+v, the order and the book produce %+v", fill.OrderID, fill, want)
 	}
 	return nil
 }

@@ -33,6 +33,10 @@ var (
 	// never re-executed automatically.
 	ErrSessionNeedsRecovery = errors.New("session: requires recovery")
 
+	// ErrOverdrawnBook reports a fill that took more depth than its
+	// observation displayed. Execution cannot produce one; only a journal can.
+	ErrOverdrawnBook = errors.New("session: a fill took more than the book showed")
+
 	ErrDuplicateOrderID = errors.New("session: an order with this identifier is already working")
 	ErrNoSuchOrder      = errors.New("session: no working order with this identifier")
 )
@@ -445,6 +449,14 @@ func consumeBook(q market.Quote, fills []market.Fill) (market.Quote, error) {
 		}
 		if err != nil {
 			return market.Quote{}, err
+		}
+		// A book cannot go negative. In a live session it cannot: execution
+		// stops at the size the quote displayed. A journal is not so
+		// constrained, and a negative book is the arithmetic saying a fill
+		// took depth the observation never showed.
+		if q.BidSize < 0 || q.AskSize < 0 {
+			return market.Quote{}, fmt.Errorf("%w: %s took %d from a book showing %d/%d",
+				ErrOverdrawnBook, f.OrderID, f.Qty, q.BidSize, q.AskSize)
 		}
 	}
 	return q, nil

@@ -574,16 +574,30 @@ is the only forgery direction that flatters a trader, because a journal in
 which a stop the market traded through is still waiting shows a loss that never
 happened, against a flat account no valuation contradicts.
 
-Three things now close it, all re-executing `ConservativeExecution` against the
-book **as it was left** rather than as it arrived:
+Every transition an order can make is now re-executed against the book **as it
+was left** rather than as it arrived:
 
+- a **fill** must be exactly what the policy would have produced — the same
+  price, the same quantity, from an order that was actually submitted or a
+  protective leg that actually exists;
 - a protective leg cancelled for want of liquidity must have reached its level
   and found nothing;
 - an order's remainder cancelled as unfillable must belong to an order that can
   leave one — a market order, or a stop that triggered — must match the fills
   the journal itself records, and must meet a book with nothing left on it;
 - **everything still waiting when an observation ends must be unfillable**, and
-  no stop among them may be triggered.
+  no stop among them may be triggered;
+- and **every order reaches an end**: it fills, it is cancelled, or it is still
+  waiting when the log stops. One that reaches none is otherwise invisible —
+  it never enters the working set and it moves no money.
+
+A fill's price is where the conservatism rule is easiest to break with no
+trace. A market buy recorded ten ticks below the ask is ten ticks of free
+improvement, and every later check agrees with it, because the fill is what fed
+the account and a valuation compares the account with itself. Subtracting a
+fill from the book can also no longer drive it negative: execution stops at the
+size the observation displayed, so only a journal can produce one, and a
+negative book is the arithmetic saying a fill took depth that was never there.
 
 Judging against the consumed book is what makes the last one strict without a
 second copy of the resolution order. Everything that filled has already been
@@ -594,10 +608,28 @@ because triggering owes nothing to liquidity. Nothing is asked of an order no
 trading session was open to offer anything to, which is the same gate the live
 session applies.
 
-What is still believed is *how much* would have filled. A journal that
-under-reported the size of a fill the book would have given is not yet caught;
-proving that means running the whole resolution order inside the reader, and
-the shared fold this rests on is the first half of doing so.
+**One thing is still believed: the interleaving.** When two orders competed for
+depth the observation did not have enough of, nothing recomputes which of them
+was offered it first — the journal's own ordering decides, and each fill is
+then checked against the book that ordering implies. A log that gave the scarce
+contracts to whichever order suited the trader is internally consistent. Every
+other direction is closed:
+
+| the order… | proved by |
+|---|---|
+| fills more than the book showed | the fill's re-execution |
+| fills at a better price | the fill's re-execution |
+| fills from nothing | the fill's re-execution |
+| does not fill and rests | the survivor check |
+| does not fill and is cancelled | the remainder's re-execution |
+| does not fill and disappears | every order reaches an end |
+| fills in part, the rest rests | the survivor check |
+| fills in part, the rest is cancelled | the remainder's re-execution |
+| fills in part, the rest disappears | every order reaches an end |
+
+Closing the interleaving means running the whole resolution order inside the
+reader. `foldPositionChange` is the first half of that, and it is a narrow case
+that matters only where two orders actually competed.
 
 Verification uses checked arithmetic throughout, and a live session uses the
 same arithmetic on the same counters. A verifier that silently wrapped would
