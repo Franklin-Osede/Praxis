@@ -95,6 +95,25 @@ equity is computed, and it is proven where it is decided—in an integration tes
 that builds a real account—not by a unit test that would only be restating its
 own input.
 
+### Which book the reference is marked at — added 2026-09-06
+
+A boundary is asserted before the observation that carries it, so the open
+position is marked at **the last book of the previous session**, not the first
+of the new one. A position held overnight through a gap therefore starts the new
+day at yesterday's close, and the whole gap counts against the new day's loss
+limit.
+
+That was a consequence of the order of calls before it was a decision, and it is
+now stated as one. The alternative — marking at the new session's first quote —
+would put the gap into the day the trader was not trading, which is worse: it
+would report a loss on a session that had already ended, against a reference
+that session's own boundary had already fixed.
+
+Real firms differ on this, and the difference is material for anyone who holds
+overnight. It is **harsh rather than generous**, so it is on the safe side of
+the conservatism rule, but the frozen protocol has to say which it models
+because the pilots will produce data that depends on it.
+
 ## Open positions at a boundary
 
 Nothing is liquidated. A position open when the session changes stays open,

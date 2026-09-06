@@ -242,6 +242,18 @@ func printReport(out *os.File, r *persistence.Report) {
 			r.CorruptBatch.Number, r.CorruptBatch.FirstSequence,
 			r.CorruptBatch.LastSequence, r.CorruptBatch.EventCount)
 	}
+	if r.ConfigDigest != "" {
+		// Everything a journal proves, it proves relative to its
+		// configuration, and nothing inside can check the configuration
+		// itself. This is what a pre-registration records beforehand, so the
+		// axiom can be confirmed from outside.
+		fmt.Fprintf(out, "config:    sha256:%s\n", r.ConfigDigest)
+		who := r.SubjectID
+		if who == "" {
+			who = "nobody recorded"
+		}
+		fmt.Fprintf(out, "subject:   %s\n", who)
+	}
 	if r.Detail != "" {
 		fmt.Fprintf(out, "detail:    %s\n", r.Detail)
 	}

@@ -10,6 +10,7 @@ import (
 
 	"praxis/internal/adapters/persistence"
 	"praxis/internal/market"
+	"praxis/internal/session"
 )
 
 // Scenario: a golden cannot be regenerated without saying so twice
@@ -107,5 +108,56 @@ func TestTheDomainAndTheFormatAgreeOnIdentifiers(t *testing.T) {
 	// And both refuse an empty name, which is not a character question.
 	if (market.ValidIdentifier("") == nil) != (persistence.ValidIdentifierForTest("") == nil) {
 		t.Fatal("the two disagree about an empty name")
+	}
+}
+
+// Scenario: a journal's configuration has a digest a pre-registration can hold
+//
+// Everything a journal proves, it proves relative to its configuration: the
+// commission a fill was charged, the balance it started from, the rules it is
+// judged against and who traded it are axioms, not conclusions. Nothing inside
+// can catch a journal run with the wrong ones, because everything downstream is
+// consistent with whatever they were — a session run at zero commission loses
+// five hundred cents of fees and stays perfectly self-consistent.
+//
+// The answer is not a check inside the journal. It is that the digest is
+// recorded before any session is traded, and confirmed from outside afterwards.
+func TestAConfigurationHasADigestThatMovesWhenItDoes(t *testing.T) {
+	started := func(commission market.Cents, subject string) session.SessionStarted {
+		return session.SessionStarted{
+			Envelope: session.Envelope{Time: 1_000, Sequence: 1, Kind: session.KindSessionStarted},
+			Config: session.Config{
+				Instrument: mnq, SubjectID: subject,
+				StartingBalanceCts: 5_000_000, CommissionPerContractCts: commission,
+			},
+		}
+	}
+
+	base, err := persistence.ConfigDigest(started(50, "t-01"), persistence.EventVersion)
+	if err != nil {
+		t.Fatalf("ConfigDigest: %v", err)
+	}
+	again, err := persistence.ConfigDigest(started(50, "t-01"), persistence.EventVersion)
+	if err != nil {
+		t.Fatalf("ConfigDigest: %v", err)
+	}
+	if base != again || len(base) != 64 {
+		t.Fatalf("digest is not a stable sha256: %q then %q", base, again)
+	}
+
+	// Every axiom it covers moves it. The commission one is the case that
+	// motivated it: a cheaper journal is entirely coherent and entirely wrong.
+	for _, other := range []session.SessionStarted{
+		started(0, "t-01"),
+		started(50, "t-02"),
+		started(50, ""),
+	} {
+		got, err := persistence.ConfigDigest(other, persistence.EventVersion)
+		if err != nil {
+			t.Fatalf("ConfigDigest: %v", err)
+		}
+		if got == base {
+			t.Fatalf("a different configuration has the same digest: %+v", other.Config)
+		}
 	}
 }

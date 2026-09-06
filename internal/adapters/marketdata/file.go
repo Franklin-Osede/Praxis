@@ -190,6 +190,12 @@ func parseRow(i market.Instrument, record []string, row int) (Observation, error
 	if record[2] == "" {
 		return Observation{}, fmt.Errorf("%w: row %d", ErrEmptySessionID, row)
 	}
+	// The identifier is checked here, where the error can name the row, rather
+	// than left to the session — which would refuse it much later and blame
+	// the boundary instead of the file.
+	if err := market.ValidIdentifier(record[2]); err != nil {
+		return Observation{}, fmt.Errorf("%w: row %d session identifier: %v", ErrField, row, err)
+	}
 	bid, err := parseInt(record[3], "bid", row)
 	if err != nil {
 		return Observation{}, err

@@ -292,3 +292,33 @@ func TestASingleRowFileDrivesASession(t *testing.T) {
 		t.Fatalf("Replay: %v", err)
 	}
 }
+
+// Scenario: a file's own identifiers must be writable into a journal
+//
+// The symbol goes into the first event of every journal and the session
+// identifier into every boundary. A file naming either with something the
+// record cannot hold produces a session that dies at its first commit, so it is
+// refused here — where the error can name the file and the row rather than
+// surfacing much later as a poisoned journal.
+func TestAFileWhoseIdentifiersCannotBeWrittenIsRefused(t *testing.T) {
+	t.Run("the symbol", func(t *testing.T) {
+		for _, symbol := range []string{"MN Q", "MNQ/1", "símbolo", "-"} {
+			body := "praxis.market.v1," + symbol + ",50\n" +
+				"time,sequence,session_id,bid,ask,bid_size,ask_size\n" +
+				"3000,1,d1,20000,20001,10,10\n"
+			if _, err := marketdata.Read(strings.NewReader(body)); err == nil {
+				t.Fatalf("%q was accepted as a symbol", symbol)
+			}
+		}
+	})
+
+	t.Run("the session identifier", func(t *testing.T) {
+		for _, id := range []string{"2026/08/27", "d 1", "-"} {
+			body := header + "3000,1," + id + ",20000,20001,10,10\n"
+			_, err := marketdata.Read(strings.NewReader(body))
+			if !errors.Is(err, marketdata.ErrField) {
+				t.Fatalf("%q: got %v, want %v", id, err, marketdata.ErrField)
+			}
+		}
+	})
+}

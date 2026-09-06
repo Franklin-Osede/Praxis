@@ -574,6 +574,31 @@ forged realised amount can be made internally coherent by adjusting every
 context after it; `Verify` accepts that log and `Replay` refuses it, because
 the account that produced the fill never realised that amount.
 
+**Everything is proved relative to the configuration, and the configuration is
+not proved at all.** The commission a fill was charged, the balance it started
+from, the rules it is judged against and who traded it are axioms. A session run
+at zero commission loses five hundred cents of fees and is entirely
+self-consistent afterwards, because the fills that fed the account were charged
+what the configuration said and every valuation compares the account with
+itself. No check inside a journal can catch it, and adding one would only move
+the axiom.
+
+That is not a defect to close. It is what a pre-registration is for: the
+configuration is fixed before any session is traded, and the journal answers for
+being consistent with it, not for justifying it. So `praxis store verify` prints
+a digest of the event that opens the journal —
+
+```text
+config:    sha256:9f2c…
+subject:   t-01
+```
+
+— which is what a protocol records beforehand and what anyone can confirm
+afterwards. With a subject inside the configuration, *which trader produced this
+journal* became an unproven claim living inside the structure whose purpose is
+that claims are proved; this is where it is answered, and it is answered from
+outside.
+
 **Neither reader dominates the other, and a caller needs both.** `Replay`
 proves what the aggregates produced. `Verify` proves the derived fields a
 decision carries — the context on an order, whether a stop widened, the levels

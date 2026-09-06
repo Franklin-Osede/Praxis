@@ -1067,4 +1067,37 @@ func TestANameTheRecordCannotHoldIsRefused(t *testing.T) {
 			t.Fatalf("got %v, want %v", err, market.ErrIdentifierCharacter)
 		}
 	})
+
+	t.Run("an instrument", func(t *testing.T) {
+		// The symbol is written into the first event of every journal, so one
+		// the record cannot hold is not a bad instrument: it is a journal that
+		// cannot begin. It comes from a market file's header, which is outside.
+		for _, symbol := range []string{"MN Q", "MNQ/1", "MNQ+", "símbolo", "MNQ\t"} {
+			cfg := config()
+			cfg.Instrument = market.Instrument{Symbol: symbol, CentsPerTick: 50}
+			if _, err := session.New(cfg, 1_000, nil); !errors.Is(err, market.ErrIdentifierCharacter) {
+				t.Fatalf("%q: got %v, want %v", symbol, err, market.ErrIdentifierCharacter)
+			}
+		}
+	})
+
+	t.Run("the name the record uses for absent", func(t *testing.T) {
+		// "-" is what the format writes for a level that is not set. A thing
+		// actually called "-" would be indistinguishable from nothing, and the
+		// reader would blame whichever field went missing rather than the name
+		// that caused it.
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		o := market.Order{
+			ID: "-", Instrument: mnq, Side: market.SideBuy,
+			Type: market.OrderTypeMarket, Qty: 1,
+		}
+		if err := s.SubmitOrder(o, decidedAt); !errors.Is(err, market.ErrReservedIdentifier) {
+			t.Fatalf("got %v, want %v", err, market.ErrReservedIdentifier)
+		}
+		// It is only the whole name that is reserved; a dash inside one is fine.
+		mustSubmit(t, s, order("o-1", market.SideBuy, 1))
+		checked(t, s)
+	})
 }

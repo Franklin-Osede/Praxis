@@ -33,6 +33,8 @@
 package persistence
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -65,6 +67,17 @@ import (
 // was regenerated to match rather than the change refused. The bytes v1 froze
 // at f964088 no longer decode. That is recorded rather than hidden, and v1
 // means what f5d12a5 left it meaning.
+//
+// A version refusal is not an unknown outcome. Encoding runs before the file is
+// touched, so a payload this package declines to write has changed nothing and
+// leaves the writer healthy — while the session treats every commit error as
+// terminal, because most of them genuinely are. Today no session can produce
+// one: the version written is always EventVersion, the format has no widths to
+// overflow, integers are int64 in decimal, and every identifier is refused by
+// the domain before it reaches here. It becomes reachable again the first time
+// a migration runs two versions side by side and an event exists that one can
+// express and the other cannot. Saying so here costs a paragraph and saves the
+// diagnosis when it returns.
 //
 // **Freezing starts at the first pilot journal.** Nothing outside this
 // repository has ever read a Praxis journal, so v1 through v3 are an exercise
@@ -111,6 +124,29 @@ var (
 	ErrTrailingBytes   = errors.New("persistence: payload does not end with a complete line")
 	ErrKindMismatch    = errors.New("persistence: event's kind contradicts its type")
 )
+
+// ConfigDigest is the SHA-256 of a journal's configuration, as the canonical
+// bytes of the event that opens it.
+//
+// A journal proves every derived fact in it, and proves all of them *relative
+// to* its configuration: the commission a fill was charged, the balance it
+// started from, the rules it is judged against and who traded it are axioms,
+// not conclusions. Nothing inside can catch a journal run with the wrong ones,
+// because everything downstream is consistent with whatever they were.
+//
+// The answer is not a check. It is that a pre-registration records this digest
+// before any session is traded, and anyone can then confirm that the journal in
+// front of them was produced under the configuration that was registered. The
+// canonical encoding is already the stable byte representation of the event, so
+// the digest is stable for exactly as long as the payload version is.
+func ConfigDigest(started session.SessionStarted, version string) (string, error) {
+	line, err := encodeEvent(started, version)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(line))
+	return hex.EncodeToString(sum[:]), nil
+}
 
 // EncodeEvents renders events as one canonical payload in the given version.
 func EncodeEvents(events []session.Event, version string) ([]byte, error) {

@@ -70,6 +70,13 @@ type Report struct {
 	Proved       bool
 	EventsProved int
 
+	// ConfigDigest is set by Prove. Everything a journal proves, it proves
+	// relative to its configuration, and the configuration is an axiom nothing
+	// inside can check. This is what a pre-registration records beforehand so
+	// that the axiom can be confirmed from outside.
+	ConfigDigest string
+	SubjectID    string
+
 	// Repaired and SidecarPath are set by an applied repair.
 	Repaired    bool
 	SidecarPath string
@@ -151,6 +158,14 @@ func Prove(path string) (*Report, error) {
 
 	events := journal.Events()
 	report.EventsProved = len(events)
+	if len(events) > 0 {
+		if started, ok := events[0].(session.SessionStarted); ok {
+			report.SubjectID = started.Config.SubjectID
+			if report.ConfigDigest, err = ConfigDigest(started, journal.PayloadVersion); err != nil {
+				return report, err
+			}
+		}
+	}
 
 	// Verify catches a log that contradicts itself; Replay catches one that is
 	// perfectly self-consistent and still describes something no account could

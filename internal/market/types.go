@@ -99,6 +99,13 @@ func (i Instrument) Validate() error {
 	if i.Symbol == "" {
 		return ErrEmptySymbol
 	}
+	// A symbol is written into the first event of every journal, so one the
+	// record cannot hold is not a bad instrument, it is a journal that cannot
+	// begin. It arrives from a file's header like every other identifier here
+	// arrives from outside.
+	if err := ValidIdentifier(i.Symbol); err != nil {
+		return err
+	}
 	if i.CentsPerTick <= 0 {
 		return ErrNonPositiveTickValue
 	}
@@ -290,6 +297,7 @@ type Order struct {
 var (
 	ErrEmptyOrderID         = errors.New("market: order id is empty")
 	ErrIdentifierCharacter  = errors.New("market: identifier uses a character that cannot be written down")
+	ErrReservedIdentifier   = errors.New("market: identifier is the one the record uses to mean absent")
 	ErrEmptySymbol          = errors.New("market: instrument symbol is empty")
 	ErrInvalidSide          = errors.New("market: side is unspecified")
 	ErrInvalidOrderType     = errors.New("market: order type is unknown")
@@ -325,10 +333,16 @@ var (
 // decision exist that the record has no way to contain.
 //
 // A protective leg is named praxis:<sequence>:stop, which is why the colon is
-// in the set.
+// in the set. A lone "-" is refused because that is what the record writes for
+// a name that is absent: a thing actually called "-" would be indistinguishable
+// from nothing, and the reader would blame whichever field went missing rather
+// than the name that caused it.
 func ValidIdentifier(s string) error {
 	if s == "" {
 		return ErrEmptyOrderID
+	}
+	if s == "-" {
+		return ErrReservedIdentifier
 	}
 	for _, r := range s {
 		switch {
