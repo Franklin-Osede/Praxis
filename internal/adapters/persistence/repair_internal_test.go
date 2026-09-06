@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -12,9 +13,22 @@ import (
 	"praxis/internal/session"
 )
 
-// decidedAt is a stand-in for a person's clock, which the adapter supplies and
+// decidedAt() is a stand-in for a person's clock, which the adapter supplies and
 // the kernel only records.
-var decidedAt = session.Decision{AtUTC: 1_764_000_000_000_000_000, Segment: 1}
+// gestures numbers the acts a fixture performs. A gesture identifier is spent
+// forever, so two commands cannot share one — which is the rule, not an
+// inconvenience: a repeated gesture is a retry, never a second decision.
+var gestures int
+
+func decidedAt() session.Decision {
+	gestures++
+	return session.Decision{
+		GestureID:    "g-" + strconv.Itoa(gestures),
+		AtUTCNanos:   1_764_000_000_000_000_000,
+		Segment:      1,
+		ElapsedNanos: 40_000_000_000,
+	}
+}
 
 // writeSessionWithOrder builds a journal that contains a decision, not only
 // observations. Most fixtures here observe and never submit, which mirrors the
@@ -27,7 +41,7 @@ func writeSessionWithOrder(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
-	if err := s.SubmitOrder(order, decidedAt); err != nil {
+	if err := s.SubmitOrder(order, decidedAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
 	if err := s.EndTradingSession(9_000); err != nil {
@@ -675,11 +689,11 @@ func TestARealProtectedJournalRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLimitOrder: %v", err)
 	}
-	if err := s.SubmitOrderWithProtection(entry, 18_900, 19_500, decidedAt); err != nil {
+	if err := s.SubmitOrderWithProtection(entry, 18_900, 19_500, decidedAt()); err != nil {
 		t.Fatalf("SubmitOrderWithProtection: %v", err)
 	}
 	if err := s.ReplaceProtection(
-		session.ProtectionRef{Kind: session.ProtectionRefEntry, OrderID: "entry"}, 18_800, 19_500, decidedAt,
+		session.ProtectionRef{Kind: session.ProtectionRefEntry, OrderID: "entry"}, 18_800, 19_500, decidedAt(),
 	); err != nil {
 		t.Fatalf("ReplaceProtection: %v", err)
 	}

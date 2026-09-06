@@ -119,7 +119,7 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 	acted := session.OrderSubmitted{
 		Envelope: session.Envelope{Time: 1, Sequence: 1, Kind: session.KindOrderSubmitted},
 		Order:    market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 1},
-		Decided:  humanAt,
+		Decided:  humanAt(),
 	}
 	for _, older := range []string{persistence.EventVersionV2, persistence.EventVersionV3} {
 		if _, err := persistence.EncodeEvents([]session.Event{acted}, older); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
@@ -128,6 +128,26 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 	}
 	if _, err := persistence.EncodeEvents([]session.Event{acted}, persistence.EventVersionV4); err != nil {
 		t.Fatalf("a human clock under v4: %v", err)
+	}
+
+	// How the observations reached the person is configuration, not a screen
+	// setting, and it is refused by an older version for the same reason the
+	// subject is: a journal that lost the condition it was produced under
+	// would be a session nobody can say was confirmatory or not.
+	paced := session.SessionStarted{
+		Envelope: session.Envelope{Time: 1, Sequence: 1, Kind: session.KindSessionStarted},
+		Config: session.Config{
+			Instrument: mnq, StartingBalanceCts: 1,
+			Pacing: session.PacingConfirmatory,
+		},
+	}
+	for _, older := range []string{persistence.EventVersionV1, persistence.EventVersionV2, persistence.EventVersionV3} {
+		if _, err := persistence.EncodeEvents([]session.Event{paced}, older); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
+			t.Fatalf("a pacing mode under %s: got %v, want %v", older, err, persistence.ErrUnsupportedInVersion)
+		}
+	}
+	if _, err := persistence.EncodeEvents([]session.Event{paced}, persistence.EventVersionV4); err != nil {
+		t.Fatalf("a pacing mode under v4: %v", err)
 	}
 	// And an older reader refuses the name rather than guessing at it, even
 	// though the rest of the line is one it understands perfectly.

@@ -32,6 +32,7 @@ func config() session.Config {
 
 func newSession(t *testing.T) *session.Session {
 	t.Helper()
+	gestures = 0
 	s, err := session.New(config(), 1_000, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -76,22 +77,31 @@ func mustObserve(t *testing.T, s *session.Session, q market.Quote) {
 	}
 }
 
-// decided is a stand-in for a person acting: a moment in the world, and a
-// monotonic reading inside one run of uninterrupted interaction. Tests that
-// care about the interval between decisions build their own.
-func decided(elapsed int64) session.Decision {
+// gestures numbers the acts a test performs, so each carries its own identifier
+// the way a real client's counter would. newSession resets it, which is what
+// keeps a scripted run reproducible.
+var gestures int
+
+// decided is a stand-in for a person acting: a gesture, a moment in the world,
+// and a monotonic reading inside one run of uninterrupted interaction. Tests
+// that care about the interval between decisions build their own.
+func decided(elapsed session.ElapsedNanos) session.Decision {
+	gestures++
 	return session.Decision{
-		AtUTC:   1_764_000_000_000_000_000 + elapsed,
-		Segment: 1,
-		Elapsed: elapsed,
+		GestureID:    "g-" + itoa(uint64(gestures)),
+		AtUTCNanos:   session.UnixNanos(1_764_000_000_000_000_000 + int64(elapsed)),
+		Segment:      1,
+		ElapsedNanos: elapsed,
 	}
 }
 
-var decidedAt = decided(0)
+// decidedAt is a fresh gesture at the start of the segment, which is what most
+// tests want: an act distinct from every other act, with no interval to speak of.
+func decidedAt() session.Decision { return decided(0) }
 
 func mustSubmit(t *testing.T, s *session.Session, o market.Order) {
 	t.Helper()
-	if err := s.SubmitOrder(o, decidedAt); err != nil {
+	if err := s.SubmitOrder(o, decidedAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
 }
@@ -151,7 +161,7 @@ func TestOpeningATradingSessionValuesTheAccountImmediately(t *testing.T) {
 // Scenario: no order is accepted before a session opens
 func TestAnOrderBeforeASessionOpensIsRejected(t *testing.T) {
 	s := newSession(t)
-	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1), decidedAt); !errors.Is(err, ErrNoSessionOpenSentinel) {
+	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1), decidedAt()); !errors.Is(err, ErrNoSessionOpenSentinel) {
 		t.Fatalf("error: got %v, want %v", err, ErrNoSessionOpenSentinel)
 	}
 	if s.JournalLen() != 1 {
@@ -169,7 +179,7 @@ func TestAnOrderBeforeAnyObservationIsRejected(t *testing.T) {
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
 
-	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1), decidedAt); !errors.Is(err, session.ErrNoMarketObserved) {
+	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1), decidedAt()); !errors.Is(err, session.ErrNoMarketObserved) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrNoMarketObserved)
 	}
 }
@@ -305,7 +315,7 @@ func TestATerminalChallengeBlocksFurtherOrders(t *testing.T) {
 		t.Fatalf("challenge: got %v, want failed", s.Challenge().State())
 	}
 
-	if err := s.SubmitOrder(order("o-2", market.SideSell, 1), decidedAt); !errors.Is(err, session.ErrChallengeEnded) {
+	if err := s.SubmitOrder(order("o-2", market.SideSell, 1), decidedAt()); !errors.Is(err, session.ErrChallengeEnded) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrChallengeEnded)
 	}
 

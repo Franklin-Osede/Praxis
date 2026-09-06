@@ -184,10 +184,16 @@ func TestAStopFindsWhatAnEarlierOrderLeft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	mustSubmit(t, resumed, order("after", market.SideSell, 3))
-	continued := s
-	mustSubmit(t, continued, order("after", market.SideSell, 3))
-	if !reflect.DeepEqual(resumed.Events(), continued.Events()) {
+	// One act, issued to both: the same person doing the same thing once, which
+	// is what makes the two journals comparable at all.
+	after, act := order("after", market.SideSell, 3), decided(0)
+	if err := resumed.SubmitOrder(after, act); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+	if err := s.SubmitOrder(after, act); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+	if !reflect.DeepEqual(resumed.Events(), s.Events()) {
 		t.Fatal("a resumed session traded a different book from the one it inherited")
 	}
 }
@@ -275,7 +281,7 @@ func TestACancellationCannotBorrowTheWrongReason(t *testing.T) {
 			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 			mustSubmit(t, s, order("long", market.SideBuy, 2))
 			mustSubmit(t, s, stopOrder(t, "protect", market.SideSell, 2, 19_000))
-			if err := s.CancelOrder("protect", decidedAt); err != nil {
+			if err := s.CancelOrder("protect", decidedAt()); err != nil {
 				t.Fatalf("CancelOrder: %v", err)
 			}
 			return s
@@ -285,7 +291,7 @@ func TestACancellationCannotBorrowTheWrongReason(t *testing.T) {
 			mustOpen(t, s, 2_000, "d1")
 			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 			mustSubmit(t, s, limitOrder(t, "bid", market.SideBuy, 2, 19_000))
-			if err := s.CancelOrder("bid", decidedAt); err != nil {
+			if err := s.CancelOrder("bid", decidedAt()); err != nil {
 				t.Fatalf("CancelOrder: %v", err)
 			}
 			return s
@@ -327,7 +333,7 @@ func TestAWithdrawalCannotMisstateWhatItGaveUp(t *testing.T) {
 	mustOpen(t, s, 2_000, "d1")
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 	mustProtect(t, s, limitOrder(t, "entry", market.SideBuy, 2, 19_000), 18_900, 19_500)
-	if err := s.CancelProtection(entryRef("entry"), decidedAt); err != nil {
+	if err := s.CancelProtection(entryRef("entry"), decidedAt()); err != nil {
 		t.Fatalf("CancelProtection: %v", err)
 	}
 	events := s.Events()
@@ -847,14 +853,14 @@ func TestTheJournalRecordsWhenAPersonActed(t *testing.T) {
 	if submitted[0].Decided.Segment != submitted[1].Decided.Segment {
 		t.Fatal("the two decisions are in different segments and cannot be subtracted")
 	}
-	if got := submitted[1].Decided.Elapsed - submitted[0].Decided.Elapsed; got != 40_000_000_000 {
+	if got := submitted[1].Decided.ElapsedNanos - submitted[0].Decided.ElapsedNanos; got != 40_000_000_000 {
 		t.Fatalf("the interval between decisions is %dns, want 40s", got)
 	}
 	checked(t, s)
 
 	// A cancellation the trader asked for carries their clock; one the system
 	// derived carries nothing, because nobody decided it.
-	if err := s.CancelOrder("o1", second); !errors.Is(err, session.ErrNoSuchOrder) {
+	if err := s.CancelOrder("o1", decided(50_000_000_000)); !errors.Is(err, session.ErrNoSuchOrder) {
 		t.Fatalf("the fixture left a working order: %v", err)
 	}
 	for _, e := range s.Events() {
@@ -878,12 +884,12 @@ func TestWhatWasDerivedCannotClaimAPersonDecidedIt(t *testing.T) {
 	}{
 		{"an ending a fill required", session.KindProtectionEnded, func(e session.Event) session.Event {
 			v := e.(session.ProtectionEnded)
-			v.Decided = decidedAt
+			v.Decided = decidedAt()
 			return v
 		}},
 		{"a leg its sibling cancelled", session.KindOrderCancelled, func(e session.Event) session.Event {
 			v := e.(session.OrderCancelled)
-			v.Decided = decidedAt
+			v.Decided = decidedAt()
 			return v
 		}},
 	}
@@ -934,10 +940,10 @@ func TestTheMonotonicReadingCannotGoBack(t *testing.T) {
 		s := open(t)
 		// Five seconds of monotonic time passed; the world's clock was set
 		// back four seconds in between, which is what a time server does.
-		if err := submit(t, s, "o1", session.Decision{AtUTC: 5_000_000_000, Segment: 1, Elapsed: 0}); err != nil {
+		if err := submit(t, s, "o1", session.Decision{GestureID: "g-a", AtUTCNanos: 5_000_000_000, Segment: 1, ElapsedNanos: 0}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
-		if err := submit(t, s, "o2", session.Decision{AtUTC: 1_000_000_000, Segment: 1, Elapsed: 5_000_000_000}); err != nil {
+		if err := submit(t, s, "o2", session.Decision{GestureID: "g-b", AtUTCNanos: 1_000_000_000, Segment: 1, ElapsedNanos: 5_000_000_000}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
 		checked(t, s)
@@ -947,10 +953,10 @@ func TestTheMonotonicReadingCannotGoBack(t *testing.T) {
 		// A recovery ends a segment: nothing carries across it, so the next
 		// one starts from its own zero and no interval spans the two.
 		s := open(t)
-		if err := submit(t, s, "o1", session.Decision{AtUTC: 1_000, Segment: 1, Elapsed: 90_000_000_000}); err != nil {
+		if err := submit(t, s, "o1", session.Decision{GestureID: "g-a", AtUTCNanos: 1_000, Segment: 1, ElapsedNanos: 90_000_000_000}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
-		if err := submit(t, s, "o2", session.Decision{AtUTC: 2_000, Segment: 2, Elapsed: 0}); err != nil {
+		if err := submit(t, s, "o2", session.Decision{GestureID: "g-b", AtUTCNanos: 2_000, Segment: 2, ElapsedNanos: 0}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
 		checked(t, s)
@@ -961,17 +967,11 @@ func TestTheMonotonicReadingCannotGoBack(t *testing.T) {
 		first, later session.Decision
 	}{
 		{"the monotonic reading goes back inside one segment",
-			session.Decision{AtUTC: 1_000, Segment: 1, Elapsed: 5_000_000_000},
-			session.Decision{AtUTC: 2_000, Segment: 1, Elapsed: 1_000_000_000}},
+			session.Decision{GestureID: "g-a", AtUTCNanos: 1_000, Segment: 1, ElapsedNanos: 5_000_000_000},
+			session.Decision{GestureID: "g-b", AtUTCNanos: 2_000, Segment: 1, ElapsedNanos: 1_000_000_000}},
 		{"a segment is returned to",
-			session.Decision{AtUTC: 1_000, Segment: 2, Elapsed: 0},
-			session.Decision{AtUTC: 2_000, Segment: 1, Elapsed: 0}},
-		{"a decision with no moment in the world",
-			session.Decision{AtUTC: 1_000, Segment: 1, Elapsed: 0},
-			session.Decision{AtUTC: 0, Segment: 1, Elapsed: 1}},
-		{"time run negative inside a segment",
-			session.Decision{AtUTC: 1_000, Segment: 1, Elapsed: 0},
-			session.Decision{AtUTC: 2_000, Segment: 2, Elapsed: -1}},
+			session.Decision{GestureID: "g-a", AtUTCNanos: 1_000, Segment: 2, ElapsedNanos: 0},
+			session.Decision{GestureID: "g-b", AtUTCNanos: 2_000, Segment: 1, ElapsedNanos: 0}},
 	}
 	for _, tc := range refused {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1077,7 +1077,7 @@ func TestANameTheRecordCannotHoldIsRefused(t *testing.T) {
 				ID: id, Instrument: mnq, Side: market.SideBuy,
 				Type: market.OrderTypeMarket, Qty: 1,
 			}
-			if err := s.SubmitOrder(o, decidedAt); !errors.Is(err, market.ErrIdentifierCharacter) {
+			if err := s.SubmitOrder(o, decidedAt()); !errors.Is(err, market.ErrIdentifierCharacter) {
 				t.Fatalf("%q: got %v, want %v", id, err, market.ErrIdentifierCharacter)
 			}
 		}
@@ -1133,7 +1133,7 @@ func TestANameTheRecordCannotHoldIsRefused(t *testing.T) {
 			ID: "-", Instrument: mnq, Side: market.SideBuy,
 			Type: market.OrderTypeMarket, Qty: 1,
 		}
-		if err := s.SubmitOrder(o, decidedAt); !errors.Is(err, market.ErrReservedIdentifier) {
+		if err := s.SubmitOrder(o, decidedAt()); !errors.Is(err, market.ErrReservedIdentifier) {
 			t.Fatalf("got %v, want %v", err, market.ErrReservedIdentifier)
 		}
 		// It is only the whole name that is reserved; a dash inside one is fine.
@@ -1150,23 +1150,166 @@ func TestANameTheRecordCannotHoldIsRefused(t *testing.T) {
 // computed from, which is the half the hypothesis needs.
 func TestADecisionIsWhollyPresentOrWhollyAbsent(t *testing.T) {
 	half := []session.Decision{
-		{AtUTC: 1_764_000_000_000_000_000},
-		{Elapsed: 40_000_000_000},
-		{AtUTC: 1_764_000_000_000_000_000, Elapsed: 40_000_000_000},
+		// A moment, an interval or a gesture with no segment to place it in.
+		{AtUTCNanos: 1_764_000_000_000_000_000},
+		{ElapsedNanos: 40_000_000_000},
+		{GestureID: "g-1"},
+		// And a segment missing one of the three things a decision needs.
+		{Segment: 1, ElapsedNanos: 0, GestureID: "g-1"},
+		{Segment: 1, AtUTCNanos: 1_764_000_000_000_000_000},
+		{Segment: 1, AtUTCNanos: 1_764_000_000_000_000_000, GestureID: "g-1", ElapsedNanos: -1},
 	}
-	for _, d := range half {
+
+	t.Run("the door refuses it", func(t *testing.T) {
+		for _, d := range half {
+			s := newSession(t)
+			mustOpen(t, s, 2_000, "d1")
+			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+			before := s.JournalLen()
+			if err := s.SubmitOrder(order("o1", market.SideBuy, 1), d); !errors.Is(err, session.ErrMalformedDecision) {
+				t.Fatalf("%+v: got %v, want %v", d, err, session.ErrMalformedDecision)
+			}
+			if s.JournalLen() != before || s.NeedsRecovery() != nil {
+				t.Fatal("a refused decision recorded something, or stopped the session")
+			}
+		}
+	})
+
+	t.Run("and so do the readers", func(t *testing.T) {
+		// The door is not the only guard, because a journal can arrive from
+		// somewhere the door never stood.
+		for _, d := range half {
+			s := newSession(t)
+			mustOpen(t, s, 2_000, "d1")
+			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+			mustSubmit(t, s, order("o1", market.SideBuy, 1))
+
+			events := s.Events()
+			at := indexOfKind(t, events, session.KindOrderSubmitted, 1)
+			submitted := events[at].(session.OrderSubmitted)
+			submitted.Decided = d
+			events[at] = submitted
+
+			_, err := session.Replay(events)
+			if !errors.Is(err, session.ErrStructure) {
+				t.Fatalf("%+v: got %v, want %v", d, err, session.ErrStructure)
+			}
+			if !strings.Contains(err.Error(), "not the rest of it") {
+				t.Fatalf("%+v: rejected for another reason: %v", d, err)
+			}
+		}
+	})
+}
+
+// Scenario: a gesture is spent once, whatever it commanded
+//
+// The order identifier makes a repeated submission idempotent and nothing else.
+// A lost response to a replacement, a withdrawal or a cancellation, resent by
+// the browser, would otherwise arrive as a second human decision — and the log
+// exists to hold decisions, so an extra one is not a duplicate record but a
+// falsified finding.
+//
+// The gesture names the act rather than the thing acted on, so every human
+// command is covered by one rule. The set is reconstructed from the journal
+// rather than held in a server's memory, which is what makes it survive a
+// restart.
+func TestAGestureIsSpentOnceWhateverItCommanded(t *testing.T) {
+	t.Run("a replacement resent", func(t *testing.T) {
+		s := protectedSession(t, 18_900, 19_500)
+		act := decided(0)
+		if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_500, act); err != nil {
+			t.Fatalf("ReplaceProtection: %v", err)
+		}
+		before := s.JournalLen()
+		if err := s.ReplaceProtection(entryRef("entry"), 18_700, 19_500, act); !errors.Is(err, session.ErrGestureReused) {
+			t.Fatalf("error: got %v, want %v", err, session.ErrGestureReused)
+		}
+		if s.JournalLen() != before || onlyPlanned(t, s).StopPrice != 18_800 {
+			t.Fatal("a resent gesture changed the protection")
+		}
+		checked(t, s)
+	})
+
+	t.Run("a withdrawal resent", func(t *testing.T) {
+		s := protectedSession(t, 18_900, 19_500)
+		act := decided(0)
+		if err := s.CancelProtection(entryRef("entry"), act); err != nil {
+			t.Fatalf("CancelProtection: %v", err)
+		}
+		if err := s.CancelProtection(entryRef("entry"), act); !errors.Is(err, session.ErrGestureReused) {
+			t.Fatalf("error: got %v, want %v", err, session.ErrGestureReused)
+		}
+		checked(t, s)
+	})
+
+	t.Run("a cancellation resent", func(t *testing.T) {
+		s := protectedSession(t, 18_900, 19_500)
+		act := decided(0)
+		if err := s.CancelOrder("entry", act); err != nil {
+			t.Fatalf("CancelOrder: %v", err)
+		}
+		if err := s.CancelOrder("entry", act); !errors.Is(err, session.ErrGestureReused) {
+			t.Fatalf("error: got %v, want %v", err, session.ErrGestureReused)
+		}
+		checked(t, s)
+	})
+
+	t.Run("a gesture the record cannot write is refused", func(t *testing.T) {
 		s := newSession(t)
 		mustOpen(t, s, 2_000, "d1")
 		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
-		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), d); err != nil {
+		bad := decided(0)
+		bad.GestureID = "gesture 1"
+		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), bad); !errors.Is(err, market.ErrIdentifierCharacter) {
+			t.Fatalf("error: got %v, want %v", err, market.ErrIdentifierCharacter)
+		}
+	})
+
+	t.Run("and a journal claiming one act twice is refused", func(t *testing.T) {
+		// The door is not the only guard: a journal can arrive from somewhere
+		// the door never stood, and two decisions under one act would mean the
+		// analysis counted a retry as a second thing the person did.
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		mustSubmit(t, s, order("o1", market.SideBuy, 1))
+		mustSubmit(t, s, order("o2", market.SideBuy, 1))
+
+		events := s.Events()
+		first := events[indexOfKind(t, events, session.KindOrderSubmitted, 1)].(session.OrderSubmitted)
+		at := indexOfKind(t, events, session.KindOrderSubmitted, 2)
+		second := events[at].(session.OrderSubmitted)
+		second.Decided.GestureID = first.Decided.GestureID
+		events[at] = second
+
+		if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
+			t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+		}
+		if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
+			t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+		}
+	})
+
+	t.Run("and it survives a restart", func(t *testing.T) {
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		act := decided(0)
+		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), act); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
-		_, err := session.Replay(s.Events())
-		if !errors.Is(err, session.ErrStructure) {
-			t.Fatalf("%+v: got %v, want %v", d, err, session.ErrStructure)
+
+		state, err := session.Replay(s.Events())
+		if err != nil {
+			t.Fatalf("Replay: %v", err)
 		}
-		if !strings.Contains(err.Error(), "no segment to place it in") {
-			t.Fatalf("%+v: rejected for another reason: %v", d, err)
+		resumed, err := session.Resume(state, nil)
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
 		}
-	}
+		// The browser retries after the restart, under the same act.
+		if err := resumed.SubmitOrder(order("o2", market.SideBuy, 1), act); !errors.Is(err, session.ErrGestureReused) {
+			t.Fatalf("error: got %v, want %v", err, session.ErrGestureReused)
+		}
+	})
 }

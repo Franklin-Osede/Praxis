@@ -105,6 +105,11 @@ type ReplayedState struct {
 	ActiveProtections  []ActiveProtection
 	UsedOrderIDs       []string
 
+	// UsedGestures is every human act the journal holds. A resumed session
+	// carries it so that a retry after a restart is still recognised as the
+	// same decision rather than becoming a second one.
+	UsedGestures []string
+
 	// Working is the set of orders waiting for a later observation, in the
 	// order they were submitted. A session that resumed without it would
 	// forget a stop the trader believed was protecting them.
@@ -190,6 +195,9 @@ func Replay(events []Event) (*ReplayedState, error) {
 
 		if err := clock.check(e); err != nil {
 			return nil, fmt.Errorf("%w: event %d: %v", ErrStructure, n, err)
+		}
+		if err := protections.claimGesture(decidedAtOf(e)); err != nil {
+			return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
 		}
 
 		if _, ok := e.(PositionChanged); !ok && len(pendingChanges) > 0 && !owedConsequenceStandsHere(e, &protections) {
@@ -414,6 +422,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 	state.PlannedProtections = protections.snapshot()
 	state.ActiveProtections = protections.activeSnapshot()
 	state.UsedOrderIDs = protections.usedIdentifiers()
+	state.UsedGestures = protections.usedGestureIdentifiers()
 	state.Events = make([]Event, len(events))
 	copy(state.Events, events)
 	return state, nil
@@ -540,7 +549,7 @@ func proveOrderCancellation(submitted map[string]market.Order, book market.Quote
 type humanClock struct {
 	subjectID string
 	segment   uint64
-	elapsed   int64
+	elapsed   ElapsedNanos
 }
 
 // check refuses a journal whose record of human decisions is incoherent.
@@ -555,13 +564,16 @@ type humanClock struct {
 func (h *humanClock) check(e Event) error {
 	d := decidedAtOf(e)
 	if d.Malformed() {
-		return fmt.Errorf("%v: records part of a decision — %+v — and no segment to place it in",
+		return fmt.Errorf("%v: records part of a decision — %+v — and not the rest of it",
 			e.Header().Kind, d)
 	}
 
 	if !d.IsZero() {
-		// A segment is a run of uninterrupted interaction. It never goes back:
-		// a recovery starts a new one and nothing returns to an old one.
+		// A segment is a run of uninterrupted interaction and only ever goes
+		// up. An old one reappearing would be a stale tab interleaving its
+		// decisions with a resumed session's, which is the failure a single
+		// lease on the controls exists to prevent and this is the record of
+		// that lease holding.
 		if d.Segment < h.segment {
 			return fmt.Errorf("%v: decided in segment %d, after segment %d",
 				e.Header().Kind, d.Segment, h.segment)
@@ -569,20 +581,11 @@ func (h *humanClock) check(e Event) error {
 		// Within one segment the monotonic reading never goes back either. A
 		// new segment may begin at any elapsed, because nothing carries across
 		// the interruption that ended the last one.
-		if d.Segment == h.segment && d.Elapsed < h.elapsed {
+		if d.Segment == h.segment && d.ElapsedNanos < h.elapsed {
 			return fmt.Errorf("%v: decided %dns into segment %d, after %dns into it",
-				e.Header().Kind, d.Elapsed, d.Segment, h.elapsed)
+				e.Header().Kind, d.ElapsedNanos, d.Segment, h.elapsed)
 		}
-		if d.Elapsed < 0 {
-			return fmt.Errorf("%v: decided %dns into its segment", e.Header().Kind, d.Elapsed)
-		}
-		// A decision that happened has a moment in the world, whatever order
-		// the world's clock reports them in.
-		if d.AtUTC == 0 {
-			return fmt.Errorf("%v: decided in segment %d and carries no wall-clock moment",
-				e.Header().Kind, d.Segment)
-		}
-		h.segment, h.elapsed = d.Segment, d.Elapsed
+		h.segment, h.elapsed = d.Segment, d.ElapsedNanos
 	}
 
 	// Zero means no person was there. Establishing that made the converse a
@@ -834,7 +837,7 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 		committer:           committer,
 	}
 	resumed.protections.restore(state.PlannedProtections, state.ActiveProtections,
-		state.Config.Instrument.Symbol, state.UsedOrderIDs)
+		state.Config.Instrument.Symbol, state.UsedOrderIDs, state.UsedGestures)
 	return resumed, nil
 }
 
@@ -898,6 +901,9 @@ func Verify(events []Event) error {
 			return fmt.Errorf("%w: %v", ErrContradictoryLog, owedErr)
 		}
 		if err := clock.check(e); err != nil {
+			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+		}
+		if err := protections.claimGesture(decidedAtOf(e)); err != nil {
 			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
 		}
 

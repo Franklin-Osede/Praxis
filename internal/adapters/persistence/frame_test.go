@@ -60,7 +60,7 @@ func TestTheFrameGolden(t *testing.T) {
 		t.Fatalf("version line: got %q", lines[0])
 	}
 
-	payload := "session_started 1000 1 MNQ 50 5000000 50 5000000 100000 300000 200000 250000 s-07\n"
+	payload := "session_started 1000 1 MNQ 50 5000000 50 5000000 100000 300000 200000 250000 s-07 pilot\n"
 	metadata := fmt.Sprintf("%020d %020d %020d %020d %020d", 1, len(payload), 1, 1, 1)
 	sum := crc32.Checksum([]byte(metadata+"\n"+payload), crc32.MakeTable(crc32.Castagnoli))
 	want := fmt.Sprintf("BATCH %s CRC32C:%08x", metadata, sum)

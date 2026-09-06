@@ -167,7 +167,7 @@ func TestTheJournalIsOneContiguousOrdering(t *testing.T) {
 	if err := s.OpenTradingSession(3_000, "d2"); err == nil {
 		t.Fatal("opening a second session was accepted")
 	}
-	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1), decidedAt); err == nil {
+	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1), decidedAt()); err == nil {
 		t.Fatal("an order without an observation was accepted")
 	}
 	other := quote(3_000, 20_000, 20_001)

@@ -637,6 +637,9 @@ func (s *Session) prepareOrder(o market.Order, decided Decision) (preparedOrder,
 	if s.protections.used(o.ID) {
 		return preparedOrder{}, fmt.Errorf("%w: %s", ErrOrderIDReused, o.ID)
 	}
+	if err := s.checkGesture(decided); err != nil {
+		return preparedOrder{}, err
+	}
 	at := s.lastQuote.Time
 	if err := s.journal.ValidateNext(at, s.sequence+1); err != nil {
 		return preparedOrder{}, err
@@ -685,6 +688,9 @@ func (s *Session) recordOrder(p preparedOrder) error {
 		return err
 	}
 	if err := s.protections.claim(p.order.ID); err != nil {
+		return err
+	}
+	if err := s.protections.claimGesture(p.decided); err != nil {
 		return err
 	}
 	var err error
@@ -785,6 +791,9 @@ func (s *Session) cancelOrder(id string, decided Decision) error {
 	if !s.sessionOpen {
 		return ErrNoSessionOpen
 	}
+	if err := s.checkGesture(decided); err != nil {
+		return err
+	}
 	if s.ended() {
 		return ErrChallengeEnded
 	}
@@ -806,6 +815,9 @@ func (s *Session) cancelOrder(id string, decided Decision) error {
 				Reason: CancelledByTrader, Decided: decided,
 			}
 		}); err != nil {
+			return err
+		}
+		if err := s.protections.claimGesture(decided); err != nil {
 			return err
 		}
 		s.working = append(s.working[:n], s.working[n+1:]...)

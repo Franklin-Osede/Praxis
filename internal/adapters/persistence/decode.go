@@ -52,6 +52,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		}
 		if knows(version, EventVersionV4) {
 			cfg.SubjectID = r.optionalID()
+			cfg.Pacing = r.pacing()
 		}
 		event = session.SessionStarted{Envelope: envelope(at, sequence, kind), Config: cfg}
 
@@ -274,8 +275,25 @@ func (r *reader) logicalTime() market.LogicalTime { return market.LogicalTime(r.
 func (r *reader) cents() market.Cents             { return market.Cents(r.int()) }
 func (r *reader) ticks() market.Ticks             { return market.Ticks(r.int()) }
 func (r *reader) qty() market.Qty                 { return market.Qty(r.int()) }
+func (r *reader) pacing() session.PacingMode {
+	s := r.next()
+	for k, name := range pacingNames {
+		if name == s {
+			return k
+		}
+	}
+	r.fail(fmt.Errorf("%w: pacing mode %q", ErrSyntax, s))
+	return 0
+}
+
 func (r *reader) decision() session.Decision {
-	return session.Decision{AtUTC: r.int(), Segment: r.uint(), Elapsed: r.int()}
+	return session.Decision{
+		GestureID:  r.optionalID(),
+		AtUTCNanos: session.UnixNanos(r.int()),
+		Segment:    r.uint(),
+
+		ElapsedNanos: session.ElapsedNanos(r.int()),
+	}
 }
 
 // optionalID reads an identifier that may legitimately be absent.

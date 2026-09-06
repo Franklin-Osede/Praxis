@@ -570,13 +570,28 @@ session that was entirely honest — one connection to one kernel does not make 
 wall clock monotonic, and the failure it was catching was a real one solved in
 the wrong place.
 
-`Segment` and `Elapsed` are where intervals come from. A segment is a run of
-uninterrupted interaction, numbered from one; a recovery starts a new one,
-because the monotonic reading that made `Elapsed` meaningful did not survive the
-interruption. Within a segment `Elapsed` never goes back; a new segment may
-begin at any value; and **an interval is never computed across two**. A wait
-that spanned a recovery is recorded as having spanned one, and whether such
-cases are excluded is a question for the pilots rather than for the engine.
+`Segment` and `ElapsedNanos` are where intervals come from. A segment is a run
+of uninterrupted interaction, numbered from one; a recovery or a reload starts a
+new one, because the monotonic reading that made `ElapsedNanos` meaningful did
+not survive the interruption. Within a segment it never goes back; a new segment
+may begin at any value; **an old segment never reappears**, or a stale tab could
+interleave its decisions with a resumed session's; and **an interval is never
+computed across two**. A wait that spanned a recovery is recorded as having
+spanned one, and whether such cases are excluded is a question for the pilots
+rather than for the engine.
+
+The units are in the names — `UnixNanos`, `ElapsedNanos` — because a journal is
+read by people who did not write it, and an integer timestamp whose unit has to
+be inferred is a format that means two things.
+
+`GestureID` names the act rather than the thing acted on, and that is what makes
+**every** human command idempotent rather than only a submission. An order
+identifier covers a resent order; it does nothing for a resent replacement, a
+resent withdrawal or a resent cancellation, each of which would otherwise arrive
+as a second human decision — and in a log that exists to hold decisions, an
+extra one is not a duplicate record but a falsified finding. A gesture is spent
+forever, exactly as an order identifier is, and the set is reconstructed from
+the journal rather than held in a server's memory, so it survives a restart.
 
 A decision is wholly present or wholly absent: a stamp with a moment in the
 world and no segment would read as an absence while plainly recording that
@@ -585,14 +600,21 @@ records a decision for every human command in it, one nobody traded records
 none, and an event the log itself required records none either, because nobody
 commanded it.
 
-Latency is `decision.Elapsed − presentation.Elapsed` within one segment, which
-needs the moment an observation was put in front of the person. That field is
-**not here yet, deliberately**: the thing that presents observations is the
-interface, and this repository's hardest-won lesson is that a schema is not
-proven until something both produces and consumes it — `praxis.event.v2`
-declared protection events ahead of any producer and every one of them was
-wrong. It lands with the interface, while `praxis.event.v4` is still a draft,
-and therefore before the first pilot journal.
+Latency is `decision.ElapsedNanos − presentation.ElapsedNanos` **within one
+segment and from one clock**. If the presentation were stamped by the server and
+the decision by the browser, the subtraction would mean nothing. For a local
+interface both come from the server — the moment state was sent, and the moment
+the command arrived — which includes render and transport in the measure, but
+both are small and consistent. If the pilots show that separating rendering
+matters, the browser acknowledges presentation and both stamps move there.
+
+The presentation stamp itself is **not here yet, deliberately**: the thing that
+presents observations is the interface, and this repository's hardest-won lesson
+is that a schema is not proven until something both produces and consumes it —
+`praxis.event.v2` declared protection events ahead of any producer and every one
+of them was wrong. It lands **in the interface's first vertical slice**, while
+`praxis.event.v4` is still a draft, and therefore before the first pilot
+journal.
 
 Checking a log against itself is not enough, and the difference is testable. A
 forged realised amount can be made internally coherent by adjusting every
@@ -1071,6 +1093,16 @@ speed, and the moment each observation was presented — because wanting to paus
 is itself data about time pressure and is one of the things the pilots exist to
 find out.
 
+**Which of the two a session was is configuration, not a screen setting.**
+`Config.Pacing` is `scripted`, `pilot` or `confirmatory`, so it sits inside the
+digest a pre-registration records. A participant who could change the pacing
+could change the experiment, and a journal that did not say which condition
+produced it would be a session nobody can classify afterwards.
+
+The confirmatory mode is **not built yet**, and should not be until the pilot
+interface has shown it can measure presentation, gesture, recovery and exclusive
+control without losing or duplicating a decision.
+
 **What is on screen is a claim the journal is already making.**
 `OrderContext.ConsecutiveLosingTrades` is documented as what the trader knew,
 and the only thing that can make that true is the interface showing it. If the
@@ -1121,11 +1153,25 @@ this document forbids unrecorded randomness, and a browser's random source is
 exactly that — a value nothing can reproduce, deciding which of two journals is
 the real one.
 
+The identifier travels on the decision, not on the order, so it covers every
+human command and not only a submission. The kernel refuses a gesture it has
+already recorded; what the application loop does with that refusal is the other
+half:
+
+```text
+same gesture, same command    -> already committed, with the state it produced
+same gesture, different payload -> conflict
+a gesture never seen          -> execute
+```
+
 A repeated request that already committed must not come back as "that name is
-taken". The server answers **already committed**, with the state that commit
-produced, so a lost HTTP response is a retry rather than a false alarm in front
-of the participant. The refusal and the report are different facts and the
-interface has to tell them apart.
+taken". A lost HTTP response is a retry, not a false alarm in front of the
+participant, and the refusal and the report are different facts the interface
+has to tell apart.
+
+**One lease on the controls.** A reload takes a new lease and starts a new
+segment; the tab it replaced can no longer act, which is what the rule that an
+old segment never reappears records after the fact.
 
 One active connection: a second tab is a second hand on the wheel, and the
 kernel's inputs must arrive in one order.

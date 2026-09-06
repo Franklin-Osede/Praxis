@@ -52,6 +52,11 @@ var (
 		session.ProtectionFlipped:            "flipped",
 		session.ProtectionExecuted:           "executed",
 	}
+	pacingNames = map[session.PacingMode]string{
+		session.PacingScripted:     "scripted",
+		session.PacingPilot:        "pilot",
+		session.PacingConfirmatory: "confirmatory",
+	}
 	cancelReasonNames = map[session.CancelReason]string{
 		session.CancelledByTrader:            "by_trader",
 		session.CancelledUnfillableRemainder: "unfillable_remainder",
@@ -96,8 +101,10 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		f.int(int64(v.Config.Rules.TrailingDrawdownCts))
 		if knows(version, EventVersionV4) {
 			f.optionalID(v.Config.SubjectID)
-		} else if v.Config.SubjectID != "" {
-			return "", fmt.Errorf("%w: %s cannot say who traded it", ErrUnsupportedInVersion, version)
+			f.enum(pacingNames[v.Config.Pacing], "pacing mode")
+		} else if v.Config.SubjectID != "" || v.Config.Pacing != session.PacingScripted {
+			return "", fmt.Errorf("%w: %s cannot say who traded it, or how",
+				ErrUnsupportedInVersion, version)
 		}
 
 	case session.SessionOpened:
@@ -275,12 +282,13 @@ func (f *fields) uint(v uint64) *fields {
 // dropping it: a journal that silently lost when its decisions were taken would
 // be a behavioural record missing the behaviour.
 //
-// Three fields, because a decision has two clocks and they answer different
-// questions: the moment in the world, and the monotonic reading within the run
-// of interaction it belongs to. See session.Decision.
+// Four fields: which gesture it was, the moment in the world, the run of
+// interaction it belongs to, and the monotonic reading within that run. The two
+// clocks answer different questions and neither substitutes for the other. See
+// session.Decision.
 func (f *fields) decidedAt(version string, d session.Decision) error {
 	if knows(version, EventVersionV4) {
-		f.int(d.AtUTC).uint(d.Segment).int(d.Elapsed)
+		f.optionalID(d.GestureID).int(int64(d.AtUTCNanos)).uint(d.Segment).int(int64(d.ElapsedNanos))
 		return nil
 	}
 	if !d.IsZero() {

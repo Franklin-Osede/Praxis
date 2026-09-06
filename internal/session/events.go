@@ -110,6 +110,47 @@ type Config struct {
 	// version rule adding it after the first recorded session would be a new
 	// payload version with a migration behind it. It costs nothing today.
 	SubjectID string
+
+	// Pacing is the condition this journal was produced under. It is
+	// configuration and not a screen setting, because a participant who could
+	// change it could change the experiment: identical prices are not the same
+	// as identical pacing, and two subjects who moved through one file at
+	// different speeds are not in the same study. Being here puts it inside
+	// the digest a pre-registration records.
+	Pacing PacingMode
+}
+
+// PacingMode says how observations reached the person.
+type PacingMode uint8
+
+const (
+	// PacingScripted is nobody: a replay, a test, a driven feed.
+	PacingScripted PacingMode = iota
+
+	// PacingPilot allows the participant the controls — advancing by hand,
+	// pausing, resuming — because wanting to pause is itself data about time
+	// pressure and is one of the things the pilots exist to find out. Every
+	// use of them is recorded.
+	PacingPilot
+
+	// PacingConfirmatory is a fixed automatic cadence: no manual advance, no
+	// pause, no rewind, no speed control, and the same information visible to
+	// everyone. "Advance by hand with no pause button" is not this — a
+	// participant who decides when to press Next can stop for forty seconds
+	// first, and removing the button removes the name rather than the
+	// behaviour.
+	PacingConfirmatory
+)
+
+func (p PacingMode) String() string {
+	switch p {
+	case PacingPilot:
+		return "pilot"
+	case PacingConfirmatory:
+		return "confirmatory"
+	default:
+		return "scripted"
+	}
 }
 
 // SessionStarted opens the log. It carries the configuration, and nothing else
@@ -198,36 +239,61 @@ type OrderSubmitted struct {
 	Decided Decision
 }
 
-// Decision is when a person acted, in the two forms that answer different
-// questions. Neither substitutes for the other and neither is a clock the
-// kernel reads: both arrive as data from whatever witnessed the act.
+// UnixNanos is nanoseconds since the Unix epoch, UTC. The unit is in the name
+// because a journal is read by people who did not write it, and an integer
+// timestamp whose unit has to be inferred is a format that means two things.
+type UnixNanos int64
+
+// ElapsedNanos is nanoseconds since a segment of interaction began.
+type ElapsedNanos int64
+
+// Decision is a person acting: which gesture it was, and when, in the two forms
+// that answer different questions. Neither clock substitutes for the other and
+// neither is one the kernel reads: all of it arrives as data from whatever
+// witnessed the act.
 //
 // The market's time is in the envelope and is not this. Two orders sent between
 // one tick and the next carry the same envelope time, because the market did
 // not move, so the interval a hypothesis about hesitation measures is not there.
+//
+// A decision is wholly absent or wholly present:
+//
+//	absent:   no gesture, no moment, no segment, no elapsed
+//	present:  a gesture, Segment > 0, ElapsedNanos >= 0, AtUTCNanos != 0
 type Decision struct {
-	// AtUTC is nanoseconds since the Unix epoch on the participant's own
-	// clock. It is for audit — saying when in the world something happened —
-	// and it is **never compared for order**. A wall clock can legitimately
-	// move backwards: a time server corrects it, an operator sets it, a
-	// suspended machine resumes. Treating a corrected clock as a corrupt
-	// journal would refuse a session that was entirely honest, and one
-	// connection to one kernel does not make a wall clock monotonic.
-	AtUTC int64
+	// GestureID names the act, not the thing it acted on, and it is minted by
+	// the client at the instant of the gesture. It is what makes every human
+	// command idempotent rather than only a submission: a lost response to a
+	// replace, retried, arrives under the same gesture and is recognised as
+	// the same decision instead of becoming a second one.
+	//
+	// It is never reused, anywhere in a journal, for the same reason an order
+	// identifier is not: a name that has been spent stays attributable.
+	GestureID string
 
-	// Segment is a run of uninterrupted interaction, numbered from one. A
-	// recovery starts a new one, because nothing spans the interruption: the
-	// monotonic reading that made Elapsed meaningful did not survive it. Zero
-	// means no person was there at all, which is the honest shape of a
-	// scripted run.
+	// AtUTCNanos is the participant's own clock. It is for audit — saying when
+	// in the world something happened — and it is **never compared for order**.
+	// A wall clock can legitimately move backwards: a time server corrects it,
+	// an operator sets it, a suspended machine resumes. Treating a corrected
+	// clock as a corrupt journal would refuse a session that was entirely
+	// honest, and one connection to one kernel does not make a wall clock
+	// monotonic.
+	AtUTCNanos UnixNanos
+
+	// Segment is a run of uninterrupted interaction, numbered from one, and it
+	// only ever goes up. A recovery or a reload starts a new one, because the
+	// monotonic reading that made ElapsedNanos meaningful did not survive the
+	// interruption — and an old segment must never reappear, or a stale tab
+	// could interleave its decisions with a resumed session's. Zero means no
+	// person was there at all, which is the honest shape of a scripted run.
 	Segment uint64
 
-	// Elapsed is monotonic nanoseconds since its segment began, and it is what
-	// an interval is computed from. Within one segment it never goes
-	// backwards. Across two, it is not subtracted at all: an interval that
-	// spanned a recovery is recorded as spanning one, and whether such cases
-	// are excluded is a question for the pilots rather than for the engine.
-	Elapsed int64
+	// ElapsedNanos is monotonic since its segment began, and it is what an
+	// interval is computed from. Within one segment it never goes backwards.
+	// Across two it is not subtracted at all: an interval that spanned a
+	// recovery is recorded as spanning one, and whether such cases are
+	// excluded is a question for the pilots rather than for the engine.
+	ElapsedNanos ElapsedNanos
 }
 
 // IsZero reports that nobody was there. A segment is numbered from one, so a
@@ -241,7 +307,10 @@ func (d Decision) IsZero() bool { return d.Segment == 0 }
 // and the half that survived would be the half no interval can be computed
 // from.
 func (d Decision) Malformed() bool {
-	return d.Segment == 0 && (d.AtUTC != 0 || d.Elapsed != 0)
+	if d.Segment == 0 {
+		return d.AtUTCNanos != 0 || d.ElapsedNanos != 0 || d.GestureID != ""
+	}
+	return d.AtUTCNanos == 0 || d.ElapsedNanos < 0 || d.GestureID == ""
 }
 
 // CancelReason says why an order stopped working. It is a fact about what the

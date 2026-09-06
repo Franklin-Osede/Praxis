@@ -22,7 +22,7 @@ func protectedSession(t *testing.T, stop, target market.Ticks) *session.Session 
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
-	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 2, 19_000), stop, target, decidedAt); err != nil {
+	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 2, 19_000), stop, target, decidedAt()); err != nil {
 		t.Fatalf("SubmitOrderWithProtection: %v", err)
 	}
 	return s
@@ -111,7 +111,7 @@ func TestAProtectionWithNoLevelsIsRefusedWithoutTrace(t *testing.T) {
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 
 	before := s.JournalLen()
-	err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 2, 19_000), 0, 0, decidedAt)
+	err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 2, 19_000), 0, 0, decidedAt())
 	if !errors.Is(err, session.ErrProtectionEmpty) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrProtectionEmpty)
 	}
@@ -123,7 +123,7 @@ func TestAProtectionWithNoLevelsIsRefusedWithoutTrace(t *testing.T) {
 	}
 
 	// And the name is still free, so nothing was reserved.
-	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 2, 19_000), 18_900, 0, decidedAt); err != nil {
+	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 2, 19_000), 18_900, 0, decidedAt()); err != nil {
 		t.Fatalf("the identifier was consumed by a refusal: %v", err)
 	}
 }
@@ -133,12 +133,12 @@ func TestARefusedOrderReservesNoNames(t *testing.T) {
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
-	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 2, 19_000), 18_900, 0, decidedAt); err != nil {
+	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 2, 19_000), 18_900, 0, decidedAt()); err != nil {
 		t.Fatalf("SubmitOrderWithProtection: %v", err)
 	}
 
 	before := s.JournalLen()
-	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 1, 19_000), 18_800, 0, decidedAt); !errors.Is(err, session.ErrDuplicateOrderID) {
+	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 1, 19_000), 18_800, 0, decidedAt()); !errors.Is(err, session.ErrDuplicateOrderID) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrDuplicateOrderID)
 	}
 	if s.JournalLen() != before || len(s.PlannedProtections()) != 1 {
@@ -154,7 +154,7 @@ func TestARefusedOrderReservesNoNames(t *testing.T) {
 func TestChangingAPlannedProtection(t *testing.T) {
 	s := protectedSession(t, 18_900, 19_500)
 
-	if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_500, decidedAt); err != nil {
+	if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_500, decidedAt()); err != nil {
 		t.Fatalf("ReplaceProtection: %v", err)
 	}
 	planned := onlyPlanned(t, s)
@@ -190,7 +190,7 @@ func TestChangingAPlannedProtection(t *testing.T) {
 func TestReplacingFromNothingIsNotWidening(t *testing.T) {
 	s := protectedSession(t, 0, 19_500)
 
-	if err := s.ReplaceProtection(entryRef("entry"), 18_900, 19_500, decidedAt); err != nil {
+	if err := s.ReplaceProtection(entryRef("entry"), 18_900, 19_500, decidedAt()); err != nil {
 		t.Fatalf("ReplaceProtection: %v", err)
 	}
 	for _, e := range s.Events() {
@@ -208,7 +208,7 @@ func TestReplacingFromNothingIsNotWidening(t *testing.T) {
 func TestWithdrawingAProtectionKeepsTheEntry(t *testing.T) {
 	s := protectedSession(t, 18_900, 19_500)
 
-	if err := s.CancelProtection(entryRef("entry"), decidedAt); err != nil {
+	if err := s.CancelProtection(entryRef("entry"), decidedAt()); err != nil {
 		t.Fatalf("CancelProtection: %v", err)
 	}
 	if len(s.PlannedProtections()) != 0 {
@@ -235,15 +235,15 @@ func TestWithdrawingAProtectionKeepsTheEntry(t *testing.T) {
 // Scenario: a protection that no longer exists cannot be acted on
 func TestActingOnAWithdrawnProtection(t *testing.T) {
 	s := protectedSession(t, 18_900, 19_500)
-	if err := s.CancelProtection(entryRef("entry"), decidedAt); err != nil {
+	if err := s.CancelProtection(entryRef("entry"), decidedAt()); err != nil {
 		t.Fatalf("CancelProtection: %v", err)
 	}
 	before := s.JournalLen()
 
-	if err := s.CancelProtection(entryRef("entry"), decidedAt); !errors.Is(err, session.ErrNoSuchProtection) {
+	if err := s.CancelProtection(entryRef("entry"), decidedAt()); !errors.Is(err, session.ErrNoSuchProtection) {
 		t.Fatalf("cancelling twice: got %v, want %v", err, session.ErrNoSuchProtection)
 	}
-	if err := s.ReplaceProtection(entryRef("entry"), 18_800, 0, decidedAt); !errors.Is(err, session.ErrNoSuchProtection) {
+	if err := s.ReplaceProtection(entryRef("entry"), 18_800, 0, decidedAt()); !errors.Is(err, session.ErrNoSuchProtection) {
 		t.Fatalf("replacing after cancelling: got %v, want %v", err, session.ErrNoSuchProtection)
 	}
 	if s.JournalLen() != before {
@@ -256,7 +256,7 @@ func TestReplacingWithNothingIsRefused(t *testing.T) {
 	s := protectedSession(t, 18_900, 19_500)
 	before := s.JournalLen()
 
-	if err := s.ReplaceProtection(entryRef("entry"), 0, 0, decidedAt); !errors.Is(err, session.ErrProtectionEmpty) {
+	if err := s.ReplaceProtection(entryRef("entry"), 0, 0, decidedAt()); !errors.Is(err, session.ErrProtectionEmpty) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrProtectionEmpty)
 	}
 	if s.JournalLen() != before || onlyPlanned(t, s).StopPrice != 18_900 {
@@ -301,7 +301,7 @@ func TestLevelsOnTheWrongSidesAreRefused(t *testing.T) {
 			if tc.side == market.SideSell {
 				limit = 21_000
 			}
-			err := s.SubmitOrderWithProtection(limitOrder(t, "entry", tc.side, 2, limit), tc.stop, tc.target, decidedAt)
+			err := s.SubmitOrderWithProtection(limitOrder(t, "entry", tc.side, 2, limit), tc.stop, tc.target, decidedAt())
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("error: got %v, want %v", err, tc.want)
 			}
@@ -324,7 +324,7 @@ func TestAReplacementCannotInvertTheLevels(t *testing.T) {
 	s := protectedSession(t, 18_900, 19_500)
 	before := s.JournalLen()
 
-	if err := s.ReplaceProtection(entryRef("entry"), 19_600, 19_500, decidedAt); !errors.Is(err, session.ErrProtectionInverted) {
+	if err := s.ReplaceProtection(entryRef("entry"), 19_600, 19_500, decidedAt()); !errors.Is(err, session.ErrProtectionInverted) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrProtectionInverted)
 	}
 	if s.JournalLen() != before || onlyPlanned(t, s).StopPrice != 18_900 {
@@ -332,7 +332,7 @@ func TestAReplacementCannotInvertTheLevels(t *testing.T) {
 	}
 
 	// Moving a single level past nothing is still allowed.
-	if err := s.ReplaceProtection(entryRef("entry"), 19_400, 19_500, decidedAt); err != nil {
+	if err := s.ReplaceProtection(entryRef("entry"), 19_400, 19_500, decidedAt()); err != nil {
 		t.Fatalf("a replacement the right way round was refused: %v", err)
 	}
 }
@@ -345,11 +345,11 @@ func TestIdentifiersAreSpentForever(t *testing.T) {
 
 	// An order that finishes still owns its name.
 	mustSubmit(t, s, order("used", market.SideBuy, 1))
-	if err := s.SubmitOrder(order("used", market.SideSell, 1), decidedAt); !errors.Is(err, session.ErrOrderIDReused) {
+	if err := s.SubmitOrder(order("used", market.SideSell, 1), decidedAt()); !errors.Is(err, session.ErrOrderIDReused) {
 		t.Fatalf("reusing a finished name: got %v, want %v", err, session.ErrOrderIDReused)
 	}
 
-	if err := s.SubmitOrder(limitOrder(t, "praxis:1:stop", market.SideBuy, 1, 19_000), decidedAt); !errors.Is(err, session.ErrReservedNamespace) {
+	if err := s.SubmitOrder(limitOrder(t, "praxis:1:stop", market.SideBuy, 1, 19_000), decidedAt()); !errors.Is(err, session.ErrReservedNamespace) {
 		t.Fatalf("the reserved namespace: got %v, want %v", err, session.ErrReservedNamespace)
 	}
 }
@@ -362,12 +362,12 @@ func TestAPlannedProtectionReplaysAndResumes(t *testing.T) {
 	}{
 		{"as placed", func(*testing.T, *session.Session) {}},
 		{"after a change", func(t *testing.T, s *session.Session) {
-			if err := s.ReplaceProtection(entryRef("entry"), 18_800, 0, decidedAt); err != nil {
+			if err := s.ReplaceProtection(entryRef("entry"), 18_800, 0, decidedAt()); err != nil {
 				t.Fatalf("ReplaceProtection: %v", err)
 			}
 		}},
 		{"after withdrawal", func(t *testing.T, s *session.Session) {
-			if err := s.CancelProtection(entryRef("entry"), decidedAt); err != nil {
+			if err := s.CancelProtection(entryRef("entry"), decidedAt()); err != nil {
 				t.Fatalf("CancelProtection: %v", err)
 			}
 		}},
@@ -396,7 +396,7 @@ func TestAPlannedProtectionReplaysAndResumes(t *testing.T) {
 				t.Fatal("a resumed session forgot what was planned")
 			}
 			// And the names it already spent are still spent.
-			if err := resumed.SubmitOrder(order("entry", market.SideBuy, 1), decidedAt); err == nil {
+			if err := resumed.SubmitOrder(order("entry", market.SideBuy, 1), decidedAt()); err == nil {
 				t.Fatal("a resumed session reused a name")
 			}
 		})
@@ -407,10 +407,10 @@ func TestAPlannedProtectionReplaysAndResumes(t *testing.T) {
 func TestPropertyProtectionCommandsAreDeterministic(t *testing.T) {
 	build := func() []session.Event {
 		s := protectedSession(t, 18_900, 19_500)
-		if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_600, decidedAt); err != nil {
+		if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_600, decidedAt()); err != nil {
 			t.Fatalf("ReplaceProtection: %v", err)
 		}
-		if err := s.CancelProtection(entryRef("entry"), decidedAt); err != nil {
+		if err := s.CancelProtection(entryRef("entry"), decidedAt()); err != nil {
 			t.Fatalf("CancelProtection: %v", err)
 		}
 		return s.Events()
@@ -428,10 +428,10 @@ func TestPropertyProtectionCommandsAreDeterministic(t *testing.T) {
 // other command.
 func TestProtectionCommandsNeedASession(t *testing.T) {
 	s := newSession(t)
-	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 1, 19_000), 18_900, 0, decidedAt); !errors.Is(err, session.ErrNoSessionOpen) {
+	if err := s.SubmitOrderWithProtection(limitOrder(t, "entry", market.SideBuy, 1, 19_000), 18_900, 0, decidedAt()); !errors.Is(err, session.ErrNoSessionOpen) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrNoSessionOpen)
 	}
-	if err := s.CancelProtection(entryRef("entry"), decidedAt); !errors.Is(err, session.ErrNoSessionOpen) {
+	if err := s.CancelProtection(entryRef("entry"), decidedAt()); !errors.Is(err, session.ErrNoSessionOpen) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrNoSessionOpen)
 	}
 }
@@ -441,10 +441,10 @@ func TestProtectionCommandsNeedASession(t *testing.T) {
 func TestAReferenceToNothingIsRefused(t *testing.T) {
 	s := protectedSession(t, 18_900, 0)
 	ref := session.ProtectionRef{Kind: session.ProtectionRefEpisode, EpisodeID: 7}
-	if err := s.ReplaceProtection(ref, 18_800, 0, decidedAt); !errors.Is(err, session.ErrNoSuchProtection) {
+	if err := s.ReplaceProtection(ref, 18_800, 0, decidedAt()); !errors.Is(err, session.ErrNoSuchProtection) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrNoSuchProtection)
 	}
-	if err := s.CancelProtection(entryRef("nobody"), decidedAt); !errors.Is(err, session.ErrNoSuchProtection) {
+	if err := s.CancelProtection(entryRef("nobody"), decidedAt()); !errors.Is(err, session.ErrNoSuchProtection) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrNoSuchProtection)
 	}
 }
@@ -459,7 +459,7 @@ func TestAMalformedReferenceIsRefused(t *testing.T) {
 		{Kind: session.ProtectionRefEpisode},
 		{Kind: session.ProtectionRefEpisode, EpisodeID: 3, OrderID: "entry"},
 	} {
-		if err := s.CancelProtection(ref, decidedAt); !errors.Is(err, session.ErrProtectionRef) {
+		if err := s.CancelProtection(ref, decidedAt()); !errors.Is(err, session.ErrProtectionRef) {
 			t.Fatalf("%+v: got %v, want %v", ref, err, session.ErrProtectionRef)
 		}
 	}
@@ -477,7 +477,7 @@ func TestVerifyChecksTheDerivedPartsOfAChange(t *testing.T) {
 	build := func(t *testing.T) []session.Event {
 		t.Helper()
 		s := protectedSession(t, 18_900, 19_500)
-		if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_500, decidedAt); err != nil {
+		if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_500, decidedAt()); err != nil {
 			t.Fatalf("ReplaceProtection: %v", err)
 		}
 		return s.Events()
@@ -527,7 +527,7 @@ func TestVerifyChecksTheDerivedPartsOfAChange(t *testing.T) {
 // be false honestly and not only by omission.
 func TestTighteningAStopIsNotAWidening(t *testing.T) {
 	s := protectedSession(t, 18_900, 19_500)
-	if err := s.ReplaceProtection(entryRef("entry"), 18_950, 19_500, decidedAt); err != nil {
+	if err := s.ReplaceProtection(entryRef("entry"), 18_950, 19_500, decidedAt()); err != nil {
 		t.Fatalf("ReplaceProtection: %v", err)
 	}
 	for _, e := range s.Events() {
@@ -554,7 +554,7 @@ func TestCancellingAProtectedEntryEndsItsPlan(t *testing.T) {
 	s := protectedSession(t, 18_900, 19_500)
 	before := s.JournalLen()
 
-	if err := s.CancelOrder("entry", decidedAt); err != nil {
+	if err := s.CancelOrder("entry", decidedAt()); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	if planned := s.PlannedProtections(); len(planned) != 0 {
@@ -615,7 +615,7 @@ func TestAJournalCannotCancelAnEntryAndKeepItsPlan(t *testing.T) {
 	build := func(t *testing.T) []session.Event {
 		t.Helper()
 		s := protectedSession(t, 18_900, 19_500)
-		if err := s.CancelOrder("entry", decidedAt); err != nil {
+		if err := s.CancelOrder("entry", decidedAt()); err != nil {
 			t.Fatalf("CancelOrder: %v", err)
 		}
 		return s.Events()
@@ -647,7 +647,7 @@ func TestAJournalCannotCancelAnEntryAndKeepItsPlan(t *testing.T) {
 				Time: header.Time, Sequence: header.Sequence, Kind: session.KindOrderCancelled,
 			},
 			OrderID: "somebody-else", RemainingQty: 1,
-			Reason: session.CancelledByTrader, Decided: decidedAt,
+			Reason: session.CancelledByTrader, Decided: decidedAt(),
 		}
 
 		if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
@@ -669,12 +669,12 @@ func twoCancelledEntries(t *testing.T) []session.Event {
 	mustOpen(t, s, 2_000, "d1")
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 	for _, id := range []string{"a", "b"} {
-		if err := s.SubmitOrderWithProtection(limitOrder(t, id, market.SideBuy, 2, 19_000), 18_900, 19_500, decidedAt); err != nil {
+		if err := s.SubmitOrderWithProtection(limitOrder(t, id, market.SideBuy, 2, 19_000), 18_900, 19_500, decidedAt()); err != nil {
 			t.Fatalf("SubmitOrderWithProtection %s: %v", id, err)
 		}
 	}
 	for _, id := range []string{"a", "b"} {
-		if err := s.CancelOrder(id, decidedAt); err != nil {
+		if err := s.CancelOrder(id, decidedAt()); err != nil {
 			t.Fatalf("CancelOrder %s: %v", id, err)
 		}
 	}
@@ -747,7 +747,7 @@ func TestAnEndingMustFollowTheCancellationItAnswers(t *testing.T) {
 		{"an ending that claims another reason", func(t *testing.T, e []session.Event) {
 			at := indexOfKind(t, e, session.KindProtectionEnded, 1)
 			ended := e[at].(session.ProtectionEnded)
-			ended.Reason, ended.Decided = session.ProtectionWithdrawnByTrader, decidedAt
+			ended.Reason, ended.Decided = session.ProtectionWithdrawnByTrader, decidedAt()
 			e[at] = ended
 		}},
 	}
@@ -827,7 +827,7 @@ func TestAProtectionIsPlacedBeforeItsFill(t *testing.T) {
 			mustObserve(t, s, sized(3_000, 20_000, 20_001, tc.size))
 			before := s.JournalLen()
 
-			if err := s.SubmitOrderWithProtection(tc.entry(t), 19_900, 20_400, decidedAt); err != nil {
+			if err := s.SubmitOrderWithProtection(tc.entry(t), 19_900, 20_400, decidedAt()); err != nil {
 				t.Fatalf("SubmitOrderWithProtection: %v", err)
 			}
 			if got := kinds(s.Events()[before:]); !reflect.DeepEqual(got, tc.want) {
@@ -861,7 +861,7 @@ func TestAnEntryThatFillsNothingTakesItsPlanWithIt(t *testing.T) {
 	})
 	before := s.JournalLen()
 
-	if err := s.SubmitOrderWithProtection(order("entry", market.SideBuy, 2), 19_900, 20_400, decidedAt); err != nil {
+	if err := s.SubmitOrderWithProtection(order("entry", market.SideBuy, 2), 19_900, 20_400, decidedAt()); err != nil {
 		t.Fatalf("SubmitOrderWithProtection: %v", err)
 	}
 
@@ -912,7 +912,7 @@ func TestAFailureAfterTheProtectionLosesTheWholeBatch(t *testing.T) {
 	committed := len(committer.batches)
 
 	entry := order("entry", market.SideBuy, math.MaxInt64)
-	err = s.SubmitOrderWithProtection(entry, 19_900, 20_400, decidedAt)
+	err = s.SubmitOrderWithProtection(entry, 19_900, 20_400, decidedAt())
 	if !errors.Is(err, session.ErrSessionNeedsRecovery) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrSessionNeedsRecovery)
 	}
@@ -952,7 +952,7 @@ func TestAFailureAfterTheProtectionLosesTheWholeBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	if err := resumed.SubmitOrder(order("entry", market.SideBuy, 1), decidedAt); err != nil {
+	if err := resumed.SubmitOrder(order("entry", market.SideBuy, 1), decidedAt()); err != nil {
 		t.Fatalf("the failed command spent its identifier: %v", err)
 	}
 }

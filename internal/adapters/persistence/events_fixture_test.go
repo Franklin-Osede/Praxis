@@ -1,6 +1,7 @@
 package persistence_test
 
 import (
+	"strconv"
 	"testing"
 
 	"praxis/internal/adapters/persistence"
@@ -12,9 +13,22 @@ import (
 
 var mnq = market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 
-// humanAt is a stand-in for a person's clock, which the adapter supplies and
+// humanAt() is a stand-in for a person's clock, which the adapter supplies and
 // the kernel only records.
-var humanAt = session.Decision{AtUTC: 1_764_000_000_000_000_000, Segment: 1, Elapsed: 40_000_000_000}
+// gestures numbers the acts a fixture performs. A gesture identifier is spent
+// forever, so two commands cannot share one — which is the rule, not an
+// inconvenience: a repeated gesture is a retry, never a second decision.
+var gestures int
+
+func humanAt() session.Decision {
+	gestures++
+	return session.Decision{
+		GestureID:    "g-" + strconv.Itoa(gestures),
+		AtUTCNanos:   1_764_000_000_000_000_000,
+		Segment:      1,
+		ElapsedNanos: 40_000_000_000,
+	}
+}
 
 // everyEventTypeV2 is everyEventType plus the one thing only v2 added: a
 // decision carrying a losing-trade streak. The protection events that were
@@ -62,6 +76,9 @@ func everyEventTypeV3() []session.Event {
 // why both take a version of their own, and why the subject went in while v4
 // was still a draft rather than after the first recorded session.
 func everyEventTypeV4() []session.Event {
+	// The fixture is a fixed set of bytes, so its gestures are numbered from
+	// the same place every time it is built.
+	gestures = 0
 	events := everyEventTypeV3()
 	// Who traded it, and when they acted by their own clock. Both are fields
 	// on lines older versions already had, which is why both are v4.
@@ -69,12 +86,13 @@ func everyEventTypeV4() []session.Event {
 		switch v := e.(type) {
 		case session.SessionStarted:
 			v.Config.SubjectID = "s-07"
+			v.Config.Pacing = session.PacingPilot
 			events[n] = v
 		case session.OrderSubmitted:
-			v.Decided = humanAt
+			v.Decided = humanAt()
 			events[n] = v
 		case session.ProtectionReplaced:
-			v.Decided = humanAt
+			v.Decided = humanAt()
 			events[n] = v
 		}
 	}
@@ -220,7 +238,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
-	if err := s.SubmitOrder(buy, humanAt); err != nil {
+	if err := s.SubmitOrder(buy, humanAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
 	q2 := market.Quote{Instrument: mnq, Time: 4_000, Bid: 19_990, Ask: 19_991, BidSize: 50, AskSize: 50}
@@ -231,7 +249,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
-	if err := s.SubmitOrder(sell, humanAt); err != nil {
+	if err := s.SubmitOrder(sell, humanAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
 	if err := s.EndTradingSession(5_000); err != nil {
