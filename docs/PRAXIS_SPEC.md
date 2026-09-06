@@ -1023,6 +1023,18 @@ changes what a hypothesis about rule breaches on losing days is measuring:
 were shown". The inventory of what is displayed is written before the screen is
 drawn and belongs to the protocol, not the layout.
 
+**A name the record cannot hold is refused at the door.** Identifiers are
+letters, digits and `. _ : -`, and the domain enforces that — an order, a
+trading session boundary and a subject alike. This is the one place a domain
+rule is taken from the shape of the record, and the alternative is worse: a
+name the kernel accepted and the journal could not write was a valid command
+that poisoned the session at commit time, three good batches in, refusing every
+correct order after it. A system whose purpose is the record cannot let a
+decision exist that the record has no way to contain. The codec keeps its own
+gate, because a decoder must not trust the bytes it reads, and a test holds the
+two to the same set rather than assuming they agree. It matters more the moment
+an interface mints identifiers from what a person typed.
+
 **The order identifier comes from the gesture, not the server.** A duplicated
 submission — a double click, a retry after a timeout, a second tab — is the one
 way an interface puts a decision in the journal that no person took. The client

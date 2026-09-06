@@ -7,6 +7,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"praxis/internal/adapters/persistence"
+	"praxis/internal/market"
 )
 
 // Scenario: a golden cannot be regenerated without saying so twice
@@ -74,5 +77,35 @@ func TestTheFrozenPayloadsAreStillFrozen(t *testing.T) {
 	}
 	if len(listed) == 0 {
 		t.Fatalf("%s lists nothing", manifest)
+	}
+}
+
+// Scenario: the domain and the format agree on what a name may contain
+//
+// The domain refuses names the record cannot hold, so that a command which
+// could not be written down is never accepted. The format refuses them again,
+// because a decoder must not trust the bytes it is reading. Two implementations
+// of one rule is exactly the arrangement this project distrusts, so they are
+// held to the same set here rather than assumed to agree.
+func TestTheDomainAndTheFormatAgreeOnIdentifiers(t *testing.T) {
+	// Every rune the format could plausibly meet, plus the ones that broke it.
+	var candidates []rune
+	for r := rune(0); r < 128; r++ {
+		candidates = append(candidates, r)
+	}
+	candidates = append(candidates, 'ó', 'ñ', '€', '中', ' ')
+
+	for _, r := range candidates {
+		name := "a" + string(r) + "b"
+		domain := market.ValidIdentifier(name) == nil
+		format := persistence.ValidIdentifierForTest(name) == nil
+		if domain != format {
+			t.Fatalf("%q: the domain says %v and the format says %v", name, domain, format)
+		}
+	}
+
+	// And both refuse an empty name, which is not a character question.
+	if (market.ValidIdentifier("") == nil) != (persistence.ValidIdentifierForTest("") == nil) {
+		t.Fatal("the two disagree about an empty name")
 	}
 }

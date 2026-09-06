@@ -384,22 +384,23 @@ func (f *fields) done() (string, error) {
 
 // identifierAllowed is the whole escaping rule: a character outside it cannot
 // appear in an identifier, so no identifier ever needs quoting.
-func identifierAllowed(r rune) bool {
-	switch {
-	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		return true
-	case r == '.', r == '_', r == ':', r == '-':
-		return true
-	}
-	return false
-}
-
+// validIdentifier is the format's own gate, and it is deliberately a second
+// implementation of market.ValidIdentifier rather than a call to it.
+//
+// The domain refuses these names so that a command the record cannot hold is
+// never accepted in the first place. This one refuses them again because a
+// decoder must not trust the bytes it is reading, and because the format's
+// obligation stands whatever the domain later decides. TestTheDomainAndTheFormat
+// AgreeOnIdentifiers holds the two to the same set.
 func validIdentifier(s string) error {
 	if s == "" {
 		return fmt.Errorf("%w: identifier is empty", ErrIdentifier)
 	}
 	for _, r := range s {
-		if !identifierAllowed(r) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '_', r == ':', r == '-':
+		default:
 			return fmt.Errorf("%w: %q in %q", ErrIdentifier, r, s)
 		}
 	}

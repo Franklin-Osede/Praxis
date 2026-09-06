@@ -113,6 +113,14 @@ func New(cfg Config, at market.LogicalTime, committer BatchCommitter) (*Session,
 	if err := cfg.Instrument.Validate(); err != nil {
 		return nil, err
 	}
+	// A subject nobody can write down would poison the very first batch.
+	// Empty is legitimate — it says nobody traded this — so it is the one
+	// identifier allowed to be absent.
+	if cfg.SubjectID != "" {
+		if err := market.ValidIdentifier(cfg.SubjectID); err != nil {
+			return nil, err
+		}
+	}
 	if cfg.StartingBalanceCts != cfg.Rules.StartingBalanceCts {
 		return nil, fmt.Errorf("%w: account %d, evaluation %d",
 			ErrInconsistentConfig, cfg.StartingBalanceCts, cfg.Rules.StartingBalanceCts)
@@ -309,6 +317,12 @@ func (s *Session) OpenTradingSession(at market.LogicalTime, id challenge.Session
 func (s *Session) openTradingSession(at market.LogicalTime, id challenge.SessionID) error {
 	if s.sessionOpen {
 		return ErrSessionAlreadyOpen
+	}
+	// A boundary the journal cannot write down is a boundary the evaluation
+	// must not accept: it would move the challenge into a session the log
+	// then refuses, with nothing to reconcile them.
+	if err := market.ValidIdentifier(string(id)); err != nil {
+		return err
 	}
 	if s.ended() {
 		return ErrChallengeEnded

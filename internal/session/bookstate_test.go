@@ -1010,3 +1010,61 @@ func TestASubjectAndAClockMustAgree(t *testing.T) {
 		checked(t, s)
 	})
 }
+
+// Scenario: a name the record cannot hold is refused at the door
+//
+//	Given an order, a trading session or a subject named with a character the
+//	  journal has no way to write
+//	Then the command is refused, and nothing is recorded.
+//
+// Before this, all three were accepted by the domain and refused by the codec —
+// at commit time, three good batches in, taking the session with them and
+// refusing every perfectly valid order after it. A system whose entire purpose
+// is the record cannot let a decision exist that the record has no way to
+// contain, and this gets much worse the moment an interface mints identifiers
+// from whatever a person typed.
+func TestANameTheRecordCannotHoldIsRefused(t *testing.T) {
+	bad := []string{"o 1", "o\n1", "órden-1", "o/1", "o+1", "o=1", "orden#1", "o\t1"}
+
+	t.Run("an order", func(t *testing.T) {
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		before := s.JournalLen()
+
+		for _, id := range bad {
+			o := market.Order{
+				ID: id, Instrument: mnq, Side: market.SideBuy,
+				Type: market.OrderTypeMarket, Qty: 1,
+			}
+			if err := s.SubmitOrder(o, decidedAt); !errors.Is(err, market.ErrIdentifierCharacter) {
+				t.Fatalf("%q: got %v, want %v", id, err, market.ErrIdentifierCharacter)
+			}
+		}
+		if s.JournalLen() != before || s.NeedsRecovery() != nil {
+			t.Fatal("a refused name recorded something, or stopped the session")
+		}
+		// And the session is still usable, which is the whole point.
+		mustSubmit(t, s, order("o-1", market.SideBuy, 1))
+		checked(t, s)
+	})
+
+	t.Run("a trading session", func(t *testing.T) {
+		s := newSession(t)
+		if err := s.OpenTradingSession(2_000, "2026/08/27"); !errors.Is(err, market.ErrIdentifierCharacter) {
+			t.Fatalf("got %v, want %v", err, market.ErrIdentifierCharacter)
+		}
+		// The evaluation did not move either: a boundary the journal refuses
+		// must not have been accepted by the challenge first.
+		mustOpen(t, s, 2_000, "2026-08-27")
+		checked(t, s)
+	})
+
+	t.Run("a subject", func(t *testing.T) {
+		cfg := config()
+		cfg.SubjectID = "P-01 pilot"
+		if _, err := session.New(cfg, 1_000, nil); !errors.Is(err, market.ErrIdentifierCharacter) {
+			t.Fatalf("got %v, want %v", err, market.ErrIdentifierCharacter)
+		}
+	})
+}

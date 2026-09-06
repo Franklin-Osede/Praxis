@@ -289,6 +289,7 @@ type Order struct {
 // Errors describing why an order or a quote is not a valid domain value.
 var (
 	ErrEmptyOrderID         = errors.New("market: order id is empty")
+	ErrIdentifierCharacter  = errors.New("market: identifier uses a character that cannot be written down")
 	ErrEmptySymbol          = errors.New("market: instrument symbol is empty")
 	ErrInvalidSide          = errors.New("market: side is unspecified")
 	ErrInvalidOrderType     = errors.New("market: order type is unknown")
@@ -313,9 +314,36 @@ var (
 // unrepresentable: any caller can compose one directly. Validity therefore
 // lives on the value itself and every consumer checks it, so that the
 // constructor and the consumers cannot drift apart.
-func (o Order) Validate() error {
-	if o.ID == "" {
+// ValidIdentifier refuses a name the record cannot hold.
+//
+// The allowed set — letters, digits, and . _ : - — is the file format's, and
+// this is the one place the domain takes a rule from the shape of its own
+// record. It does so because the alternative is worse: a name the kernel
+// accepts and the journal cannot write is a valid command that poisons the
+// session at commit time, three batches in, with the next perfectly good order
+// refused after it. A system whose entire purpose is the record cannot let a
+// decision exist that the record has no way to contain.
+//
+// A protective leg is named praxis:<sequence>:stop, which is why the colon is
+// in the set.
+func ValidIdentifier(s string) error {
+	if s == "" {
 		return ErrEmptyOrderID
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == ':' || r == '-':
+		default:
+			return fmt.Errorf("%w: %q in %q", ErrIdentifierCharacter, r, s)
+		}
+	}
+	return nil
+}
+
+func (o Order) Validate() error {
+	if err := ValidIdentifier(o.ID); err != nil {
+		return err
 	}
 	if err := o.Instrument.Validate(); err != nil {
 		return err
