@@ -44,15 +44,21 @@ import (
 //
 // # When a change needs a new version
 //
-// Adding a field to an existing line type is always a new version: it changes
-// bytes a reader of the old version has already been told how to parse.
+// A version that has never been written to a real journal is a **draft**, and a
+// draft may change in any way. Nothing is frozen because it was decided; it is
+// frozen because bytes exist that a reader has been told how to parse. That is
+// what EventVersion means: it is the version being written, and until something
+// outside this repository holds those bytes, changing it costs a golden file
+// and a line of the manifest.
 //
-// Adding an event type, or a value to an enumeration, may go in the current
-// version — but only while that version has never been written to a real
-// journal. That is what EventVersion means: it is the version being written,
-// and until something outside this repository holds those bytes, they are a
-// draft. Afterwards it is a new version, because a reader of the old one has
-// no name for what was added and would either refuse it or, worse, guess.
+// Once a version has been written, the distinction that matters is what an
+// existing reader can still parse:
+//
+//   - adding a **field** to an existing line type is always a new version: it
+//     changes bytes that reader has already been told how to parse;
+//   - adding an **event type**, or a **value** to an enumeration, is also a new
+//     version, because that reader has no name for it and would either refuse
+//     it or, worse, guess.
 //
 // The distinction has been got wrong once. Inserting SourceSequence into v1's
 // market_observed line was a field added to a shipped version, and the golden

@@ -134,6 +134,15 @@ most demanding, because "at some point losing" is a property of the whole
 interval and has to be evaluated against every valuation inside it rather than
 at one instant.
 
+**The denominator counts episodes, never observations.** That is now a decision
+and not a preference. An observation-shaped denominator — "every moment a
+losing position had a stop that could have been moved" — is reconstructible,
+but it is a property of the data file rather than of the trader: `AccountValued`
+fires at the feed's observation rate, so doubling the tick rate of the scripted
+CSV halves every measured rate, and a pre-registered threshold would be a
+statement about a CSV. An episode counts once, however long it lasted and
+however many observations it spanned. See `power-sensitivity.md` §7.
+
 ## What each candidate needs that the journal does not hold
 
 | | entry identity | initial stop | stop changes | replace vs cancel | valuation at the change |
@@ -142,16 +151,32 @@ at one instant.
 | 2 | already there | required | required | **required** | already there |
 | 3 | already there | — | — | — | — |
 
-**Three events suffice for all three candidates.** `ProtectionPlaced`,
-`ProtectionReplaced` and `ProtectionCancelled`, each referencing the entry's
-order id — plus `ProtectionTriggered` when a level fires, which is a fill and
-not a new kind of fact.
+**Three events suffice for all three candidates**, and they now exist —
+`ProtectionPlaced`, `ProtectionReplaced` and `ProtectionEnded`, in
+`praxis.event.v3`. What they are *not* is three fields on an entry, which is
+what this section and [`trade-identity.md`](trade-identity.md) both predicted.
+Building them found three holes that argument could not have seen, and
+[ADR-014](../adr/014-protection-is-an-aggregate.md) is where they are settled:
+a planned protection can be moved and withdrawn while its entry waits, a
+protective fill needs an order of its own to belong to, and execution is a
+reason for a transition rather than a state.
 
-No entry↔protection↔exit relation table is needed, because both units the
-candidates measure on are already delimited in the journal: an episode by
-`PositionChanged` kinds `opened` and `closed`, an entry by `Order.ID`. The only
-thing missing is the reference from a level to the entry that placed it, and
-that is one field. [`trade-identity.md`](trade-identity.md) is the argument.
+**The consequence for measurement.** A protection is named by its entry while
+it is planned and by its episode once a fill has activated it — because once
+active the entry no longer governs it, and a second entry adding to the same
+position has its plan ended rather than applied. So a `ProtectionReplaced` on
+an active protection carries an `EpisodeID`, not the entry's identifier.
+
+Candidates 1 and 2 are written on the entry unit, and attributing a widening
+back to the entry that placed the level is therefore a join — episode id, to
+the sequence of the `PositionChanged` that opened it, to the `FillProduced`
+before it, to its `OrderID` — rather than reading a field. That is
+reconstructible and deterministic, but it is work, and it has one case with no
+answer in the unit as defined: when a second entry adds to an already protected
+episode, its plan is ended with `ProtectionAlreadyActive`. It placed a stop; the
+system absorbed it. Whether it belongs in "entries that placed a stop" is a
+protocol decision, and the cheaper answer is to write both candidates on the
+episode unit, where the question does not arise.
 
 ## What candidate 1 costs
 

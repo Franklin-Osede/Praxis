@@ -94,6 +94,11 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		f.int(int64(v.Config.Rules.ProfitTargetCts))
 		f.int(int64(v.Config.Rules.MaxTotalLossCts))
 		f.int(int64(v.Config.Rules.TrailingDrawdownCts))
+		if knows(version, EventVersionV4) {
+			f.optionalID(v.Config.SubjectID)
+		} else if v.Config.SubjectID != "" {
+			return "", fmt.Errorf("%w: %s cannot say who traded it", ErrUnsupportedInVersion, version)
+		}
 
 	case session.SessionOpened:
 		if header.Kind != session.KindSessionOpened {

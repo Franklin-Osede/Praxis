@@ -263,7 +263,12 @@ cancels its sibling `by_oco` and ends the aggregate `executed`; a manual exit
 cancels both `position_closed`. The two reasons are distinguished because a log
 that spelled them alike could not tell a stop that worked from one the trader
 overtook. They are values no earlier version has a name for, so they inaugurate
-`praxis.event.v4`, published with the commands that first write them.
+`praxis.event.v4`, published with the commands that first write them — along
+with **who traded the journal**, because the experiment's unit of analysis is a
+trader and not a session, and a field added after the first recorded session
+would be a payload version with a migration behind it. It is a label the
+protocol assigns, never a person's name, and it is empty for a journal nobody
+traded.
 
 Every part of a protective tail is recomputed rather than believed, including
 the one transition that leaves no position change: a stop that reached its level
@@ -965,10 +970,15 @@ Next, in order:
    levels cannot both be reachable, so "the stop wins" waits for bar
    observations. A property test pins the impossibility in the meantime.
 7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
-   and target, position, balance and equity, and the evaluation's status.
-   Nothing else until ten sessions have been traded.
-8. **Ten labelled pilot sessions**, excluded from the confirmatory sample and
-   used only to estimate the inputs the sensitivity table left open.
+   and target, position, balance and equity, and the evaluation's status. It
+   must offer **one command that replaces a protection**, never a remove
+   button beside a set button: two commands manufacture an interval with no
+   protection the trader never intended, and measuring those intervals is one
+   of the things the log exists for. Nothing else until the pilots are traded.
+8. **Fifteen labelled pilot sessions — five traders, three each** — excluded
+   from the confirmatory sample and used only to estimate the inputs the
+   sensitivity table left open, including the between-trader correlation that
+   sessions from one person cannot produce.
 9. **Freeze the experiment**: the primary hypothesis, the minimum relevant
    effect, the analysis method, the power target, the sample size, the
    exclusion rules and the stopping rule.

@@ -86,6 +86,32 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 	if _, err := persistence.EncodeEvents([]session.Event{byOCO}, persistence.EventVersionV4); err != nil {
 		t.Fatalf("by_oco under v4: %v", err)
 	}
+
+	// Who traded a journal is a field, and a field is the other kind of thing
+	// an older reader cannot parse. It is refused rather than dropped, because
+	// a journal that silently lost its subject would be a session belonging to
+	// nobody — and the experiment's unit of analysis is a person.
+	subject := session.SessionStarted{
+		Envelope: session.Envelope{Time: 1, Sequence: 1, Kind: session.KindSessionStarted},
+		Config: session.Config{
+			Instrument: mnq, StartingBalanceCts: 1, CommissionPerContractCts: 0,
+			SubjectID: "s-07",
+		},
+	}
+	for _, older := range []string{persistence.EventVersionV1, persistence.EventVersionV2, persistence.EventVersionV3} {
+		if _, err := persistence.EncodeEvents([]session.Event{subject}, older); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
+			t.Fatalf("a subject under %s: got %v, want %v", older, err, persistence.ErrUnsupportedInVersion)
+		}
+	}
+	if _, err := persistence.EncodeEvents([]session.Event{subject}, persistence.EventVersionV4); err != nil {
+		t.Fatalf("a subject under v4: %v", err)
+	}
+	// And a journal with no subject still writes under v4, because a scripted
+	// run belongs to nobody and saying so is not the same as losing it.
+	subject.Config.SubjectID = ""
+	if _, err := persistence.EncodeEvents([]session.Event{subject}, persistence.EventVersionV1); err != nil {
+		t.Fatalf("no subject under v1: %v", err)
+	}
 	// And an older reader refuses the name rather than guessing at it, even
 	// though the rest of the line is one it understands perfectly.
 	v4Line, err := persistence.EncodeEvents([]session.Event{byOCO}, persistence.EventVersionV4)

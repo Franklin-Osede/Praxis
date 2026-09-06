@@ -1,5 +1,12 @@
 # What is a trade?
 
+**Superseded in part by [ADR-013](../adr/013-position-episodes.md) and
+[ADR-014](../adr/014-protection-is-an-aggregate.md), 2026-09-06.** The answer to
+the title question stood and became ADR-013: a trade is a position episode. The
+argument about protection did not, and is corrected at the bottom rather than
+edited away, because being wrong in a recorded way is the point of writing
+these down.
+
 Not normative until it is folded into the specification. Nothing here changes
 how money is accounted.
 
@@ -112,3 +119,42 @@ manufacture one the trader never intended.
 
 What still has to be built before them is unchanged: a stop is an order that
 waits for later observations, so resting orders come first.
+
+---
+
+## What building it found — 2026-09-06
+
+Three events did suffice in number and in nothing else. The sentence this
+document leans on —
+
+> Protective levels attach to a decision, not to inventory.
+
+— is the half that turned out to be wrong, and the schema it produced could not
+be written by its own producer. [ADR-014](../adr/014-protection-is-an-aggregate.md)
+has the argument; the short version is three holes:
+
+- **A planned protection could be neither moved nor withdrawn.** The events
+  named an entry when placed and an episode afterwards, so a stop moved before
+  its entry filled could not be recorded at all.
+- **A protective fill had no order to belong to.** Reusing the entry's
+  identifier would say the order that opened a position also closed it, which
+  would corrupt every count that groups fills by decision.
+- **`Executed` was terminal**, and a stop that fills three of ten leaves seven
+  contracts open with a target and no stop. That is not an ending.
+
+**"What is missing is only the reference from a protective level to the entry
+that placed it. That is one field, not a lifecycle relation."** It is a
+lifecycle relation. A protection is named by its entry while it is planned and
+by its episode once activated, `ProtectionRef` is a tagged union of the two, and
+a command naming a stale entry reference is refused. Protection binds to
+inventory, and the whole of ADR-014 is the consequence.
+
+`ProtectionCancelled` does not exist either; `ProtectionEnded` does, carrying
+one of seven reasons, because "it ended" and "why" turned out to be inseparable.
+
+**Why this is kept.** The reasoning about *trade identity* is untouched and
+became ADR-013. The reasoning about protection was a design argued from the
+outside, and it took writing a producer to find that it could not be satisfied.
+That is the same lesson `praxis.event.v2` learned by declaring protection events
+ahead of anything that could write them — which is why v3 and v4 were published
+with their producers instead.

@@ -96,6 +96,20 @@ type Config struct {
 	StartingBalanceCts       market.Cents
 	CommissionPerContractCts market.Cents
 	Rules                    challenge.Rules
+
+	// SubjectID is who traded this journal, as a label the protocol assigns —
+	// never a name, an email or anything else that identifies a person. It is
+	// empty for a journal nobody traded: a scripted run, a test, a replay.
+	//
+	// It is recorded because the experiment's unit of analysis is a trader and
+	// not a session. Sessions from one person are a cluster, most of the
+	// variance in a behavioural trait lives between people rather than within
+	// them, and an analysis that could not tell one trader's sessions from
+	// another's would be computing a number about nobody. Deriving it from a
+	// file name afterwards is not evidence, and by this repository's own
+	// version rule adding it after the first recorded session would be a new
+	// payload version with a migration behind it. It costs nothing today.
+	SubjectID string
 }
 
 // SessionStarted opens the log. It carries the configuration, and nothing else

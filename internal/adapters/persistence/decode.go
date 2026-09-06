@@ -50,6 +50,9 @@ func decodeEvent(line string, version string) (session.Event, error) {
 				TrailingDrawdownCts: r.cents(),
 			},
 		}
+		if knows(version, EventVersionV4) {
+			cfg.SubjectID = r.optionalID()
+		}
 		event = session.SessionStarted{Envelope: envelope(at, sequence, kind), Config: cfg}
 
 	case typeSessionOpened:

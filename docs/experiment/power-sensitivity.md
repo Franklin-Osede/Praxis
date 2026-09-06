@@ -3,6 +3,11 @@
 Not normative. Nothing here is frozen, and nothing here may reach execution,
 P&L or challenge code.
 
+**Last revised 2026-09-06**, after `praxis.event.v3` and `v4` made four of the
+six candidates answerable. Section 3's table is corrected in place rather than
+rewritten, because section 7's argument was made from the old version and had
+to be re-examined against the new one.
+
 **This document uses decimals.** Effect sizes, dispersions and probabilities
 are statistical quantities, not money. That is an analytical boundary, in the
 sense of ADR-002: floating point is permitted here and forbidden everywhere it
@@ -76,35 +81,51 @@ Not frozen. The point of this table is the right-hand column.
 
 | # | Candidate | Unit | Needs | In the journal today? |
 |---|---|---|---|---|
-| A | After two losing closes, the next entry risks at least 0.3R more | trade | planned risk per trade | **No** |
+| A | After two losing closes, the next entry risks at least 0.3R more | episode | planned risk per trade | **Partly** |
 | B | After a losing close, the wait before the next order shortens | trade | order times, realised P&L per close | Yes |
 | C | Orders are submitted more often once the day is down beyond a threshold | trade | session realised P&L, order events | Yes |
-| D | A stop is widened rather than honoured while a position is losing | decision | protective levels and their changes | **No** |
-| E | Position size in contracts is larger after a loss than after a win | trade | order quantity, preceding realised P&L | Yes |
+| D | A stop is widened rather than honoured while a position is losing | episode | protective levels and their changes | **Yes** |
+| E | Position size in contracts is larger after a loss than after a win | episode | order quantity, preceding realised P&L | Yes |
 | F | A rule is breached more often on days already down | session | challenge decisions, valuations | Yes |
 
-Three of the six — B, C and F — are answerable from what `OrderSubmitted`,
-`PositionChanged` and `ChallengeDecision` already record, because each is
-measured at the level of a close leg or a session, neither of which needs a
-trade to be defined.
+**This table was written before the journal could do any of it, and five of
+the six rows have changed.** It is kept as a record of what the experiment
+asked the engineering for, and corrected rather than rewritten, because the
+argument in section 7 was made from the old version and has to be re-examined
+against the new one.
 
-E is marked yes above and that is too generous. It needs to know which *trade*
-lost, and a trade is not modelled: it can be inferred where a position opens and
-closes cleanly, but partial closes, additions and flips make the inference
-ambiguous, and those are exactly what a trader under pressure does. See
-[`hypotheses-candidates.md`](hypotheses-candidates.md), candidate 3.
+B, C and F were answerable then and are answerable now, from what
+`OrderSubmitted`, `PositionChanged` and `ChallengeDecision` record.
 
-A and D are not answerable at all. All of A, D and E need the same first thing:
-a trade identity.
+**E was marked yes and that was too generous**, because it needs to know which
+*trade* lost and a trade was not modelled. It is now: ADR-013 defines a
+position episode — flat to flat, one direction — and the projection that
+derives it runs in the live session, in `Verify` and in `Replay`. Partial
+closes, additions and flips are exactly what the definition settles.
 
-**What is missing, precisely.** To express any outcome in R, or to say anything
-about stops, the log would need: a trade's identity across its entry and exit,
-the protective levels placed with it, the money deliberately risked, and every
-later modification or cancellation of those levels. None of that exists. An
-order and its fill are not enough.
+**D is answerable today.** Of the four things it needed, three exist:
 
-Those fields are not being added now. This table is how the experiment decides
-what the interface has to record, and that decision belongs to section 7.
+| what D needed | what records it |
+|---|---|
+| a trade's identity across entry and exit | the episode, ADR-013 |
+| the protective levels placed with it | `ProtectionPlaced` |
+| every later modification or cancellation | `ProtectionReplaced`, `ProtectionEnded` |
+| the money deliberately risked | derivable, see A |
+
+and the direction of a change is not even inferred: `ProtectionReplaced` records
+`Widened`, computed against the level the stop already had, and `Verify`
+recomputes it rather than believing it.
+
+**A is partly answerable.** The money deliberately risked is derivable for any
+entry submitted with a stop: the distance from the fill to `StopPrice`, times
+the instrument's tick value, times the quantity. What is not derivable is
+planned risk for an entry that carried no stop, which is not a gap in the log
+but a fact about the trader — an entry with no stop has no planned risk, and
+whether to exclude it or score it as unbounded is a protocol decision, not an
+engineering one.
+
+`praxis.event.v3` and `v4` are what changed this. The table's right-hand column
+was the specification for them, which is what a table like this is for.
 
 ---
 
@@ -274,33 +295,90 @@ sample. Section 5 shows a frequency is reachable, provided it is question (a)
 or a modest (b). Effect-size questions become exploratory: reported with their
 intervals and never claimed as findings.
 
-**Two of the six candidates cannot be answered at all today**, and both need the
-same missing thing: a trade's planned risk and its protective levels. That is
-the scope the interface has to cover, and it is a much narrower answer than
-"record everything."
+**The two candidates that could not be answered now can be**, which is what
+`praxis.event.v3` and `v4` were built for. The provisional primary is
+measurable today. That does not change the paragraph above: a frequency is
+still the reachable form, and D is a frequency.
 
-**But protection events alone may not be enough**, and this is the question to
-settle before building anything. A rate needs a denominator. "Stops are widened
-on 30% of occasions" requires knowing how many occasions there *were* — every
-moment a losing position had a stop that could have been moved and was not.
-That is not an event; it is a state that has to be reconstructible. Depending
-on which comparison section 5 settles on, the log may also need explicit
-relations between a trade's entry, its protection and its exit.
+**The denominator is an episode, and that is now decided.** A rate needs to say
+how many occasions there were, and the answer this document worried about —
+"every moment a losing position had a stop that could have been moved and was
+not" — is the wrong one, for a reason that has nothing to do with whether it is
+reconstructible. It now is: `AccountValued` fires after every observation and
+`Replay` yields the active protections at each one.
 
-Deciding the exact comparison decides whether the next slice is three events or
-something larger.
+It is wrong because it is a property of the data file rather than of the
+trader. `AccountValued` fires at the market feed's observation rate, so
+doubling the tick rate of the scripted CSV halves every measured rate. A
+pre-registered threshold — "more than 15%" — would then be a statement about a
+CSV. The denominator must be trader-shaped:
+
+> **In what fraction of episodes that had a stop, and were at some point in
+> unrealised loss, was the stop widened at least once?**
+
+One episode counts once, however long it lasted and however many observations
+it spanned, which is what candidate 1's own table already said. The concern
+this section raised dissolves: the state does not need to be counted, only
+inspected once per episode.
+
+That decision constrains the interface as much as the analysis. Candidate 2
+needs a replacement to be atomic, because cancelling a level and placing
+another manufactures an interval with no protection that the trader never
+intended — and measuring those intervals is one of the things the log exists
+for. `ReplaceProtection` is that command. **A screen with a "remove stop"
+button and a "set stop" button produces exactly the log the hypothesis cannot
+use**, and that is settled before anything is drawn, not after.
+
+## 7b. The unit of analysis is a trader, and that is why the engine is deterministic
+
+This document computes in "observations" throughout and never says whose. It
+has to, and the answer changes the arithmetic.
+
+**The subject is a trader.** Section 4 asks for 489 sessions and section 6
+pushes that past 1,200. At one session a day that is years for one person, and
+the thesis — that traders fail at executing their own strategy — is a claim
+about traders in the plural. A confirmatory sample of one person yields a
+conclusion about that person, and a p-value that is not the one computed here.
+
+**The cost is a second level of clustering, and it is probably the larger
+one.** Sessions from one trader are themselves a cluster, and the design effect
+in section 4 models only the correlation *within* a session. If the propensity
+to widen a stop is a stable trait rather than a passing state — which is what
+the thesis implicitly claims — then most of the variance lives *between*
+traders, and the effective sample size resembles the number of traders far more
+than the number of sessions. 489 could mean 489 traders trading once, not 20
+trading 25 times. Those are different recruitment problems, and the number that
+separates them is an intraclass correlation nobody has yet measured.
+
+**So the pilots change shape.** Ten sessions from one person cannot estimate a
+correlation between people, and without it the confirmatory sample cannot be
+computed — which is the one thing section 8 says the pilots exist to do. Five
+traders of three sessions each is fifteen sessions instead of ten, barely more
+expensive, and it is the minimum that gives any signal about the variance that
+dominates the calculation.
+
+**And this is where the determinism is spent.** Every subject trades the same
+scripted file, observation for observation, and the engine is built so that the
+same inputs produce the same journal on every run and every machine. The market
+therefore stops being a covariate and becomes a constant: the variance between
+traders is not confounded with which day each of them happened to get. That is
+not a lucky side effect of the engineering discipline — it is the reason for
+it, and until now it was written down nowhere.
 
 ## 8. What the pilot sessions are for
 
-Ten sessions, labelled as pilots and **excluded from the confirmatory sample**.
-They are not evidence and no hypothesis is tested on them. They exist to
-replace guesses with measurements in five places:
+**Five traders, three sessions each**, labelled as pilots and **excluded from
+the confirmatory sample**. They are not evidence and no hypothesis is tested on
+them. They exist to replace guesses with measurements in six places:
 
-1. trades per session;
+1. episodes per session;
 2. how often each candidate condition actually fires;
 3. the dispersion of the chosen outcome;
 4. the within-session correlation;
-5. how many sessions are lost to interruption or error.
+5. **the between-trader correlation** — the one that decides whether the
+   confirmatory sample is counted in sessions or in people, and the one ten
+   sessions from a single person cannot produce;
+6. how many sessions are lost to interruption or error.
 
 Only then is the real calculation done, and only then is the protocol frozen:
 the primary hypothesis, the minimum effect worth caring about, the analysis,

@@ -53,10 +53,20 @@ func everyEventTypeV3() []session.Event {
 }
 
 // everyEventTypeV4 adds the cancellation reasons one-cancels-the-other
-// execution needs. A reason is a value and not a field, and a reader of an
-// older version has no name for it, which is why it takes a version of its own.
+// execution needs, and who traded the journal. A reason is a value and a
+// subject is a field, and an older reader has no name for either — which is
+// why both take a version of their own, and why the subject went in while v4
+// was still a draft rather than after the first recorded session.
 func everyEventTypeV4() []session.Event {
-	return append(everyEventTypeV3(),
+	events := everyEventTypeV3()
+	// Who traded it. A label the protocol assigns, never a person.
+	for n, e := range events {
+		if started, ok := e.(session.SessionStarted); ok {
+			started.Config.SubjectID = "s-07"
+			events[n] = started
+		}
+	}
+	return append(events,
 		session.OrderCancelled{
 			Envelope: session.Envelope{Time: 9_000, Sequence: 15, Kind: session.KindOrderCancelled},
 			OrderID:  "praxis:12:target", RemainingQty: 7, Reason: session.CancelledByOCO,
