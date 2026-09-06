@@ -90,7 +90,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		}
 		if knows(version, EventVersionV4) {
 			submitted := event.(session.OrderSubmitted)
-			submitted.DecidedAt = r.wallClock()
+			submitted.Decided = r.decision()
 			event = submitted
 		}
 
@@ -109,7 +109,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 			OrderID:  r.id(), RemainingQty: r.qty(), Reason: r.cancelReason(version),
 		}
 		if knows(version, EventVersionV4) {
-			cancelled.DecidedAt = r.wallClock()
+			cancelled.Decided = r.decision()
 		}
 		event = cancelled
 
@@ -174,7 +174,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		replaced.StopOrderID, replaced.TargetOrderID = r.optionalID(), r.optionalID()
 		replaced.Widened = r.boolean()
 		if knows(version, EventVersionV4) {
-			replaced.DecidedAt = r.wallClock()
+			replaced.Decided = r.decision()
 		}
 		event = replaced
 
@@ -187,7 +187,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		ended.StopPrice, ended.TargetPrice = r.ticks(), r.ticks()
 		ended.Reason = r.protectionEndReason()
 		if knows(version, EventVersionV4) {
-			ended.DecidedAt = r.wallClock()
+			ended.Decided = r.decision()
 		}
 		event = ended
 
@@ -274,7 +274,9 @@ func (r *reader) logicalTime() market.LogicalTime { return market.LogicalTime(r.
 func (r *reader) cents() market.Cents             { return market.Cents(r.int()) }
 func (r *reader) ticks() market.Ticks             { return market.Ticks(r.int()) }
 func (r *reader) qty() market.Qty                 { return market.Qty(r.int()) }
-func (r *reader) wallClock() market.WallClock     { return market.WallClock(r.int()) }
+func (r *reader) decision() session.Decision {
+	return session.Decision{AtUTC: r.int(), Segment: r.uint(), Elapsed: r.int()}
+}
 
 // optionalID reads an identifier that may legitimately be absent.
 func (r *reader) optionalID() string {

@@ -534,74 +534,99 @@ func proveOrderCancellation(submitted map[string]market.Order, book market.Quote
 	return nil
 }
 
-// humanClock holds what a reader has to know about the clock a person acted
+// humanClock holds what a reader has to know about the clocks a person acted
 // on. It is one implementation with two callers, because the rule is the same
 // whichever reader asks and a second copy would eventually disagree.
 type humanClock struct {
 	subjectID string
-	last      market.WallClock
+	segment   uint64
+	elapsed   int64
 }
 
-// check refuses a journal whose human clock is incoherent, in either of the
-// two ways it can be.
+// check refuses a journal whose record of human decisions is incoherent.
+//
+// What it does *not* check is the wall clock's order. A wall clock can
+// legitimately move backwards — a time server corrects it, an operator sets
+// it, a suspended machine resumes — and one connection to one kernel does not
+// make it monotonic. Refusing a corrected clock would refuse a session that was
+// entirely honest, which is a worse failure than the one it would catch. The
+// monotonic reading is what intervals are computed from, and that one is held
+// to its discipline.
 func (h *humanClock) check(e Event) error {
-	at := decidedAtOf(e)
+	d := decidedAtOf(e)
+	if d.Malformed() {
+		return fmt.Errorf("%v: records part of a decision — %+v — and no segment to place it in",
+			e.Header().Kind, d)
+	}
 
-	// A person's clock is adapter data and cannot be derived, but it can be
-	// coherent or not — exactly like the market's. A negative interval between
-	// two decisions is not an exotic forgery: it is the shape of a clock
-	// stepping, of a monotonic reading mixed with a wall reading, or of a
-	// suspended tab resuming with a stale stamp. One owner of the kernel and
-	// one connection means there is no legitimate way back.
-	if at != 0 {
-		if at < h.last {
-			return fmt.Errorf("%v: decided at %d, after a decision at %d", e.Header().Kind, at, h.last)
+	if !d.IsZero() {
+		// A segment is a run of uninterrupted interaction. It never goes back:
+		// a recovery starts a new one and nothing returns to an old one.
+		if d.Segment < h.segment {
+			return fmt.Errorf("%v: decided in segment %d, after segment %d",
+				e.Header().Kind, d.Segment, h.segment)
 		}
-		h.last = at
+		// Within one segment the monotonic reading never goes back either. A
+		// new segment may begin at any elapsed, because nothing carries across
+		// the interruption that ended the last one.
+		if d.Segment == h.segment && d.Elapsed < h.elapsed {
+			return fmt.Errorf("%v: decided %dns into segment %d, after %dns into it",
+				e.Header().Kind, d.Elapsed, d.Segment, h.elapsed)
+		}
+		if d.Elapsed < 0 {
+			return fmt.Errorf("%v: decided %dns into its segment", e.Header().Kind, d.Elapsed)
+		}
+		// A decision that happened has a moment in the world, whatever order
+		// the world's clock reports them in.
+		if d.AtUTC == 0 {
+			return fmt.Errorf("%v: decided in segment %d and carries no wall-clock moment",
+				e.Header().Kind, d.Segment)
+		}
+		h.segment, h.elapsed = d.Segment, d.Elapsed
 	}
 
 	// Zero means no person was there. Establishing that made the converse a
-	// rule worth holding: an interface that forgot to stamp the clock — or
+	// rule worth holding: an interface that forgot to stamp a decision — or
 	// stamped it on three of the four commands — would produce a log asserting
 	// both that somebody traded it and that nobody decided anything in it, and
 	// nothing would notice until the analysis, by which time the timing data
 	// for that pilot session no longer exists.
 	if !decidedByAPerson(e) {
-		if at != 0 {
-			return fmt.Errorf("%v: nobody commanded it, and it carries a person's clock", e.Header().Kind)
+		if !d.IsZero() {
+			return fmt.Errorf("%v: nobody commanded it, and it records a person deciding it", e.Header().Kind)
 		}
 		return nil
 	}
-	if h.subjectID == "" && at != 0 {
-		return fmt.Errorf("%v: decided at %d, and nobody is recorded as having traded this journal",
-			e.Header().Kind, at)
+	if h.subjectID == "" && !d.IsZero() {
+		return fmt.Errorf("%v: recorded as decided, and nobody is recorded as having traded this journal",
+			e.Header().Kind)
 	}
-	if h.subjectID != "" && at == 0 {
+	if h.subjectID != "" && d.IsZero() {
 		return fmt.Errorf("%v: %s traded this journal, and this records no moment at which they decided it",
 			e.Header().Kind, h.subjectID)
 	}
 	return nil
 }
 
-// decidedAtOf is the human clock an event carries, and zero for one that
-// carries none.
-func decidedAtOf(e Event) market.WallClock {
+// decidedAtOf is the decision an event records, and the zero decision for one
+// that records none.
+func decidedAtOf(e Event) Decision {
 	switch v := e.(type) {
 	case OrderSubmitted:
-		return v.DecidedAt
+		return v.Decided
 	case OrderCancelled:
-		return v.DecidedAt
+		return v.Decided
 	case ProtectionReplaced:
-		return v.DecidedAt
+		return v.Decided
 	case ProtectionEnded:
-		return v.DecidedAt
+		return v.Decided
 	default:
-		return 0
+		return Decision{}
 	}
 }
 
 // decidedByAPerson reports whether an event is one a person commanded, as
-// opposed to one the log itself required. The four that carry a clock are
+// opposed to one the log itself required. The four that carry a decision are
 // exactly the heads of the four human commands, so there are no exceptions.
 func decidedByAPerson(e Event) bool {
 	switch v := e.(type) {

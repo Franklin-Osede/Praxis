@@ -132,7 +132,7 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		} else if v.Context.ConsecutiveLosingTrades != 0 {
 			return "", fmt.Errorf("%w: %s cannot carry a losing-trade streak", ErrUnsupportedInVersion, version)
 		}
-		if err := f.decidedAt(version, v.DecidedAt); err != nil {
+		if err := f.decidedAt(version, v.Decided); err != nil {
 			return "", err
 		}
 
@@ -155,7 +155,7 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		}
 		f.name(typeOrderCancelled).at(header)
 		f.id(v.OrderID).int(int64(v.RemainingQty)).cancelReason(v.Reason)
-		if err := f.decidedAt(version, v.DecidedAt); err != nil {
+		if err := f.decidedAt(version, v.Decided); err != nil {
 			return "", err
 		}
 
@@ -216,7 +216,7 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		f.int(int64(v.PreviousStopPrice)).int(int64(v.PreviousTargetPrice))
 		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice))
 		f.optionalID(v.StopOrderID).optionalID(v.TargetOrderID).boolean(v.Widened)
-		if err := f.decidedAt(version, v.DecidedAt); err != nil {
+		if err := f.decidedAt(version, v.Decided); err != nil {
 			return "", err
 		}
 
@@ -230,7 +230,7 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		f.name(typeProtectionEnded).at(header).ref(v.Ref)
 		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice))
 		f.enum(protectionEndNames[v.Reason], "protection end reason")
-		if err := f.decidedAt(version, v.DecidedAt); err != nil {
+		if err := f.decidedAt(version, v.Decided); err != nil {
 			return "", err
 		}
 
@@ -274,12 +274,16 @@ func (f *fields) uint(v uint64) *fields {
 // for it can carry. An older version refuses a non-zero one rather than
 // dropping it: a journal that silently lost when its decisions were taken would
 // be a behavioural record missing the behaviour.
-func (f *fields) decidedAt(version string, at market.WallClock) error {
+//
+// Three fields, because a decision has two clocks and they answer different
+// questions: the moment in the world, and the monotonic reading within the run
+// of interaction it belongs to. See session.Decision.
+func (f *fields) decidedAt(version string, d session.Decision) error {
 	if knows(version, EventVersionV4) {
-		f.int(int64(at))
+		f.int(d.AtUTC).uint(d.Segment).int(d.Elapsed)
 		return nil
 	}
-	if at != 0 {
+	if !d.IsZero() {
 		return fmt.Errorf("%w: %s cannot say when a person acted", ErrUnsupportedInVersion, version)
 	}
 	return nil

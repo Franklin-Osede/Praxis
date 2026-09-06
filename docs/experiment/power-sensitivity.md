@@ -361,8 +361,32 @@ separates them is an intraclass correlation nobody has yet measured.
 correlation between people, and without it the confirmatory sample cannot be
 computed — which is the one thing section 8 says the pilots exist to do. Five
 traders of three sessions each is fifteen sessions instead of ten, barely more
-expensive, and it is the minimum that gives any signal about the variance that
-dominates the calculation.
+expensive.
+
+**Five by three is a pilot and nothing else.** It is not a confirmatory sample
+and no hypothesis is tested on it. Five subjects estimate a between-trader
+variance very badly — the interval on an intraclass correlation from five
+clusters is wide enough to change the sample size by a factor of several — so
+what fifteen sessions buy is a rough magnitude, not a number to plan against
+with confidence. The correct reading of a pilot estimate is that it tells you
+which order of magnitude the confirmatory sample is in, and the confirmatory
+design should be planned to be robust across that range rather than tuned to
+the point estimate.
+
+**The clustering is three levels deep, not two.** Decisions sit inside trades,
+trades inside sessions, sessions inside traders. Section 4's design effect
+models only the innermost of those, so **every number in it is provisional and
+must be recomputed after the pilots** with the two outer levels included. It is
+kept because the *shape* of the argument — what an effect size costs against
+what a frequency costs — does not depend on the correction; the absolute
+figures do.
+
+**One file for everyone is not enough either.** Repeating a single price path
+introduces learning of that path, and a subject who has seen it before is not
+the subject the design assumes. The confirmatory protocol therefore needs
+**several pre-registered files, the same set for every subject, in a
+counterbalanced order** — which also means the pilots have to establish that
+sessions on different files are comparable at all.
 
 **And this is where the determinism is spent.** Every subject trades the same
 scripted file, observation for observation, and the engine is built so that the
@@ -387,16 +411,23 @@ down" into "people react to a number they were shown". See section 11 of
 
 **Five traders, three sessions each**, labelled as pilots and **excluded from
 the confirmatory sample**. They are not evidence and no hypothesis is tested on
-them. They exist to replace guesses with measurements in six places:
+them. They exist to replace guesses with measurements in eight places:
 
-1. episodes per session;
-2. how often each candidate condition actually fires;
-3. the dispersion of the chosen outcome;
-4. the within-session correlation;
-5. **the between-trader correlation** — the one that decides whether the
-   confirmatory sample is counted in sessions or in people, and the one ten
-   sessions from a single person cannot produce;
-6. how many sessions are lost to interruption or error.
+1. that the interface is usable at all, and that a session can be completed;
+2. episodes per session;
+3. how often each candidate condition actually fires;
+4. how often a stop is widened, which is the numerator itself;
+5. the latency between an observation being presented and a decision being
+   taken — the quantity the segmented monotonic clock exists to make
+   measurable;
+6. the within-session and within-trader correlations, and a **rough magnitude**
+   for the between-trader one: five clusters cannot pin it, and the
+   confirmatory design has to be robust across the range rather than tuned to
+   the estimate;
+7. how many sessions are lost to interruption or error, and how many decisions
+   fall across a recovery and therefore have no computable interval;
+8. whether sessions on different pre-registered files are comparable, since the
+   confirmatory protocol needs several of them in a counterbalanced order.
 
 Only then is the real calculation done, and only then is the protocol frozen:
 the primary hypothesis, the minimum effect worth caring about, the analysis,

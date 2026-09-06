@@ -76,9 +76,18 @@ func mustObserve(t *testing.T, s *session.Session, q market.Quote) {
 	}
 }
 
-// decidedAt is a stand-in for a person's clock. Tests that care about the
-// interval between decisions pass their own.
-const decidedAt = market.WallClock(1_764_000_000_000_000_000)
+// decided is a stand-in for a person acting: a moment in the world, and a
+// monotonic reading inside one run of uninterrupted interaction. Tests that
+// care about the interval between decisions build their own.
+func decided(elapsed int64) session.Decision {
+	return session.Decision{
+		AtUTC:   1_764_000_000_000_000_000 + elapsed,
+		Segment: 1,
+		Elapsed: elapsed,
+	}
+}
+
+var decidedAt = decided(0)
 
 func mustSubmit(t *testing.T, s *session.Session, o market.Order) {
 	t.Helper()

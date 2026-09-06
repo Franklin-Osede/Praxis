@@ -192,12 +192,56 @@ type OrderSubmitted struct {
 	Order   market.Order
 	Context OrderContext
 
-	// DecidedAt is when the person sent it, by their own clock. The envelope's
-	// time is the market's, and two orders between one tick and the next carry
-	// the same one — so the interval between decisions, which is what a
-	// hypothesis about hesitation measures, is not in the envelope. Zero means
-	// no person was there.
-	DecidedAt market.WallClock
+	// Decided is when the person sent it. See Decision: the envelope's time is
+	// the market's, and two orders between one tick and the next carry the
+	// same one.
+	Decided Decision
+}
+
+// Decision is when a person acted, in the two forms that answer different
+// questions. Neither substitutes for the other and neither is a clock the
+// kernel reads: both arrive as data from whatever witnessed the act.
+//
+// The market's time is in the envelope and is not this. Two orders sent between
+// one tick and the next carry the same envelope time, because the market did
+// not move, so the interval a hypothesis about hesitation measures is not there.
+type Decision struct {
+	// AtUTC is nanoseconds since the Unix epoch on the participant's own
+	// clock. It is for audit — saying when in the world something happened —
+	// and it is **never compared for order**. A wall clock can legitimately
+	// move backwards: a time server corrects it, an operator sets it, a
+	// suspended machine resumes. Treating a corrected clock as a corrupt
+	// journal would refuse a session that was entirely honest, and one
+	// connection to one kernel does not make a wall clock monotonic.
+	AtUTC int64
+
+	// Segment is a run of uninterrupted interaction, numbered from one. A
+	// recovery starts a new one, because nothing spans the interruption: the
+	// monotonic reading that made Elapsed meaningful did not survive it. Zero
+	// means no person was there at all, which is the honest shape of a
+	// scripted run.
+	Segment uint64
+
+	// Elapsed is monotonic nanoseconds since its segment began, and it is what
+	// an interval is computed from. Within one segment it never goes
+	// backwards. Across two, it is not subtracted at all: an interval that
+	// spanned a recovery is recorded as spanning one, and whether such cases
+	// are excluded is a question for the pilots rather than for the engine.
+	Elapsed int64
+}
+
+// IsZero reports that nobody was there. A segment is numbered from one, so a
+// zero segment is an absence rather than a value — an elapsed of zero is
+// ordinary, being where every segment starts.
+func (d Decision) IsZero() bool { return d.Segment == 0 }
+
+// Malformed reports a decision that is neither wholly absent nor wholly
+// present. Without this, a stamp carrying a moment in the world but no segment
+// would read as "nobody was there" while plainly recording that somebody was,
+// and the half that survived would be the half no interval can be computed
+// from.
+func (d Decision) Malformed() bool {
+	return d.Segment == 0 && (d.AtUTC != 0 || d.Elapsed != 0)
 }
 
 // CancelReason says why an order stopped working. It is a fact about what the
@@ -264,11 +308,11 @@ type OrderCancelled struct {
 	RemainingQty market.Qty
 	Reason       CancelReason
 
-	// DecidedAt is when a person asked for this, by their own clock. It is
-	// zero on a cancellation the system decided — a remainder the book could
-	// not fill, a sibling the other leg cancelled — because nobody decided
-	// those, and saying so is the point.
-	DecidedAt market.WallClock
+	// Decided is when a person asked for this. It is zero on a cancellation
+	// the system decided — a remainder the book could not fill, a sibling the
+	// other leg cancelled — because nobody decided those, and saying so is the
+	// point.
+	Decided Decision
 }
 
 // ProtectionRefKind says whether a protection is named by the entry that
@@ -408,8 +452,8 @@ type ProtectionReplaced struct {
 	// Being derived, it is recomputed by Verify rather than believed.
 	Widened bool
 
-	// DecidedAt is when the person moved it, by their own clock.
-	DecidedAt market.WallClock
+	// Decided is when the person moved it.
+	Decided Decision
 }
 
 // ProtectionEnded records a protection that stopped existing, and why.
@@ -421,9 +465,9 @@ type ProtectionEnded struct {
 	TargetPrice market.Ticks
 	Reason      ProtectionEndReason
 
-	// DecidedAt is when the person withdrew it, by their own clock, and zero
-	// for every ending the system derived from what a fill did.
-	DecidedAt market.WallClock
+	// Decided is when the person withdrew it, and zero for every ending the
+	// system derived from what a fill did.
+	Decided Decision
 }
 
 // FillProduced is an execution fact.

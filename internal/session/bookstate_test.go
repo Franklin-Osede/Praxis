@@ -306,7 +306,7 @@ func TestACancellationCannotBorrowTheWrongReason(t *testing.T) {
 			forged := events[at].(session.OrderCancelled)
 			// A remainder the book could not fill is nobody's decision, so a
 			// convincing forgery drops the clock with the reason.
-			forged.Reason, forged.DecidedAt = session.CancelledUnfillableRemainder, 0
+			forged.Reason, forged.Decided = session.CancelledUnfillableRemainder, session.Decision{}
 			events[at] = forged
 
 			if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
@@ -817,10 +817,7 @@ func TestAFillsSideTimeAndInstrumentAreChecked(t *testing.T) {
 // down. The kernel writes it and never reads it: nothing here decides anything
 // on a human clock, which is why rule 2 is untouched.
 func TestTheJournalRecordsWhenAPersonActed(t *testing.T) {
-	const (
-		first  = market.WallClock(1_764_000_000_000_000_000)
-		second = market.WallClock(1_764_000_040_000_000_000) // forty seconds later
-	)
+	first, second := decided(0), decided(40_000_000_000) // forty seconds later
 
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
@@ -845,9 +842,13 @@ func TestTheJournalRecordsWhenAPersonActed(t *testing.T) {
 	if submitted[0].Time != submitted[1].Time {
 		t.Fatalf("market time moved: %d then %d", submitted[0].Time, submitted[1].Time)
 	}
-	// The person took forty seconds, and the log says that too.
-	if got := submitted[1].DecidedAt - submitted[0].DecidedAt; got != second-first {
-		t.Fatalf("the interval between decisions is %d, want %d", got, second-first)
+	// The person took forty seconds, and the log says that too — measured on
+	// the monotonic reading, which is what an interval is computed from.
+	if submitted[0].Decided.Segment != submitted[1].Decided.Segment {
+		t.Fatal("the two decisions are in different segments and cannot be subtracted")
+	}
+	if got := submitted[1].Decided.Elapsed - submitted[0].Decided.Elapsed; got != 40_000_000_000 {
+		t.Fatalf("the interval between decisions is %dns, want 40s", got)
 	}
 	checked(t, s)
 
@@ -857,7 +858,7 @@ func TestTheJournalRecordsWhenAPersonActed(t *testing.T) {
 		t.Fatalf("the fixture left a working order: %v", err)
 	}
 	for _, e := range s.Events() {
-		if v, ok := e.(session.OrderCancelled); ok && v.Reason != session.CancelledByTrader && v.DecidedAt != 0 {
+		if v, ok := e.(session.OrderCancelled); ok && v.Reason != session.CancelledByTrader && !v.Decided.IsZero() {
 			t.Fatalf("a cancellation nobody decided claims a human clock: %+v", v)
 		}
 	}
@@ -877,12 +878,12 @@ func TestWhatWasDerivedCannotClaimAPersonDecidedIt(t *testing.T) {
 	}{
 		{"an ending a fill required", session.KindProtectionEnded, func(e session.Event) session.Event {
 			v := e.(session.ProtectionEnded)
-			v.DecidedAt = decidedAt
+			v.Decided = decidedAt
 			return v
 		}},
 		{"a leg its sibling cancelled", session.KindOrderCancelled, func(e session.Event) session.Event {
 			v := e.(session.OrderCancelled)
-			v.DecidedAt = decidedAt
+			v.Decided = decidedAt
 			return v
 		}},
 	}
@@ -908,51 +909,90 @@ func TestWhatWasDerivedCannotClaimAPersonDecidedIt(t *testing.T) {
 	}
 }
 
-// Scenario: a person's clock cannot run backwards
+// Scenario: the monotonic reading cannot go back, and the wall clock may
 //
-// It is adapter data and cannot be derived, but it can be coherent or not —
-// exactly like the market's, which Replay already refuses to let run backwards.
-// A negative interval between two decisions is not an exotic forgery: it is the
-// shape of a clock stepping, of a monotonic reading mixed with a wall reading,
-// or of a suspended tab resuming with a stale stamp. One owner of the kernel and
-// one connection means there is no legitimate way back.
-func TestAPersonsClockCannotRunBackwards(t *testing.T) {
-	const (
-		first  = market.WallClock(1_764_000_005_000_000_000)
-		second = market.WallClock(1_764_000_001_000_000_000)
-	)
-
-	s := newSession(t)
-	mustOpen(t, s, 2_000, "d1")
-	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
-	if err := s.SubmitOrder(order("o1", market.SideBuy, 1), first); err != nil {
-		t.Fatalf("SubmitOrder: %v", err)
+// A wall clock is for audit — saying when in the world something happened — and
+// it moves backwards legitimately: a time server corrects it, an operator sets
+// it, a suspended machine resumes. Refusing a corrected clock would refuse a
+// session that was entirely honest, and one connection to one kernel does not
+// make a wall clock monotonic. So intervals are computed from the monotonic
+// reading instead, and that one is held to its discipline.
+func TestTheMonotonicReadingCannotGoBack(t *testing.T) {
+	submit := func(t *testing.T, s *session.Session, id string, d session.Decision) error {
+		t.Helper()
+		return s.SubmitOrder(order(id, market.SideBuy, 1), d)
 	}
-	// The kernel records what it is given; nothing here decides on a human
-	// clock, so this is accepted at the door and refused by the readers.
-	if err := s.SubmitOrder(order("o2", market.SideBuy, 1), second); err != nil {
-		t.Fatalf("SubmitOrder: %v", err)
+	open := func(t *testing.T) *session.Session {
+		t.Helper()
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		return s
 	}
 
-	if _, err := session.Replay(s.Events()); !errors.Is(err, session.ErrStructure) {
-		t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
-	}
-	if err := session.Verify(s.Events()); !errors.Is(err, session.ErrContradictoryLog) {
-		t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
-	}
+	t.Run("a wall clock corrected backwards is accepted", func(t *testing.T) {
+		s := open(t)
+		// Five seconds of monotonic time passed; the world's clock was set
+		// back four seconds in between, which is what a time server does.
+		if err := submit(t, s, "o1", session.Decision{AtUTC: 5_000_000_000, Segment: 1, Elapsed: 0}); err != nil {
+			t.Fatalf("SubmitOrder: %v", err)
+		}
+		if err := submit(t, s, "o2", session.Decision{AtUTC: 1_000_000_000, Segment: 1, Elapsed: 5_000_000_000}); err != nil {
+			t.Fatalf("SubmitOrder: %v", err)
+		}
+		checked(t, s)
+	})
 
-	// The same two decisions in the order they were taken are accepted, and a
-	// repeated instant is not a step backwards.
-	forward := newSession(t)
-	mustOpen(t, forward, 2_000, "d1")
-	mustObserve(t, forward, sized(3_000, 20_000, 20_001, 50))
-	if err := forward.SubmitOrder(order("o1", market.SideBuy, 1), second); err != nil {
-		t.Fatalf("SubmitOrder: %v", err)
+	t.Run("a new segment may begin anywhere", func(t *testing.T) {
+		// A recovery ends a segment: nothing carries across it, so the next
+		// one starts from its own zero and no interval spans the two.
+		s := open(t)
+		if err := submit(t, s, "o1", session.Decision{AtUTC: 1_000, Segment: 1, Elapsed: 90_000_000_000}); err != nil {
+			t.Fatalf("SubmitOrder: %v", err)
+		}
+		if err := submit(t, s, "o2", session.Decision{AtUTC: 2_000, Segment: 2, Elapsed: 0}); err != nil {
+			t.Fatalf("SubmitOrder: %v", err)
+		}
+		checked(t, s)
+	})
+
+	refused := []struct {
+		name         string
+		first, later session.Decision
+	}{
+		{"the monotonic reading goes back inside one segment",
+			session.Decision{AtUTC: 1_000, Segment: 1, Elapsed: 5_000_000_000},
+			session.Decision{AtUTC: 2_000, Segment: 1, Elapsed: 1_000_000_000}},
+		{"a segment is returned to",
+			session.Decision{AtUTC: 1_000, Segment: 2, Elapsed: 0},
+			session.Decision{AtUTC: 2_000, Segment: 1, Elapsed: 0}},
+		{"a decision with no moment in the world",
+			session.Decision{AtUTC: 1_000, Segment: 1, Elapsed: 0},
+			session.Decision{AtUTC: 0, Segment: 1, Elapsed: 1}},
+		{"time run negative inside a segment",
+			session.Decision{AtUTC: 1_000, Segment: 1, Elapsed: 0},
+			session.Decision{AtUTC: 2_000, Segment: 2, Elapsed: -1}},
 	}
-	if err := forward.SubmitOrder(order("o2", market.SideBuy, 1), second); err != nil {
-		t.Fatalf("SubmitOrder: %v", err)
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			s := open(t)
+			if err := submit(t, s, "o1", tc.first); err != nil {
+				t.Fatalf("SubmitOrder: %v", err)
+			}
+			// The kernel records what it is given; nothing here decides on a
+			// human clock, so this is accepted at the door and refused by the
+			// readers.
+			if err := submit(t, s, "o2", tc.later); err != nil {
+				t.Fatalf("SubmitOrder: %v", err)
+			}
+			if _, err := session.Replay(s.Events()); !errors.Is(err, session.ErrStructure) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+			}
+			if err := session.Verify(s.Events()); !errors.Is(err, session.ErrContradictoryLog) {
+				t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+			}
+		})
 	}
-	checked(t, forward)
 }
 
 // Scenario: a journal cannot say both that somebody traded it and that nobody
@@ -969,7 +1009,7 @@ func TestASubjectAndAClockMustAgree(t *testing.T) {
 		s := newSession(t)
 		mustOpen(t, s, 2_000, "d1")
 		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
-		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), 0); err != nil {
+		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), session.Decision{}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
 		if _, err := session.Replay(s.Events()); !errors.Is(err, session.ErrStructure) {
@@ -1004,7 +1044,7 @@ func TestASubjectAndAClockMustAgree(t *testing.T) {
 		}
 		mustOpen(t, s, 2_000, "d1")
 		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
-		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), 0); err != nil {
+		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), session.Decision{}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
 		checked(t, s)
@@ -1100,4 +1140,33 @@ func TestANameTheRecordCannotHoldIsRefused(t *testing.T) {
 		mustSubmit(t, s, order("o-1", market.SideBuy, 1))
 		checked(t, s)
 	})
+}
+
+// Scenario: a decision is wholly present or wholly absent
+//
+// A segment of zero means nobody was there. A stamp carrying a moment in the
+// world and no segment would read as an absence while plainly recording that
+// somebody acted — and the half that survived is the half no interval can be
+// computed from, which is the half the hypothesis needs.
+func TestADecisionIsWhollyPresentOrWhollyAbsent(t *testing.T) {
+	half := []session.Decision{
+		{AtUTC: 1_764_000_000_000_000_000},
+		{Elapsed: 40_000_000_000},
+		{AtUTC: 1_764_000_000_000_000_000, Elapsed: 40_000_000_000},
+	}
+	for _, d := range half {
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), d); err != nil {
+			t.Fatalf("SubmitOrder: %v", err)
+		}
+		_, err := session.Replay(s.Events())
+		if !errors.Is(err, session.ErrStructure) {
+			t.Fatalf("%+v: got %v, want %v", d, err, session.ErrStructure)
+		}
+		if !strings.Contains(err.Error(), "no segment to place it in") {
+			t.Fatalf("%+v: rejected for another reason: %v", d, err)
+		}
+	}
 }

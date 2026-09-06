@@ -14,7 +14,7 @@ import (
 
 // decidedAt is a stand-in for a person's clock, which the adapter supplies and
 // the kernel only records.
-const decidedAt = market.WallClock(1_764_000_000_000_000_000)
+var decidedAt = session.Decision{AtUTC: 1_764_000_000_000_000_000, Segment: 1}
 
 // writeSessionWithOrder builds a journal that contains a decision, not only
 // observations. Most fixtures here observe and never submit, which mirrors the

@@ -117,9 +117,9 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 	// way. A behavioural record that silently lost when its decisions were
 	// taken would be missing the behaviour.
 	acted := session.OrderSubmitted{
-		Envelope:  session.Envelope{Time: 1, Sequence: 1, Kind: session.KindOrderSubmitted},
-		Order:     market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 1},
-		DecidedAt: humanAt,
+		Envelope: session.Envelope{Time: 1, Sequence: 1, Kind: session.KindOrderSubmitted},
+		Order:    market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 1},
+		Decided:  humanAt,
 	}
 	for _, older := range []string{persistence.EventVersionV2, persistence.EventVersionV3} {
 		if _, err := persistence.EncodeEvents([]session.Event{acted}, older); !errors.Is(err, persistence.ErrUnsupportedInVersion) {

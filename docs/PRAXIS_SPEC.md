@@ -558,16 +558,41 @@ Replay also refuses a log that does not describe a session: an event whose kind
 contradicts its type, time running backwards, a non-contiguous sequence, or a
 trading session opened, valued or ended out of turn.
 
-**A person's clock is held to the same discipline as the market's.** It cannot
-be derived — it is adapter data, like an observation's source sequence — but it
-can be coherent or not, and both readers ask. It never runs backwards: a
-negative interval between two decisions is the shape of a clock stepping, of a
-monotonic reading mixed with a wall reading, or of a suspended tab resuming with
-a stale stamp, and with one owner of the kernel and one connection there is no
-legitimate way back. And it agrees with the subject: a journal somebody traded
-records a moment for every decision in it, one nobody traded records none, and
-an event the log itself required carries no clock at all, because nobody
+**A decision carries two clocks, and only one of them is held to an order.**
+Neither can be derived — both are adapter data, like an observation's source
+sequence — but both can be coherent or not, and both readers ask.
+
+`AtUTC` says when in the world something happened and is **never compared for
+order**. A wall clock moves backwards legitimately: a time server corrects it,
+an operator sets it, a suspended machine resumes. An earlier draft of this
+refused a backwards wall clock as a corrupt journal, which would have refused a
+session that was entirely honest — one connection to one kernel does not make a
+wall clock monotonic, and the failure it was catching was a real one solved in
+the wrong place.
+
+`Segment` and `Elapsed` are where intervals come from. A segment is a run of
+uninterrupted interaction, numbered from one; a recovery starts a new one,
+because the monotonic reading that made `Elapsed` meaningful did not survive the
+interruption. Within a segment `Elapsed` never goes back; a new segment may
+begin at any value; and **an interval is never computed across two**. A wait
+that spanned a recovery is recorded as having spanned one, and whether such
+cases are excluded is a question for the pilots rather than for the engine.
+
+A decision is wholly present or wholly absent: a stamp with a moment in the
+world and no segment would read as an absence while plainly recording that
+somebody acted. And it agrees with the subject — a journal somebody traded
+records a decision for every human command in it, one nobody traded records
+none, and an event the log itself required records none either, because nobody
 commanded it.
+
+Latency is `decision.Elapsed − presentation.Elapsed` within one segment, which
+needs the moment an observation was put in front of the person. That field is
+**not here yet, deliberately**: the thing that presents observations is the
+interface, and this repository's hardest-won lesson is that a schema is not
+proven until something both produces and consumes it — `praxis.event.v2`
+declared protection events ahead of any producer and every one of them was
+wrong. It lands with the interface, while `praxis.event.v4` is still a draft,
+and therefore before the first pilot journal.
 
 Checking a log against itself is not enough, and the difference is testable. A
 forged realised amount can be made internally coherent by adjusting every
@@ -1028,15 +1053,23 @@ never intended, and the length of those intervals is one of the things the log
 exists to measure. `ReplaceProtection` is the command; the screen must not be
 able to express anything else.
 
-**Playback is fixed, and that is what §7b of the power document is spending.**
-Every subject trades the same file so that the market stops being a covariate
-and becomes a constant. That holds for the prices and stops holding the moment
-the interface can pause, rewind or change speed: two subjects at different
-paces are not in the same experiment, and the variance between them is
-confounded again. So the confirmatory sessions advance one observation at a
-time with no pause, no rewind and no speed control. The pilots may allow
-pausing **and must record it**, because wanting to pause is itself data about
-time pressure and is one of the things the pilots exist to find out.
+**Confirmatory sessions run at a fixed automatic cadence.** Every subject trades
+the same file so that the market stops being a covariate and becomes a constant.
+That holds for the prices and stops holding the moment pacing varies: two
+subjects who moved through the same file at different speeds are not in the same
+experiment, and the variance between them is confounded again.
+
+An earlier draft of this said "advance one observation at a time, with no pause"
+and that is a contradiction. If the participant decides when to press Next they
+can stop for forty seconds before pressing it, which is a pause whether or not a
+button is named one. Removing the button removes the name, not the behaviour. So
+the confirmatory condition is: **a fixed automatic cadence, no pause, no rewind,
+no speed control, and the same information visible to everyone.**
+
+The pilots may allow controls **and must record them** — pause, resumption,
+speed, and the moment each observation was presented — because wanting to pause
+is itself data about time pressure and is one of the things the pilots exist to
+find out.
 
 **What is on screen is a claim the journal is already making.**
 `OrderContext.ConsecutiveLosingTrades` is documented as what the trader knew,
@@ -1048,26 +1081,54 @@ changes what a hypothesis about rule breaches on losing days is measuring:
 were shown". The inventory of what is displayed is written before the screen is
 drawn and belongs to the protocol, not the layout.
 
-**A name the record cannot hold is refused at the door.** Identifiers are
-letters, digits and `. _ : -`, and the domain enforces that — an order, a
-trading session boundary and a subject alike. This is the one place a domain
-rule is taken from the shape of the record, and the alternative is worse: a
-name the kernel accepted and the journal could not write was a valid command
-that poisoned the session at commit time, three good batches in, refusing every
-correct order after it. A system whose purpose is the record cannot let a
-decision exist that the record has no way to contain. The codec keeps its own
-gate, because a decoder must not trust the bytes it reads, and a test holds the
-two to the same set rather than assuming they agree. It matters more the moment
-an interface mints identifiers from what a person typed.
+**A name the record cannot hold is refused at the door — and the rule is the
+format's.** Identifiers are letters, digits and `. _ : -`, and the domain
+enforces that for an order, a trading session boundary, a subject and an
+instrument symbol alike.
 
-**The order identifier comes from the gesture, not the server.** A duplicated
-submission — a double click, a retry after a timeout, a second tab — is the one
-way an interface puts a decision in the journal that no person took. The client
-mints the identifier at the instant of the gesture and sends it, so a retry
-sends the same one and the kernel refuses it. Identifiers are already spent
-forever and never reused, so a whole class of interface bug becomes a domain
-guard that exists and is tested. One active connection: a second tab is a second
-hand on the wheel, and the kernel's inputs must arrive in one order.
+This is **the file format's alphabet adopted as a domain rule**, and it should
+be read as exactly that rather than dressed up as a property of instruments.
+Saying "MN Q is not a bad instrument, it is a journal that cannot begin" argues
+the opposite of the conclusion: the limitation belongs to the format, and the
+domain takes it because the alternative is worse — a name the kernel accepted
+and the journal could not write was a valid command that poisoned the session at
+commit time, three good batches in, refusing every correct order after it. A
+system whose purpose is the record cannot let a decision exist the record has no
+way to contain.
+
+The restriction is acceptable for MNQ and the pilots. It is **not** a claim
+about what a tradable instrument may be called: a real symbol set with spreads
+or exchange-specific punctuation would need the format to learn an encoding, not
+the domain to declare the instrument invalid. Whoever meets that first should
+change the format, and this paragraph is here so that they know the domain rule
+is downstream of it.
+
+The codec keeps its own gate, because a decoder must not trust the bytes it
+reads, and a test holds the two to the same set rune by rune rather than
+assuming they agree.
+
+**The order identifier comes from the gesture, not the server, and it is
+deterministic.** A duplicated submission — a double click, a retry after a
+timeout, a second tab — is the one way an interface puts a decision in the
+journal that no person took. The client mints the identifier at the instant of
+the gesture and sends it, so a retry sends the same one and the kernel refuses
+it. Identifiers are already spent forever and never reused, so a whole class of
+interface bug becomes a domain guard that exists and is tested.
+
+It is `<SubjectID>:<RunID>:<GestureSequence>`, with the counter incremented and
+persisted **before** the request goes out. Not a random identifier: rule 3 of
+this document forbids unrecorded randomness, and a browser's random source is
+exactly that — a value nothing can reproduce, deciding which of two journals is
+the real one.
+
+A repeated request that already committed must not come back as "that name is
+taken". The server answers **already committed**, with the state that commit
+produced, so a lost HTTP response is a retry rather than a false alarm in front
+of the participant. The refusal and the report are different facts and the
+interface has to tell them apart.
+
+One active connection: a second tab is a second hand on the wheel, and the
+kernel's inputs must arrive in one order.
 
 Three smaller decisions, settled the same way:
 

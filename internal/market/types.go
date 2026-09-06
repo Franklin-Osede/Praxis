@@ -32,22 +32,6 @@ type Qty int64
 // rule reads it and nothing else.
 type LogicalTime int64
 
-// WallClock is an instant on the clock of whoever was watching, in nanoseconds
-// since the Unix epoch in UTC.
-//
-// It is not LogicalTime and never substitutes for it. Two orders sent between
-// one tick and the next carry the same LogicalTime, because the market did not
-// move; forty seconds of a person staring at a screen while the feed is still
-// is invisible in market time, and that interval is the thing a hypothesis
-// about hesitation is measured on.
-//
-// Nothing in the kernel reads it. It arrives as data from the adapter that
-// witnessed the act — the same shape as an observation's source sequence — is
-// recorded, and never decides anything. A journal nobody traded carries zero,
-// which is not a sentinel for a configured value but the honest statement that
-// no person was there.
-type WallClock int64
-
 // Side is the direction of an order or fill.
 type Side uint8
 
@@ -324,16 +308,20 @@ var (
 // constructor and the consumers cannot drift apart.
 // ValidIdentifier refuses a name the record cannot hold.
 //
-// The allowed set — letters, digits, and . _ : - — is the file format's, and
-// this is the one place the domain takes a rule from the shape of its own
-// record. It does so because the alternative is worse: a name the kernel
+// The allowed set — letters, digits, and . _ : - — is **the file format's**,
+// adopted here rather than derived from anything about markets. It is the one
+// place the domain takes a rule from the shape of its own record, and it does
+// so because the alternative is worse: a name the kernel
 // accepts and the journal cannot write is a valid command that poisons the
 // session at commit time, three batches in, with the next perfectly good order
 // refused after it. A system whose entire purpose is the record cannot let a
 // decision exist that the record has no way to contain.
 //
 // A protective leg is named praxis:<sequence>:stop, which is why the colon is
-// in the set. A lone "-" is refused because that is what the record writes for
+// in the set. The restriction is acceptable for the instruments in use and is
+// not a claim about what a tradable instrument may be called: a symbol set that
+// needs other characters is a reason to teach the format an encoding, not a
+// reason to call the instrument invalid. See section 11 of PRAXIS_SPEC.md. A lone "-" is refused because that is what the record writes for
 // a name that is absent: a thing actually called "-" would be indistinguishable
 // from nothing, and the reader would blame whichever field went missing rather
 // than the name that caused it.

@@ -540,7 +540,7 @@ func TestAClosedEpisodeCannotKeepItsProtection(t *testing.T) {
 		OrderID: "somebody-else", RemainingQty: 1,
 		// Stamped with a person's clock, because a cancellation the trader
 		// asked for and nobody's moment is refused before this gets read.
-		Reason: session.CancelledByTrader, DecidedAt: decidedAt,
+		Reason: session.CancelledByTrader, Decided: decidedAt,
 	}
 
 	if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {

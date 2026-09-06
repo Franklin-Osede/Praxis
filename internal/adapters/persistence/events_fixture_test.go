@@ -14,7 +14,7 @@ var mnq = market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 
 // humanAt is a stand-in for a person's clock, which the adapter supplies and
 // the kernel only records.
-const humanAt = market.WallClock(1_764_000_000_000_000_000)
+var humanAt = session.Decision{AtUTC: 1_764_000_000_000_000_000, Segment: 1, Elapsed: 40_000_000_000}
 
 // everyEventTypeV2 is everyEventType plus the one thing only v2 added: a
 // decision carrying a losing-trade streak. The protection events that were
@@ -71,10 +71,10 @@ func everyEventTypeV4() []session.Event {
 			v.Config.SubjectID = "s-07"
 			events[n] = v
 		case session.OrderSubmitted:
-			v.DecidedAt = humanAt
+			v.Decided = humanAt
 			events[n] = v
 		case session.ProtectionReplaced:
-			v.DecidedAt = humanAt
+			v.Decided = humanAt
 			events[n] = v
 		}
 	}
