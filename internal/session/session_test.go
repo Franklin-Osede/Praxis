@@ -14,7 +14,11 @@ var mnq = market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 
 func config() session.Config {
 	return session.Config{
-		Instrument:               mnq,
+		Instrument: mnq,
+		// Somebody traded this, which is what makes the human clock the
+		// helpers stamp coherent. A journal carrying one and no subject is
+		// refused, and so is the reverse.
+		SubjectID:                "t-01",
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,
 		Rules: challenge.Rules{

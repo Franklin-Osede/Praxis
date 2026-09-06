@@ -540,10 +540,6 @@ func (p *protectionProjection) requireOwed(e Event) (bool, error) {
 			return false, fmt.Errorf("%w: %s is cancelled for %v, the events before it say %v",
 				ErrProtectionOutlivedEntry, want.orderID, cancelled.Reason, want.cancelReason)
 		}
-		if cancelled.DecidedAt != 0 {
-			return false, fmt.Errorf("%w: %s was cancelled by what a fill did, and claims a person's clock",
-				ErrProtectionOutlivedEntry, want.orderID)
-		}
 		p.owed = p.owed[1:]
 		return true, nil
 	}
@@ -564,13 +560,6 @@ func (p *protectionProjection) requireOwed(e Event) (bool, error) {
 		return false, fmt.Errorf("%w: %+v ends holding %d/%d, the events before it say %d/%d",
 			ErrProtectionOutlivedEntry, want.ref, ended.StopPrice, ended.TargetPrice,
 			want.stopPrice, want.targetPrice)
-	}
-	// An ending the events themselves required is an ending nobody decided,
-	// and a human clock on it would be a person credited with an act the
-	// system took on its own.
-	if ended.DecidedAt != 0 {
-		return false, fmt.Errorf("%w: %+v ended by what a fill did, and claims a person's clock",
-			ErrProtectionOutlivedEntry, want.ref)
 	}
 	p.owed = p.owed[1:]
 	return true, nil

@@ -558,6 +558,17 @@ Replay also refuses a log that does not describe a session: an event whose kind
 contradicts its type, time running backwards, a non-contiguous sequence, or a
 trading session opened, valued or ended out of turn.
 
+**A person's clock is held to the same discipline as the market's.** It cannot
+be derived — it is adapter data, like an observation's source sequence — but it
+can be coherent or not, and both readers ask. It never runs backwards: a
+negative interval between two decisions is the shape of a clock stepping, of a
+monotonic reading mixed with a wall reading, or of a suspended tab resuming with
+a stale stamp, and with one owner of the kernel and one connection there is no
+legitimate way back. And it agrees with the subject: a journal somebody traded
+records a moment for every decision in it, one nobody traded records none, and
+an event the log itself required carries no clock at all, because nobody
+commanded it.
+
 Checking a log against itself is not enough, and the difference is testable. A
 forged realised amount can be made internally coherent by adjusting every
 context after it; `Verify` accepts that log and `Replay` refuses it, because

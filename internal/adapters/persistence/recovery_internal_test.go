@@ -16,7 +16,10 @@ func mnqInstrument() market.Instrument {
 
 func sessionConfig() session.Config {
 	return session.Config{
-		Instrument:               mnqInstrument(),
+		Instrument: mnqInstrument(),
+		// Somebody traded it, which is what makes the human clock these tests
+		// stamp coherent.
+		SubjectID:                "t-01",
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,
 		Rules: challenge.Rules{

@@ -152,6 +152,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 		episodes         episodeProjection
 		protections      protectionProjection
 		lastTime         market.LogicalTime
+		clock            = humanClock{subjectID: started.Config.SubjectID}
 		pendingChanges   []portfolio.PositionEvent
 		pendingDecisions []challenge.Event
 
@@ -186,6 +187,10 @@ func Replay(events []Event) (*ReplayedState, error) {
 			return nil, fmt.Errorf("%w: event %d moves time back to %d", ErrStructure, n, header.Time)
 		}
 		lastTime = header.Time
+
+		if err := clock.check(e); err != nil {
+			return nil, fmt.Errorf("%w: event %d: %v", ErrStructure, n, err)
+		}
 
 		if _, ok := e.(PositionChanged); !ok && len(pendingChanges) > 0 && !owedConsequenceStandsHere(e, &protections) {
 			return nil, fmt.Errorf("%w: event %d follows a fill whose %d changes were not recorded",
@@ -529,6 +534,90 @@ func proveOrderCancellation(submitted map[string]market.Order, book market.Quote
 	return nil
 }
 
+// humanClock holds what a reader has to know about the clock a person acted
+// on. It is one implementation with two callers, because the rule is the same
+// whichever reader asks and a second copy would eventually disagree.
+type humanClock struct {
+	subjectID string
+	last      market.WallClock
+}
+
+// check refuses a journal whose human clock is incoherent, in either of the
+// two ways it can be.
+func (h *humanClock) check(e Event) error {
+	at := decidedAtOf(e)
+
+	// A person's clock is adapter data and cannot be derived, but it can be
+	// coherent or not — exactly like the market's. A negative interval between
+	// two decisions is not an exotic forgery: it is the shape of a clock
+	// stepping, of a monotonic reading mixed with a wall reading, or of a
+	// suspended tab resuming with a stale stamp. One owner of the kernel and
+	// one connection means there is no legitimate way back.
+	if at != 0 {
+		if at < h.last {
+			return fmt.Errorf("%v: decided at %d, after a decision at %d", e.Header().Kind, at, h.last)
+		}
+		h.last = at
+	}
+
+	// Zero means no person was there. Establishing that made the converse a
+	// rule worth holding: an interface that forgot to stamp the clock — or
+	// stamped it on three of the four commands — would produce a log asserting
+	// both that somebody traded it and that nobody decided anything in it, and
+	// nothing would notice until the analysis, by which time the timing data
+	// for that pilot session no longer exists.
+	if !decidedByAPerson(e) {
+		if at != 0 {
+			return fmt.Errorf("%v: nobody commanded it, and it carries a person's clock", e.Header().Kind)
+		}
+		return nil
+	}
+	if h.subjectID == "" && at != 0 {
+		return fmt.Errorf("%v: decided at %d, and nobody is recorded as having traded this journal",
+			e.Header().Kind, at)
+	}
+	if h.subjectID != "" && at == 0 {
+		return fmt.Errorf("%v: %s traded this journal, and this records no moment at which they decided it",
+			e.Header().Kind, h.subjectID)
+	}
+	return nil
+}
+
+// decidedAtOf is the human clock an event carries, and zero for one that
+// carries none.
+func decidedAtOf(e Event) market.WallClock {
+	switch v := e.(type) {
+	case OrderSubmitted:
+		return v.DecidedAt
+	case OrderCancelled:
+		return v.DecidedAt
+	case ProtectionReplaced:
+		return v.DecidedAt
+	case ProtectionEnded:
+		return v.DecidedAt
+	default:
+		return 0
+	}
+}
+
+// decidedByAPerson reports whether an event is one a person commanded, as
+// opposed to one the log itself required. The four that carry a clock are
+// exactly the heads of the four human commands, so there are no exceptions.
+func decidedByAPerson(e Event) bool {
+	switch v := e.(type) {
+	case OrderSubmitted:
+		return true
+	case ProtectionReplaced:
+		return true
+	case OrderCancelled:
+		return v.Reason == CancelledByTrader
+	case ProtectionEnded:
+		return v.Reason == ProtectionWithdrawnByTrader
+	default:
+		return false
+	}
+}
+
 // proveEveryOrderEnded refuses a journal in which an order was submitted and
 // then simply stopped being mentioned.
 //
@@ -767,12 +856,24 @@ func Verify(events []Event) error {
 		// fillOrderID is the order whose fill the position changes now being
 		// read belong to.
 		fillOrderID string
+
+		// clock is the same rule Replay applies, asked by the other reader.
+		clock humanClock
 	)
+
+	if len(events) > 0 {
+		if started, ok := events[0].(SessionStarted); ok {
+			clock.subjectID = started.Config.SubjectID
+		}
+	}
 
 	for _, e := range events {
 		owedThis, owedErr := protections.requireOwed(e)
 		if owedErr != nil {
 			return fmt.Errorf("%w: %v", ErrContradictoryLog, owedErr)
+		}
+		if err := clock.check(e); err != nil {
+			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
 		}
 
 		switch v := e.(type) {

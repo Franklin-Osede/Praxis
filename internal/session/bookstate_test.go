@@ -304,7 +304,9 @@ func TestACancellationCannotBorrowTheWrongReason(t *testing.T) {
 
 			// The forgery: the same cancellation, blamed on the book.
 			forged := events[at].(session.OrderCancelled)
-			forged.Reason = session.CancelledUnfillableRemainder
+			// A remainder the book could not fill is nobody's decision, so a
+			// convincing forgery drops the clock with the reason.
+			forged.Reason, forged.DecidedAt = session.CancelledUnfillableRemainder, 0
 			events[at] = forged
 
 			if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
@@ -893,12 +895,118 @@ func TestWhatWasDerivedCannotClaimAPersonDecidedIt(t *testing.T) {
 			at := indexOfKind(t, events, tc.kind, 1)
 			events[at] = tc.forge(events[at])
 
-			if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
-				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			// Structure, not arithmetic — the same family as a trading session
+			// opened while another is open, and one rule that both readers
+			// ask, because a second copy of it would eventually disagree.
+			if _, err := session.Replay(events); !errors.Is(err, session.ErrStructure) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
 			}
 			if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
 				t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
 			}
 		})
 	}
+}
+
+// Scenario: a person's clock cannot run backwards
+//
+// It is adapter data and cannot be derived, but it can be coherent or not —
+// exactly like the market's, which Replay already refuses to let run backwards.
+// A negative interval between two decisions is not an exotic forgery: it is the
+// shape of a clock stepping, of a monotonic reading mixed with a wall reading,
+// or of a suspended tab resuming with a stale stamp. One owner of the kernel and
+// one connection means there is no legitimate way back.
+func TestAPersonsClockCannotRunBackwards(t *testing.T) {
+	const (
+		first  = market.WallClock(1_764_000_005_000_000_000)
+		second = market.WallClock(1_764_000_001_000_000_000)
+	)
+
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	if err := s.SubmitOrder(order("o1", market.SideBuy, 1), first); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+	// The kernel records what it is given; nothing here decides on a human
+	// clock, so this is accepted at the door and refused by the readers.
+	if err := s.SubmitOrder(order("o2", market.SideBuy, 1), second); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+
+	if _, err := session.Replay(s.Events()); !errors.Is(err, session.ErrStructure) {
+		t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+	}
+	if err := session.Verify(s.Events()); !errors.Is(err, session.ErrContradictoryLog) {
+		t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+	}
+
+	// The same two decisions in the order they were taken are accepted, and a
+	// repeated instant is not a step backwards.
+	forward := newSession(t)
+	mustOpen(t, forward, 2_000, "d1")
+	mustObserve(t, forward, sized(3_000, 20_000, 20_001, 50))
+	if err := forward.SubmitOrder(order("o1", market.SideBuy, 1), second); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+	if err := forward.SubmitOrder(order("o2", market.SideBuy, 1), second); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+	checked(t, forward)
+}
+
+// Scenario: a journal cannot say both that somebody traded it and that nobody
+//
+//	decided anything in it
+//
+// Zero means no person was there. Once that is established the converse is a
+// rule worth holding, because the way it breaks is an interface that forgets to
+// stamp the clock — or stamps it on three of the four commands — and nothing
+// notices until the analysis, by which time the timing data for that pilot
+// session no longer exists.
+func TestASubjectAndAClockMustAgree(t *testing.T) {
+	t.Run("a subject who decided nothing", func(t *testing.T) {
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), 0); err != nil {
+			t.Fatalf("SubmitOrder: %v", err)
+		}
+		if _, err := session.Replay(s.Events()); !errors.Is(err, session.ErrStructure) {
+			t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+		}
+	})
+
+	t.Run("decisions nobody is recorded as having made", func(t *testing.T) {
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		mustSubmit(t, s, order("o1", market.SideBuy, 1))
+
+		events := s.Events()
+		started := events[0].(session.SessionStarted)
+		started.Config.SubjectID = ""
+		events[0] = started
+
+		if _, err := session.Replay(events); !errors.Is(err, session.ErrStructure) {
+			t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+		}
+	})
+
+	t.Run("a journal nobody traded, decided by nobody", func(t *testing.T) {
+		// A scripted run: no subject and no clock anywhere, which is the
+		// honest shape of a journal a person never touched.
+		cfg := config()
+		cfg.SubjectID = ""
+		s, err := session.New(cfg, 1_000, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), 0); err != nil {
+			t.Fatalf("SubmitOrder: %v", err)
+		}
+		checked(t, s)
+	})
 }

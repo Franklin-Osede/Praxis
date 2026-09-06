@@ -480,7 +480,7 @@ func TestAProtectiveTailCannotBeForged(t *testing.T) {
 		{"the trader is blamed for it", func(t *testing.T, e []session.Event) {
 			at := indexOfKind(t, e, session.KindOrderCancelled, 1)
 			c := e[at].(session.OrderCancelled)
-			c.Reason = session.CancelledByTrader
+			c.Reason, c.DecidedAt = session.CancelledByTrader, decidedAt
 			e[at] = c
 		}},
 		{"the ending claims other levels", func(t *testing.T, e []session.Event) {

@@ -646,7 +646,8 @@ func TestAJournalCannotCancelAnEntryAndKeepItsPlan(t *testing.T) {
 			Envelope: session.Envelope{
 				Time: header.Time, Sequence: header.Sequence, Kind: session.KindOrderCancelled,
 			},
-			OrderID: "somebody-else", RemainingQty: 1, Reason: session.CancelledByTrader,
+			OrderID: "somebody-else", RemainingQty: 1,
+			Reason: session.CancelledByTrader, DecidedAt: decidedAt,
 		}
 
 		if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
@@ -746,7 +747,7 @@ func TestAnEndingMustFollowTheCancellationItAnswers(t *testing.T) {
 		{"an ending that claims another reason", func(t *testing.T, e []session.Event) {
 			at := indexOfKind(t, e, session.KindProtectionEnded, 1)
 			ended := e[at].(session.ProtectionEnded)
-			ended.Reason = session.ProtectionWithdrawnByTrader
+			ended.Reason, ended.DecidedAt = session.ProtectionWithdrawnByTrader, decidedAt
 			e[at] = ended
 		}},
 	}

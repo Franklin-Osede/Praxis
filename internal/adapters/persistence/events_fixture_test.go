@@ -192,7 +192,10 @@ func sessionIDOf(n int) challenge.SessionID {
 func realSessionEvents(t *testing.T) []session.Event {
 	t.Helper()
 	cfg := session.Config{
-		Instrument:               mnq,
+		Instrument: mnq,
+		// Somebody traded it: these events carry a human clock, and a journal
+		// that claims both a decision and nobody to have made it is refused.
+		SubjectID:                "t-01",
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,
 		Rules: challenge.Rules{
