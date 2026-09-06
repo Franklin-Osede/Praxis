@@ -112,6 +112,23 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 	if _, err := persistence.EncodeEvents([]session.Event{subject}, persistence.EventVersionV1); err != nil {
 		t.Fatalf("no subject under v1: %v", err)
 	}
+
+	// When a person acted is the other v4 field, and it is refused the same
+	// way. A behavioural record that silently lost when its decisions were
+	// taken would be missing the behaviour.
+	acted := session.OrderSubmitted{
+		Envelope:  session.Envelope{Time: 1, Sequence: 1, Kind: session.KindOrderSubmitted},
+		Order:     market.Order{ID: "o-1", Instrument: mnq, Side: market.SideBuy, Type: market.OrderTypeMarket, Qty: 1},
+		DecidedAt: humanAt,
+	}
+	for _, older := range []string{persistence.EventVersionV2, persistence.EventVersionV3} {
+		if _, err := persistence.EncodeEvents([]session.Event{acted}, older); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
+			t.Fatalf("a human clock under %s: got %v, want %v", older, err, persistence.ErrUnsupportedInVersion)
+		}
+	}
+	if _, err := persistence.EncodeEvents([]session.Event{acted}, persistence.EventVersionV4); err != nil {
+		t.Fatalf("a human clock under v4: %v", err)
+	}
 	// And an older reader refuses the name rather than guessing at it, even
 	// though the rest of the line is one it understands perfectly.
 	v4Line, err := persistence.EncodeEvents([]session.Event{byOCO}, persistence.EventVersionV4)

@@ -275,7 +275,7 @@ func TestACancellationCannotBorrowTheWrongReason(t *testing.T) {
 			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 			mustSubmit(t, s, order("long", market.SideBuy, 2))
 			mustSubmit(t, s, stopOrder(t, "protect", market.SideSell, 2, 19_000))
-			if err := s.CancelOrder("protect"); err != nil {
+			if err := s.CancelOrder("protect", decidedAt); err != nil {
 				t.Fatalf("CancelOrder: %v", err)
 			}
 			return s
@@ -285,7 +285,7 @@ func TestACancellationCannotBorrowTheWrongReason(t *testing.T) {
 			mustOpen(t, s, 2_000, "d1")
 			mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 			mustSubmit(t, s, limitOrder(t, "bid", market.SideBuy, 2, 19_000))
-			if err := s.CancelOrder("bid"); err != nil {
+			if err := s.CancelOrder("bid", decidedAt); err != nil {
 				t.Fatalf("CancelOrder: %v", err)
 			}
 			return s
@@ -325,7 +325,7 @@ func TestAWithdrawalCannotMisstateWhatItGaveUp(t *testing.T) {
 	mustOpen(t, s, 2_000, "d1")
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 	mustProtect(t, s, limitOrder(t, "entry", market.SideBuy, 2, 19_000), 18_900, 19_500)
-	if err := s.CancelProtection(entryRef("entry")); err != nil {
+	if err := s.CancelProtection(entryRef("entry"), decidedAt); err != nil {
 		t.Fatalf("CancelProtection: %v", err)
 	}
 	events := s.Events()
@@ -757,5 +757,148 @@ func TestAnOrderCannotSimplyStopBeingMentioned(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "neither rests nor cancels it") {
 		t.Fatalf("rejected for another reason: %v", err)
+	}
+}
+
+// Scenario: a fill's side, time and instrument are checked too
+//
+// They are the least interesting third of the fill's re-execution and the
+// easiest to leave unexercised, which is exactly what had happened. Time is
+// not decoration: it is the only stamp a fill carries, and a hypothesis about
+// how long a trader waits is measured on stamps.
+func TestAFillsSideTimeAndInstrumentAreChecked(t *testing.T) {
+	honest := func(t *testing.T) []session.Event {
+		t.Helper()
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_010, 5))
+		mustSubmit(t, s, order("o1", market.SideBuy, 3))
+		return s.Events()
+	}
+
+	tests := []struct {
+		name  string
+		forge func(*market.Fill)
+	}{
+		{"a fill on the other side", func(f *market.Fill) { f.Side = market.SideSell }},
+		{"a fill stamped at another moment", func(f *market.Fill) { f.Time = 3_001 }},
+		{"a fill in another instrument", func(f *market.Fill) {
+			f.Instrument = market.Instrument{Symbol: "MES", CentsPerTick: 125}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := honest(t)
+			at := indexOfKind(t, events, session.KindFillProduced, 1)
+			produced := events[at].(session.FillProduced)
+			tc.forge(&produced.Fill)
+			events[at] = produced
+
+			_, err := session.Replay(events)
+			if !errors.Is(err, session.ErrFabricated) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			}
+			// Named precisely: an instrument nobody traded is also caught by
+			// the account a moment later, and the test would not notice which.
+			if !strings.Contains(err.Error(), "the order and the book produce") {
+				t.Fatalf("rejected for another reason: %v", err)
+			}
+		})
+	}
+}
+
+// Scenario: the journal records when a person acted, and it is not market time
+//
+// Two orders sent between one tick and the next carry the same envelope time,
+// because the market did not move. The interval between them is the thing a
+// hypothesis about hesitation measures, and it exists only if somebody wrote it
+// down. The kernel writes it and never reads it: nothing here decides anything
+// on a human clock, which is why rule 2 is untouched.
+func TestTheJournalRecordsWhenAPersonActed(t *testing.T) {
+	const (
+		first  = market.WallClock(1_764_000_000_000_000_000)
+		second = market.WallClock(1_764_000_040_000_000_000) // forty seconds later
+	)
+
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+	if err := s.SubmitOrder(order("o1", market.SideBuy, 1), first); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+	if err := s.SubmitOrder(order("o2", market.SideBuy, 1), second); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+
+	var submitted []session.OrderSubmitted
+	for _, e := range s.Events() {
+		if v, ok := e.(session.OrderSubmitted); ok {
+			submitted = append(submitted, v)
+		}
+	}
+	if len(submitted) != 2 {
+		t.Fatalf("orders: got %d, want 2", len(submitted))
+	}
+	// The market did not move between them, and the log says so.
+	if submitted[0].Time != submitted[1].Time {
+		t.Fatalf("market time moved: %d then %d", submitted[0].Time, submitted[1].Time)
+	}
+	// The person took forty seconds, and the log says that too.
+	if got := submitted[1].DecidedAt - submitted[0].DecidedAt; got != second-first {
+		t.Fatalf("the interval between decisions is %d, want %d", got, second-first)
+	}
+	checked(t, s)
+
+	// A cancellation the trader asked for carries their clock; one the system
+	// derived carries nothing, because nobody decided it.
+	if err := s.CancelOrder("o1", second); !errors.Is(err, session.ErrNoSuchOrder) {
+		t.Fatalf("the fixture left a working order: %v", err)
+	}
+	for _, e := range s.Events() {
+		if v, ok := e.(session.OrderCancelled); ok && v.Reason != session.CancelledByTrader && v.DecidedAt != 0 {
+			t.Fatalf("a cancellation nobody decided claims a human clock: %+v", v)
+		}
+	}
+}
+
+// Scenario: what the system derived cannot claim a person decided it
+//
+// A protection ended because a fill closed the position, and a leg cancelled
+// because its sibling executed, are events the log itself required. Crediting
+// either to a person's clock would put a decision in the record that nobody
+// made — and the record exists to hold decisions.
+func TestWhatWasDerivedCannotClaimAPersonDecidedIt(t *testing.T) {
+	tests := []struct {
+		name  string
+		kind  session.Kind
+		forge func(session.Event) session.Event
+	}{
+		{"an ending a fill required", session.KindProtectionEnded, func(e session.Event) session.Event {
+			v := e.(session.ProtectionEnded)
+			v.DecidedAt = decidedAt
+			return v
+		}},
+		{"a leg its sibling cancelled", session.KindOrderCancelled, func(e session.Event) session.Event {
+			v := e.(session.OrderCancelled)
+			v.DecidedAt = decidedAt
+			return v
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := protectedLong(t)
+			mustObserve(t, s, sized(4_000, 20_500, 20_501, 50))
+			events := s.Events()
+			at := indexOfKind(t, events, tc.kind, 1)
+			events[at] = tc.forge(events[at])
+
+			if _, err := session.Replay(events); !errors.Is(err, session.ErrFabricated) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrFabricated)
+			}
+			if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
+				t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+			}
+		})
 	}
 }

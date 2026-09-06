@@ -72,9 +72,13 @@ func mustObserve(t *testing.T, s *session.Session, q market.Quote) {
 	}
 }
 
+// decidedAt is a stand-in for a person's clock. Tests that care about the
+// interval between decisions pass their own.
+const decidedAt = market.WallClock(1_764_000_000_000_000_000)
+
 func mustSubmit(t *testing.T, s *session.Session, o market.Order) {
 	t.Helper()
-	if err := s.SubmitOrder(o); err != nil {
+	if err := s.SubmitOrder(o, decidedAt); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
 }
@@ -134,7 +138,7 @@ func TestOpeningATradingSessionValuesTheAccountImmediately(t *testing.T) {
 // Scenario: no order is accepted before a session opens
 func TestAnOrderBeforeASessionOpensIsRejected(t *testing.T) {
 	s := newSession(t)
-	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1)); !errors.Is(err, ErrNoSessionOpenSentinel) {
+	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1), decidedAt); !errors.Is(err, ErrNoSessionOpenSentinel) {
 		t.Fatalf("error: got %v, want %v", err, ErrNoSessionOpenSentinel)
 	}
 	if s.JournalLen() != 1 {
@@ -152,7 +156,7 @@ func TestAnOrderBeforeAnyObservationIsRejected(t *testing.T) {
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
 
-	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1)); !errors.Is(err, session.ErrNoMarketObserved) {
+	if err := s.SubmitOrder(order("o-1", market.SideBuy, 1), decidedAt); !errors.Is(err, session.ErrNoMarketObserved) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrNoMarketObserved)
 	}
 }
@@ -288,7 +292,7 @@ func TestATerminalChallengeBlocksFurtherOrders(t *testing.T) {
 		t.Fatalf("challenge: got %v, want failed", s.Challenge().State())
 	}
 
-	if err := s.SubmitOrder(order("o-2", market.SideSell, 1)); !errors.Is(err, session.ErrChallengeEnded) {
+	if err := s.SubmitOrder(order("o-2", market.SideSell, 1), decidedAt); !errors.Is(err, session.ErrChallengeEnded) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrChallengeEnded)
 	}
 

@@ -540,6 +540,10 @@ func (p *protectionProjection) requireOwed(e Event) (bool, error) {
 			return false, fmt.Errorf("%w: %s is cancelled for %v, the events before it say %v",
 				ErrProtectionOutlivedEntry, want.orderID, cancelled.Reason, want.cancelReason)
 		}
+		if cancelled.DecidedAt != 0 {
+			return false, fmt.Errorf("%w: %s was cancelled by what a fill did, and claims a person's clock",
+				ErrProtectionOutlivedEntry, want.orderID)
+		}
 		p.owed = p.owed[1:]
 		return true, nil
 	}
@@ -560,6 +564,13 @@ func (p *protectionProjection) requireOwed(e Event) (bool, error) {
 		return false, fmt.Errorf("%w: %+v ends holding %d/%d, the events before it say %d/%d",
 			ErrProtectionOutlivedEntry, want.ref, ended.StopPrice, ended.TargetPrice,
 			want.stopPrice, want.targetPrice)
+	}
+	// An ending the events themselves required is an ending nobody decided,
+	// and a human clock on it would be a person credited with an act the
+	// system took on its own.
+	if ended.DecidedAt != 0 {
+		return false, fmt.Errorf("%w: %+v ended by what a fill did, and claims a person's clock",
+			ErrProtectionOutlivedEntry, want.ref)
 	}
 	p.owed = p.owed[1:]
 	return true, nil
@@ -750,8 +761,8 @@ func widened(long bool, previous, next market.Ticks) bool {
 // They are one decision. Recording them separately would allow a journal in
 // which the entry exists and its protection does not, which is a state the
 // trader never chose and which the log would have no way to explain.
-func (s *Session) SubmitOrderWithProtection(o market.Order, stop, target market.Ticks) error {
-	return s.command(func() error { return s.submitOrderWithProtection(o, stop, target) })
+func (s *Session) SubmitOrderWithProtection(o market.Order, stop, target market.Ticks, decidedAt market.WallClock) error {
+	return s.command(func() error { return s.submitOrderWithProtection(o, stop, target, decidedAt) })
 }
 
 // The protection is recorded between the decision and its first fill, which is
@@ -763,7 +774,7 @@ func (s *Session) SubmitOrderWithProtection(o market.Order, stop, target market.
 // and the link between the two would have to be inferred backwards from a
 // later event — which is guessing at causation from ordering, the thing a
 // journal exists to make unnecessary.
-func (s *Session) submitOrderWithProtection(o market.Order, stop, target market.Ticks) error {
+func (s *Session) submitOrderWithProtection(o market.Order, stop, target market.Ticks, decidedAt market.WallClock) error {
 	// Every refusal happens before anything is recorded, so a rejected command
 	// leaves no order, no protection, no reserved name, no counter moved and
 	// no event.
@@ -774,7 +785,7 @@ func (s *Session) submitOrderWithProtection(o market.Order, stop, target market.
 	// identifier is the more fundamental one: the protection exists only
 	// because the order does, and naming the derived fault would send a reader
 	// looking for a protection that was never the problem.
-	prepared, err := s.prepareOrder(o)
+	prepared, err := s.prepareOrder(o, decidedAt)
 	if err != nil {
 		return err
 	}
@@ -817,11 +828,11 @@ func (s *Session) placeProtection(at market.LogicalTime, entryOrderID string, st
 }
 
 // ReplaceProtection changes the levels of a protection that exists.
-func (s *Session) ReplaceProtection(ref ProtectionRef, stop, target market.Ticks) error {
-	return s.command(func() error { return s.replaceProtection(ref, stop, target) })
+func (s *Session) ReplaceProtection(ref ProtectionRef, stop, target market.Ticks, decidedAt market.WallClock) error {
+	return s.command(func() error { return s.replaceProtection(ref, stop, target, decidedAt) })
 }
 
-func (s *Session) replaceProtection(ref ProtectionRef, stop, target market.Ticks) error {
+func (s *Session) replaceProtection(ref ProtectionRef, stop, target market.Ticks, decidedAt market.WallClock) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
@@ -856,7 +867,8 @@ func (s *Session) replaceProtection(ref ProtectionRef, stop, target market.Ticks
 			PreviousStopPrice: current.stopPrice, PreviousTargetPrice: current.targetPrice,
 			StopPrice: stop, TargetPrice: target,
 			StopOrderID: stopID, TargetOrderID: targetID,
-			Widened: widened(current.long, current.stopPrice, stop),
+			Widened:   widened(current.long, current.stopPrice, stop),
+			DecidedAt: decidedAt,
 		}
 		return replaced
 	}); err != nil {
@@ -866,11 +878,11 @@ func (s *Session) replaceProtection(ref ProtectionRef, stop, target market.Ticks
 }
 
 // CancelProtection withdraws a protection, leaving its entry alone.
-func (s *Session) CancelProtection(ref ProtectionRef) error {
-	return s.command(func() error { return s.endProtection(ref, ProtectionWithdrawnByTrader) })
+func (s *Session) CancelProtection(ref ProtectionRef, decidedAt market.WallClock) error {
+	return s.command(func() error { return s.endProtection(ref, ProtectionWithdrawnByTrader, decidedAt) })
 }
 
-func (s *Session) endProtection(ref ProtectionRef, reason ProtectionEndReason) error {
+func (s *Session) endProtection(ref ProtectionRef, reason ProtectionEndReason, decidedAt market.WallClock) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
@@ -878,7 +890,7 @@ func (s *Session) endProtection(ref ProtectionRef, reason ProtectionEndReason) e
 	if err != nil {
 		return err
 	}
-	return s.recordProtectionEnded(at, current, ref, reason)
+	return s.recordProtectionEnded(at, current, ref, reason, decidedAt)
 }
 
 // endPlanFor ends the protection planned against an entry that no longer
@@ -898,9 +910,10 @@ func (s *Session) endPlanFor(at market.LogicalTime, entryOrderID string) error {
 		return nil
 	}
 	ref := ProtectionRef{Kind: ProtectionRefEntry, OrderID: entryOrderID}
+	// Nobody decided this: the entry went and the plan could not survive it.
 	return s.recordProtectionEnded(at, protectionLevels{
 		stopPrice: planned.stopPrice, targetPrice: planned.targetPrice,
-	}, ref, ProtectionEntryCancelled)
+	}, ref, ProtectionEntryCancelled, 0)
 }
 
 // recordOwed writes what a fact required and folds it in.
@@ -919,15 +932,15 @@ func (s *Session) recordOwed(at market.LogicalTime, owed owedEvent) error {
 	}
 	return s.recordProtectionEnded(at, protectionLevels{
 		stopPrice: owed.stopPrice, targetPrice: owed.targetPrice,
-	}, owed.ref, owed.endReason)
+	}, owed.ref, owed.endReason, 0)
 }
 
 // recordProtectionEnded writes an ending and folds it in. Its caller has
 // already resolved the protection and decided the command may proceed.
-func (s *Session) recordProtectionEnded(at market.LogicalTime, levels protectionLevels, ref ProtectionRef, reason ProtectionEndReason) error {
+func (s *Session) recordProtectionEnded(at market.LogicalTime, levels protectionLevels, ref ProtectionRef, reason ProtectionEndReason, decidedAt market.WallClock) error {
 	ended := ProtectionEnded{
 		Ref: ref, StopPrice: levels.stopPrice, TargetPrice: levels.targetPrice,
-		Reason: reason,
+		Reason: reason, DecidedAt: decidedAt,
 	}
 	if err := s.record(at, KindProtectionEnded, func(e Envelope) Event {
 		ended.Envelope = e

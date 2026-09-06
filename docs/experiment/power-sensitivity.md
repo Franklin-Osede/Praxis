@@ -334,7 +334,14 @@ use**, and that is settled before anything is drawn, not after.
 This document computes in "observations" throughout and never says whose. It
 has to, and the answer changes the arithmetic.
 
-**The subject is a trader.** Section 4 asks for 489 sessions and section 6
+**The subject is a trader, and the journal now says which.** `Config` carries a
+`SubjectID` and `praxis.event.v4` records it — a label the protocol assigns,
+never a name. It went in while v4 was still a draft, because after the first
+pilot session this repository's version rule makes it a new payload version with
+a migration behind it, and deriving a subject from a file name afterwards is not
+evidence.
+
+Section 4 asks for 489 sessions and section 6
 pushes that past 1,200. At one session a day that is years for one person, and
 the thesis — that traders fail at executing their own strategy — is a claim
 about traders in the plural. A confirmatory sample of one person yields a
@@ -364,6 +371,17 @@ therefore stops being a covariate and becomes a constant: the variance between
 traders is not confounded with which day each of them happened to get. That is
 not a lucky side effect of the engineering discipline — it is the reason for
 it, and until now it was written down nowhere.
+
+**What it buys is spent by the interface, not by the engine.** The prices being
+identical is not enough: two subjects who moved through the same file at
+different speeds are not in the same experiment. So the confirmatory sessions
+advance one observation at a time, with no pause, no rewind and no speed
+control, and the pilots may allow pausing only if they record it — wanting to
+pause is data about time pressure, and finding that out is what pilots are for.
+The same applies to the information set: a screen showing the distance to a
+drawdown threshold turns candidate F from "people break rules on days already
+down" into "people react to a number they were shown". See section 11 of
+[`../PRAXIS_SPEC.md`](../PRAXIS_SPEC.md).
 
 ## 8. What the pilot sessions are for
 

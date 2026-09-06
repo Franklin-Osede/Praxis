@@ -191,6 +191,13 @@ type OrderSubmitted struct {
 	Envelope
 	Order   market.Order
 	Context OrderContext
+
+	// DecidedAt is when the person sent it, by their own clock. The envelope's
+	// time is the market's, and two orders between one tick and the next carry
+	// the same one — so the interval between decisions, which is what a
+	// hypothesis about hesitation measures, is not in the envelope. Zero means
+	// no person was there.
+	DecidedAt market.WallClock
 }
 
 // CancelReason says why an order stopped working. It is a fact about what the
@@ -256,6 +263,12 @@ type OrderCancelled struct {
 	OrderID      string
 	RemainingQty market.Qty
 	Reason       CancelReason
+
+	// DecidedAt is when a person asked for this, by their own clock. It is
+	// zero on a cancellation the system decided — a remainder the book could
+	// not fill, a sibling the other leg cancelled — because nobody decided
+	// those, and saying so is the point.
+	DecidedAt market.WallClock
 }
 
 // ProtectionRefKind says whether a protection is named by the entry that
@@ -394,6 +407,9 @@ type ProtectionReplaced struct {
 	// replacing a level from nothing is placing it rather than widening it.
 	// Being derived, it is recomputed by Verify rather than believed.
 	Widened bool
+
+	// DecidedAt is when the person moved it, by their own clock.
+	DecidedAt market.WallClock
 }
 
 // ProtectionEnded records a protection that stopped existing, and why.
@@ -404,6 +420,10 @@ type ProtectionEnded struct {
 	StopPrice   market.Ticks
 	TargetPrice market.Ticks
 	Reason      ProtectionEndReason
+
+	// DecidedAt is when the person withdrew it, by their own clock, and zero
+	// for every ending the system derived from what a fill did.
+	DecidedAt market.WallClock
 }
 
 // FillProduced is an execution fact.

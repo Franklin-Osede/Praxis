@@ -149,7 +149,7 @@ func TestCancellingAWorkingOrder(t *testing.T) {
 	mustSubmit(t, s, order("entry", market.SideBuy, 2))
 	mustSubmit(t, s, stopOrder(t, "stop", market.SideSell, 2, 19_990))
 
-	if err := s.CancelOrder("stop"); err != nil {
+	if err := s.CancelOrder("stop", decidedAt); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	if len(s.WorkingOrders()) != 0 {
@@ -172,7 +172,7 @@ func TestCancellingAWorkingOrder(t *testing.T) {
 		t.Fatalf("cancellation: got %+v", cancelled)
 	}
 
-	if err := s.CancelOrder("stop"); !errors.Is(err, session.ErrNoSuchOrder) {
+	if err := s.CancelOrder("stop", decidedAt); !errors.Is(err, session.ErrNoSuchOrder) {
 		t.Fatalf("cancelling twice: got %v, want %v", err, session.ErrNoSuchOrder)
 	}
 }
@@ -185,7 +185,7 @@ func TestAWorkingIdentifierCannotBeReused(t *testing.T) {
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 10))
 	mustSubmit(t, s, limitOrder(t, "o-1", market.SideBuy, 2, 19_000))
 
-	if err := s.SubmitOrder(limitOrder(t, "o-1", market.SideBuy, 1, 19_000)); !errors.Is(err, session.ErrDuplicateOrderID) {
+	if err := s.SubmitOrder(limitOrder(t, "o-1", market.SideBuy, 1, 19_000), decidedAt); !errors.Is(err, session.ErrDuplicateOrderID) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrDuplicateOrderID)
 	}
 	if len(s.WorkingOrders()) != 1 {

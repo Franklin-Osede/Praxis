@@ -549,8 +549,12 @@ func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 }
 
 // SubmitOrder records a decision, executes it, applies its fills and revalues.
-func (s *Session) SubmitOrder(o market.Order) error {
-	return s.command(func() error { return s.submitOrder(o) })
+//
+// decidedAt is when the person acted, by their own clock. The kernel records it
+// and never reads it: it arrives as data from whatever witnessed the act, the
+// same shape as an observation's source sequence.
+func (s *Session) SubmitOrder(o market.Order, decidedAt market.WallClock) error {
+	return s.command(func() error { return s.submitOrder(o, decidedAt) })
 }
 
 // preparedOrder is everything a submission has decided before any of it is
@@ -566,12 +570,13 @@ type preparedOrder struct {
 	order     market.Order
 	context   OrderContext
 	at        market.LogicalTime
+	decidedAt market.WallClock
 	result    execution.Result
 	remaining market.Qty
 }
 
-func (s *Session) submitOrder(o market.Order) error {
-	prepared, err := s.prepareOrder(o)
+func (s *Session) submitOrder(o market.Order, decidedAt market.WallClock) error {
+	prepared, err := s.prepareOrder(o, decidedAt)
 	if err != nil {
 		return err
 	}
@@ -590,7 +595,7 @@ func (s *Session) submitOrder(o market.Order) error {
 // prepareOrder refuses everything a submission cannot do and computes
 // everything it will do. It changes nothing: no order in the log, no counter
 // moved, no money touched, no name spent.
-func (s *Session) prepareOrder(o market.Order) (preparedOrder, error) {
+func (s *Session) prepareOrder(o market.Order, decidedAt market.WallClock) (preparedOrder, error) {
 	if !s.sessionOpen {
 		return preparedOrder{}, ErrNoSessionOpen
 	}
@@ -652,13 +657,16 @@ func (s *Session) prepareOrder(o market.Order) (preparedOrder, error) {
 	if err != nil {
 		return preparedOrder{}, err
 	}
-	return preparedOrder{order: o, context: context, at: at, result: result, remaining: remaining}, nil
+	return preparedOrder{
+		order: o, context: context, at: at, decidedAt: decidedAt,
+		result: result, remaining: remaining,
+	}, nil
 }
 
 // recordOrder writes the decision and moves what the decision alone moves.
 func (s *Session) recordOrder(p preparedOrder) error {
 	if err := s.record(p.at, KindOrderSubmitted, func(e Envelope) Event {
-		return OrderSubmitted{Envelope: e, Order: p.order, Context: p.context}
+		return OrderSubmitted{Envelope: e, Order: p.order, Context: p.context, DecidedAt: p.decidedAt}
 	}); err != nil {
 		return err
 	}
@@ -755,11 +763,11 @@ func (s *Session) isWorking(id string) bool {
 }
 
 // CancelOrder withdraws a working order.
-func (s *Session) CancelOrder(id string) error {
-	return s.command(func() error { return s.cancelOrder(id) })
+func (s *Session) CancelOrder(id string, decidedAt market.WallClock) error {
+	return s.command(func() error { return s.cancelOrder(id, decidedAt) })
 }
 
-func (s *Session) cancelOrder(id string) error {
+func (s *Session) cancelOrder(id string, decidedAt market.WallClock) error {
 	if !s.sessionOpen {
 		return ErrNoSessionOpen
 	}
@@ -781,7 +789,7 @@ func (s *Session) cancelOrder(id string) error {
 		if err := s.record(at, KindOrderCancelled, func(e Envelope) Event {
 			return OrderCancelled{
 				Envelope: e, OrderID: id, RemainingQty: w.remaining,
-				Reason: CancelledByTrader,
+				Reason: CancelledByTrader, DecidedAt: decidedAt,
 			}
 		}); err != nil {
 			return err

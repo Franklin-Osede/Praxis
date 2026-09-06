@@ -80,6 +80,13 @@ protection that the trader never intended. Without a single command that
 replaces one level with another, the measurement would count intent that did
 not exist.
 
+`ReplaceProtection` is that command, and it exists. What is not yet built is
+the screen, and the screen can undo this on its own: a "remove stop" button
+beside a "set stop" button produces exactly the log this candidate cannot use,
+whatever the domain offers. That is why it is written into the interface's
+constraints rather than left as an implementation note — see section 11 of
+[`../PRAXIS_SPEC.md`](../PRAXIS_SPEC.md).
+
 Meaningful, and harder: "without replacement" has to be defined exactly, and
 the definition is the measurement.
 

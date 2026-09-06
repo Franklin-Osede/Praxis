@@ -12,6 +12,10 @@ import (
 	"praxis/internal/session"
 )
 
+// decidedAt is a stand-in for a person's clock, which the adapter supplies and
+// the kernel only records.
+const decidedAt = market.WallClock(1_764_000_000_000_000_000)
+
 // writeSessionWithOrder builds a journal that contains a decision, not only
 // observations. Most fixtures here observe and never submit, which mirrors the
 // gap in the system itself: everything durable was built around the flow that
@@ -23,7 +27,7 @@ func writeSessionWithOrder(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
-	if err := s.SubmitOrder(order); err != nil {
+	if err := s.SubmitOrder(order, decidedAt); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
 	if err := s.EndTradingSession(9_000); err != nil {
@@ -671,11 +675,11 @@ func TestARealProtectedJournalRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLimitOrder: %v", err)
 	}
-	if err := s.SubmitOrderWithProtection(entry, 18_900, 19_500); err != nil {
+	if err := s.SubmitOrderWithProtection(entry, 18_900, 19_500, decidedAt); err != nil {
 		t.Fatalf("SubmitOrderWithProtection: %v", err)
 	}
 	if err := s.ReplaceProtection(
-		session.ProtectionRef{Kind: session.ProtectionRefEntry, OrderID: "entry"}, 18_800, 19_500,
+		session.ProtectionRef{Kind: session.ProtectionRefEntry, OrderID: "entry"}, 18_800, 19_500, decidedAt,
 	); err != nil {
 		t.Fatalf("ReplaceProtection: %v", err)
 	}

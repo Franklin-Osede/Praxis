@@ -28,8 +28,25 @@ type Cents int64
 type Qty int64
 
 // LogicalTime is nanoseconds since the Unix epoch in UTC. It is the domain's
-// only notion of time.
+// only notion of time, and it is the market's: every execution, valuation and
+// rule reads it and nothing else.
 type LogicalTime int64
+
+// WallClock is an instant on the clock of whoever was watching, in nanoseconds
+// since the Unix epoch in UTC.
+//
+// It is not LogicalTime and never substitutes for it. Two orders sent between
+// one tick and the next carry the same LogicalTime, because the market did not
+// move; forty seconds of a person staring at a screen while the feed is still
+// is invisible in market time, and that interval is the thing a hypothesis
+// about hesitation is measured on.
+//
+// Nothing in the kernel reads it. It arrives as data from the adapter that
+// witnessed the act — the same shape as an observation's source sequence — is
+// recorded, and never decides anything. A journal nobody traded carries zero,
+// which is not a sentinel for a configured value but the honest statement that
+// no person was there.
+type WallClock int64
 
 // Side is the direction of an order or fill.
 type Side uint8

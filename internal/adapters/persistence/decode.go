@@ -88,6 +88,11 @@ func decodeEvent(line string, version string) (session.Event, error) {
 			submitted.Context.ConsecutiveLosingTrades = r.uint32()
 			event = submitted
 		}
+		if knows(version, EventVersionV4) {
+			submitted := event.(session.OrderSubmitted)
+			submitted.DecidedAt = r.wallClock()
+			event = submitted
+		}
 
 	case typeOrderRested:
 		kind = session.KindOrderRested
@@ -99,10 +104,14 @@ func decodeEvent(line string, version string) (session.Event, error) {
 
 	case typeOrderCancelled:
 		kind = session.KindOrderCancelled
-		event = session.OrderCancelled{
+		cancelled := session.OrderCancelled{
 			Envelope: envelope(at, sequence, kind),
 			OrderID:  r.id(), RemainingQty: r.qty(), Reason: r.cancelReason(version),
 		}
+		if knows(version, EventVersionV4) {
+			cancelled.DecidedAt = r.wallClock()
+		}
+		event = cancelled
 
 	case typeFillProduced:
 		kind = session.KindFillProduced
@@ -164,6 +173,9 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		replaced.StopPrice, replaced.TargetPrice = r.ticks(), r.ticks()
 		replaced.StopOrderID, replaced.TargetOrderID = r.optionalID(), r.optionalID()
 		replaced.Widened = r.boolean()
+		if knows(version, EventVersionV4) {
+			replaced.DecidedAt = r.wallClock()
+		}
 		event = replaced
 
 	case typeProtectionEnded:
@@ -174,6 +186,9 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		ended := session.ProtectionEnded{Envelope: envelope(at, sequence, kind), Ref: r.ref()}
 		ended.StopPrice, ended.TargetPrice = r.ticks(), r.ticks()
 		ended.Reason = r.protectionEndReason()
+		if knows(version, EventVersionV4) {
+			ended.DecidedAt = r.wallClock()
+		}
 		event = ended
 
 	case typeSessionEnded:
@@ -259,6 +274,7 @@ func (r *reader) logicalTime() market.LogicalTime { return market.LogicalTime(r.
 func (r *reader) cents() market.Cents             { return market.Cents(r.int()) }
 func (r *reader) ticks() market.Ticks             { return market.Ticks(r.int()) }
 func (r *reader) qty() market.Qty                 { return market.Qty(r.int()) }
+func (r *reader) wallClock() market.WallClock     { return market.WallClock(r.int()) }
 
 // optionalID reads an identifier that may legitimately be absent.
 func (r *reader) optionalID() string {

@@ -132,6 +132,9 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		} else if v.Context.ConsecutiveLosingTrades != 0 {
 			return "", fmt.Errorf("%w: %s cannot carry a losing-trade streak", ErrUnsupportedInVersion, version)
 		}
+		if err := f.decidedAt(version, v.DecidedAt); err != nil {
+			return "", err
+		}
 
 	case session.OrderRested:
 		if header.Kind != session.KindOrderRested {
@@ -152,6 +155,9 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		}
 		f.name(typeOrderCancelled).at(header)
 		f.id(v.OrderID).int(int64(v.RemainingQty)).cancelReason(v.Reason)
+		if err := f.decidedAt(version, v.DecidedAt); err != nil {
+			return "", err
+		}
 
 	case session.FillProduced:
 		if header.Kind != session.KindFillProduced {
@@ -210,6 +216,9 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		f.int(int64(v.PreviousStopPrice)).int(int64(v.PreviousTargetPrice))
 		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice))
 		f.optionalID(v.StopOrderID).optionalID(v.TargetOrderID).boolean(v.Widened)
+		if err := f.decidedAt(version, v.DecidedAt); err != nil {
+			return "", err
+		}
 
 	case session.ProtectionEnded:
 		if err := requireProtection(version); err != nil {
@@ -221,6 +230,9 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		f.name(typeProtectionEnded).at(header).ref(v.Ref)
 		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice))
 		f.enum(protectionEndNames[v.Reason], "protection end reason")
+		if err := f.decidedAt(version, v.DecidedAt); err != nil {
+			return "", err
+		}
 
 	case session.SessionEnded:
 		if header.Kind != session.KindSessionEnded {
@@ -256,6 +268,21 @@ func (f *fields) int(v int64) *fields {
 func (f *fields) uint(v uint64) *fields {
 	f.parts = append(f.parts, strconv.FormatUint(v, 10))
 	return f
+}
+
+// decidedAt writes when a person acted, which only the version that has a name
+// for it can carry. An older version refuses a non-zero one rather than
+// dropping it: a journal that silently lost when its decisions were taken would
+// be a behavioural record missing the behaviour.
+func (f *fields) decidedAt(version string, at market.WallClock) error {
+	if knows(version, EventVersionV4) {
+		f.int(int64(at))
+		return nil
+	}
+	if at != 0 {
+		return fmt.Errorf("%w: %s cannot say when a person acted", ErrUnsupportedInVersion, version)
+	}
+	return nil
 }
 
 func requireProtection(version string) error {

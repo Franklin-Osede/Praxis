@@ -969,12 +969,8 @@ Next, in order:
    One rule has no test and says so: with a two-sided quote a protection's two
    levels cannot both be reachable, so "the stop wins" waits for bar
    observations. A property test pins the impossibility in the meantime.
-7. **A minimal local UI**: chart, replay controls, buy and sell, quantity, stop
-   and target, position, balance and equity, and the evaluation's status. It
-   must offer **one command that replaces a protection**, never a remove
-   button beside a set button: two commands manufacture an interval with no
-   protection the trader never intended, and measuring those intervals is one
-   of the things the log exists for. Nothing else until the pilots are traded.
+7. **A minimal local UI**, under the protocol constraints in section 11.
+   Nothing else until the pilots are traded.
 8. **Fifteen labelled pilot sessions — five traders, three each** — excluded
    from the confirmatory sample and used only to estimate the inputs the
    sensitivity table left open, including the between-trader correlation that
@@ -983,6 +979,67 @@ Next, in order:
    effect, the analysis method, the power target, the sample size, the
    exclusion rules and the stopping rule.
 10. **Only the challenge rules the frozen protocol requires.**
+
+## 11. The interface is experimental apparatus
+
+A screen looks like a layout decision and is not. Four of its choices change
+what the journal means, and each is cheaper to settle now than after a batch of
+pilots is invalid.
+
+**One command replaces a protection.** Never a remove button beside a set
+button. Two commands manufacture an interval with no protection the trader
+never intended, and the length of those intervals is one of the things the log
+exists to measure. `ReplaceProtection` is the command; the screen must not be
+able to express anything else.
+
+**Playback is fixed, and that is what §7b of the power document is spending.**
+Every subject trades the same file so that the market stops being a covariate
+and becomes a constant. That holds for the prices and stops holding the moment
+the interface can pause, rewind or change speed: two subjects at different
+paces are not in the same experiment, and the variance between them is
+confounded again. So the confirmatory sessions advance one observation at a
+time with no pause, no rewind and no speed control. The pilots may allow
+pausing **and must record it**, because wanting to pause is itself data about
+time pressure and is one of the things the pilots exist to find out.
+
+**What is on screen is a claim the journal is already making.**
+`OrderContext.ConsecutiveLosingTrades` is documented as what the trader knew,
+and the only thing that can make that true is the interface showing it. If the
+streak is not on screen the field is still a fact about the world, but the
+comment is false. Worse, showing the distance to a trailing drawdown threshold
+changes what a hypothesis about rule breaches on losing days is measuring:
+"people break rules when already down" becomes "people react to a number they
+were shown". The inventory of what is displayed is written before the screen is
+drawn and belongs to the protocol, not the layout.
+
+**The order identifier comes from the gesture, not the server.** A duplicated
+submission — a double click, a retry after a timeout, a second tab — is the one
+way an interface puts a decision in the journal that no person took. The client
+mints the identifier at the instant of the gesture and sends it, so a retry
+sends the same one and the kernel refuses it. Identifiers are already spent
+forever and never reused, so a whole class of interface bug becomes a domain
+guard that exists and is tested. One active connection: a second tab is a second
+hand on the wheel, and the kernel's inputs must arrive in one order.
+
+Three smaller decisions, settled the same way:
+
+- **A recovery is a measurement.** `Recover` → `Resume` must be invisible to
+  the trader, and something must still count it: sessions lost to interruption
+  is one of the six quantities the pilots exist to estimate.
+- **A `ReplayedState` is consumed by one `Resume`.** Two share one account and
+  one evaluation, which fails loudly rather than silently — but an interface
+  that retries a recovery can reach it.
+- **Decimals are parsed totally and formatted in Go.** A malformed amount is
+  refused, never rounded, and no `toFixed` in JavaScript: a second
+  implementation of the money-to-string rule will eventually disagree with the
+  first.
+
+**A refused attempt leaves no trace, deliberately.** `prepareOrder` refuses
+before recording anything, so an order with inverted levels never reaches the
+journal. If attempting a widening counts as behaviour — and an attempt to widen
+with levels the geometry rule refuses *is* an attempt to widen — it belongs in
+an interaction log the interface keeps, never in the journal. Which of the two
+it is has to be decided, because the frozen protocol will have to say.
 
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not
@@ -993,7 +1050,7 @@ planned risk and no protective levels, which is what
 [`docs/experiment/power-sensitivity.md`](experiment/power-sensitivity.md)
 identifies as the scope of the interface.
 
-## 11. Statistical and commercial guardrails
+## 12. Statistical and commercial guardrails
 
 Freeze hypotheses before collecting sessions; do not rewrite them during data
 collection. An underpowered study fails to reject for lack of data, not for

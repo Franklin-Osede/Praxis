@@ -123,7 +123,7 @@ func TestACommandThatFailsAfterRecordingStopsTheSession(t *testing.T) {
 	positionsBefore := s.Account().Positions()
 	realisedBefore, feesBefore := s.Account().RealisedCts(), s.Account().FeesCts()
 
-	err := s.SubmitOrder(order("o-1", market.SideBuy, math.MaxInt64))
+	err := s.SubmitOrder(order("o-1", market.SideBuy, math.MaxInt64), decidedAt)
 	if !errors.Is(err, session.ErrSessionNeedsRecovery) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrSessionNeedsRecovery)
 	}

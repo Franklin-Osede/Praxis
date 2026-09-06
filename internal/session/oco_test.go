@@ -383,7 +383,7 @@ func TestAProtectiveBatchIsAllOrNothing(t *testing.T) {
 
 	// The command that fails is the protected entry whose stop is already
 	// through: one batch, nine events, none of which may survive alone.
-	err = s.SubmitOrderWithProtection(order("entry", market.SideBuy, 4), 20_050, 20_400)
+	err = s.SubmitOrderWithProtection(order("entry", market.SideBuy, 4), 20_050, 20_400, decidedAt)
 	if !errors.Is(err, session.ErrSessionNeedsRecovery) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrSessionNeedsRecovery)
 	}
