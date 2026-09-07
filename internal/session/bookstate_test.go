@@ -1034,10 +1034,10 @@ func TestASubjectAndAClockMustAgree(t *testing.T) {
 	})
 
 	t.Run("a journal nobody traded, decided by nobody", func(t *testing.T) {
-		// A scripted run: no subject and no clock anywhere, which is the
-		// honest shape of a journal a person never touched.
+		// A scripted run: nobody, nothing presented to them, and no decision
+		// anywhere — the honest shape of a journal a person never touched.
 		cfg := config()
-		cfg.SubjectID = ""
+		cfg.SubjectID, cfg.Pacing = "", session.PacingScripted
 		s, err := session.New(cfg, 1_000, nil)
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -1312,4 +1312,192 @@ func TestAGestureIsSpentOnceWhateverItCommanded(t *testing.T) {
 			t.Fatalf("error: got %v, want %v", err, session.ErrGestureReused)
 		}
 	})
+}
+
+// Scenario: the pacing and the subject are one claim
+//
+// A pilot or confirmatory session is somebody's by definition and a scripted
+// run is nobody's. A configuration that says how observations reached a person
+// without saying which person, or names a person and says nothing was presented
+// to them, asserts two incompatible things — and the dangerous half is a
+// fixture labelled as though a person had traded it, which is the one thing the
+// pilot sample must never contain.
+func TestThePacingAndTheSubjectAreOneClaim(t *testing.T) {
+	refused := []struct {
+		name    string
+		subject string
+		pacing  session.PacingMode
+	}{
+		{"presented to nobody", "", session.PacingPilot},
+		{"confirmatory for nobody", "", session.PacingConfirmatory},
+		{"a subject nothing was presented to", "t-01", session.PacingScripted},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config()
+			cfg.SubjectID, cfg.Pacing = tc.subject, tc.pacing
+			if _, err := session.New(cfg, 1_000, nil); !errors.Is(err, session.ErrPacingWithoutSubject) {
+				t.Fatalf("got %v, want %v", err, session.ErrPacingWithoutSubject)
+			}
+		})
+	}
+
+	// And a reader refuses it too, because a journal can arrive from somewhere
+	// the door never stood.
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	events := s.Events()
+	started := events[0].(session.SessionStarted)
+	started.Config.Pacing = session.PacingScripted
+	events[0] = started
+	if _, err := session.Replay(events); !errors.Is(err, session.ErrStructure) {
+		t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+	}
+}
+
+// Scenario: a retry is answered from the journal, not from a server's memory
+//
+// A set of spent names says an act happened; it does not say what it did, so it
+// cannot tell a resent command from a different command sent under a name
+// reused by mistake. The application loop needs both, and it needs them to
+// survive a restart — the client's counter prevents accidental reuse, but the
+// journal is the authority on what was confirmed.
+func TestWhatAGestureCommandedIsRecoverable(t *testing.T) {
+	s := protectedSession(t, 18_900, 19_500)
+	replace := decided(0)
+	if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_500, replace); err != nil {
+		t.Fatalf("ReplaceProtection: %v", err)
+	}
+
+	state, err := session.Replay(s.Events())
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if !reflect.DeepEqual(state.Gestures, s.Gestures()) {
+		t.Fatalf("acts\n got: %+v\nwant: %+v", state.Gestures, s.Gestures())
+	}
+	resumed, err := session.Resume(state, nil)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !reflect.DeepEqual(resumed.Gestures(), s.Gestures()) {
+		t.Fatal("a resumed session forgot what its acts commanded")
+	}
+
+	acts := resumed.Gestures()
+	if len(acts) != 2 {
+		t.Fatalf("acts: got %d, want the submission and the replacement", len(acts))
+	}
+
+	// The submission carries the levels placed with it: an entry and its
+	// protection are one act, so resending the entry with different levels is
+	// a different command rather than a retry.
+	submit := acts[0]
+	if submit.Kind != session.GestureSubmitOrder || submit.StopPrice != 18_900 || submit.TargetPrice != 19_500 {
+		t.Fatalf("the submission: got %+v", submit)
+	}
+	// And the replacement carries what it asked for.
+	change := acts[1]
+	if change.Kind != session.GestureReplaceProtection || change.StopPrice != 18_800 {
+		t.Fatalf("the replacement: got %+v", change)
+	}
+	if change.Decided != replace {
+		t.Fatalf("the stamp was remade rather than recovered: got %+v, want %+v", change.Decided, replace)
+	}
+
+	// A retry is the same command at a later instant, so the stamp is not part
+	// of the comparison — comparing it would make every retry a conflict.
+	retry := change
+	retry.Decided = decided(90_000_000_000)
+	if !change.SameCommand(retry) {
+		t.Fatal("the same command at a later moment did not compare equal")
+	}
+	// A different command under the same name is a conflict, not a retry.
+	other := change
+	other.StopPrice = 18_700
+	if change.SameCommand(other) {
+		t.Fatal("a different command compared equal")
+	}
+}
+
+// Scenario: two acts are the same command only if they asked for the same thing
+//
+// This is the comparison the application loop answers a retry with, so every
+// field it ignores is a way for a different command to be mistaken for a resend
+// — and a resend that is not one is a decision the person never took, recorded
+// as though they had.
+func TestTwoActsAreTheSameCommandOnlyIfTheyAskedTheSame(t *testing.T) {
+	entry := order("o1", market.SideBuy, 2)
+	base := map[session.GestureKind]session.Gesture{
+		session.GestureSubmitOrder: {
+			Kind: session.GestureSubmitOrder, Order: entry,
+			StopPrice: 19_900, TargetPrice: 20_400,
+		},
+		session.GestureCancelOrder: {Kind: session.GestureCancelOrder, OrderID: "o1"},
+		session.GestureReplaceProtection: {
+			Kind: session.GestureReplaceProtection, Ref: entryRef("o1"),
+			StopPrice: 19_800, TargetPrice: 20_400,
+		},
+		session.GestureWithdrawProtection: {
+			Kind: session.GestureWithdrawProtection, Ref: entryRef("o1"),
+		},
+	}
+
+	differs := []struct {
+		name  string
+		kind  session.GestureKind
+		alter func(*session.Gesture)
+	}{
+		{"a submission of another order", session.GestureSubmitOrder,
+			func(g *session.Gesture) { g.Order = order("o2", market.SideBuy, 2) }},
+		{"a submission of another quantity", session.GestureSubmitOrder,
+			func(g *session.Gesture) { g.Order = order("o1", market.SideBuy, 3) }},
+		{"a submission with another stop", session.GestureSubmitOrder,
+			func(g *session.Gesture) { g.StopPrice = 19_700 }},
+		{"a submission with another target", session.GestureSubmitOrder,
+			func(g *session.Gesture) { g.TargetPrice = 20_500 }},
+		{"a cancellation of another order", session.GestureCancelOrder,
+			func(g *session.Gesture) { g.OrderID = "o2" }},
+		{"a replacement of another protection", session.GestureReplaceProtection,
+			func(g *session.Gesture) { g.Ref = entryRef("o2") }},
+		{"a replacement to another stop", session.GestureReplaceProtection,
+			func(g *session.Gesture) { g.StopPrice = 19_700 }},
+		{"a replacement to another target", session.GestureReplaceProtection,
+			func(g *session.Gesture) { g.TargetPrice = 20_500 }},
+		{"a withdrawal of another protection", session.GestureWithdrawProtection,
+			func(g *session.Gesture) { g.Ref = entryRef("o2") }},
+	}
+
+	for _, tc := range differs {
+		t.Run(tc.name, func(t *testing.T) {
+			original := base[tc.kind]
+			other := original
+			tc.alter(&other)
+			if original.SameCommand(other) {
+				t.Fatalf("a different command compared equal:\n %+v\n %+v", original, other)
+			}
+			if !original.SameCommand(original) {
+				t.Fatal("a command did not compare equal to itself")
+			}
+		})
+	}
+
+	// A different kind is a different command whatever else matches, and the
+	// stamp is never part of it: a retry is the same command at a later
+	// instant, which is the case the comparison exists to recognise.
+	for kind, act := range base {
+		for otherKind, other := range base {
+			if kind == otherKind {
+				continue
+			}
+			if act.SameCommand(other) {
+				t.Fatalf("%v compared equal to %v", kind, otherKind)
+			}
+		}
+		later := act
+		later.Decided = decided(90_000_000_000)
+		if !act.SameCommand(later) {
+			t.Fatalf("%v did not compare equal to itself at a later moment", kind)
+		}
+	}
 }

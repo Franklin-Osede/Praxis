@@ -25,6 +25,13 @@ var (
 	// after an invalid configuration had already been recorded.
 	ErrInconsistentConfig = errors.New("session: account and evaluation disagree about the starting balance")
 
+	// ErrPacingWithoutSubject reports a configuration that says how the
+	// observations reached a person and does not say which person, or names a
+	// person and says nobody was there. The two are one claim: a pilot or
+	// confirmatory session is by definition somebody's, and a scripted run is
+	// by definition nobody's.
+	ErrPacingWithoutSubject = errors.New("session: the pacing and the subject disagree about whether a person was there")
+
 	// ErrSessionNeedsRecovery is terminal. A commit that failed leaves the
 	// outcome unknown — the batch may be whole on disk, or partial, or absent
 	// — and only reading the journal can say which. The session therefore
@@ -93,6 +100,11 @@ type Session struct {
 	// has spent. The same projection runs in Verify and in Replay.
 	protections protectionProjection
 
+	// gestures is every human act this journal holds and what each of them
+	// commanded. It answers a retry: the same act with the same command is
+	// already committed, and with a different one is a conflict.
+	gestures gestureIndex
+
 	// episodes derives position episodes from the changes it is given. The
 	// same projection runs in Verify and in Replay, so a live session and the
 	// checks on its journal cannot disagree about what a trade was.
@@ -121,6 +133,9 @@ func New(cfg Config, at market.LogicalTime, committer BatchCommitter) (*Session,
 			return nil, err
 		}
 	}
+	if err := pacingAgreesWithSubject(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.StartingBalanceCts != cfg.Rules.StartingBalanceCts {
 		return nil, fmt.Errorf("%w: account %d, evaluation %d",
 			ErrInconsistentConfig, cfg.StartingBalanceCts, cfg.Rules.StartingBalanceCts)
@@ -143,6 +158,25 @@ func New(cfg Config, at market.LogicalTime, committer BatchCommitter) (*Session,
 		return nil, err
 	}
 	return s, nil
+}
+
+// pacingAgreesWithSubject refuses a configuration that is two claims at once.
+//
+// A pilot or confirmatory session is somebody's by definition, and a scripted
+// run is nobody's. Allowing a scripted journal to name a subject would let a
+// fixture be labelled as though a person had traded it, which is the one thing
+// the pilot sample must never contain.
+func pacingAgreesWithSubject(cfg Config) error {
+	traded := cfg.Pacing != PacingScripted
+	named := cfg.SubjectID != ""
+	if traded == named {
+		return nil
+	}
+	if traded {
+		return fmt.Errorf("%w: %v pacing and nobody named", ErrPacingWithoutSubject, cfg.Pacing)
+	}
+	return fmt.Errorf("%w: %s named and nothing was presented to them",
+		ErrPacingWithoutSubject, cfg.SubjectID)
 }
 
 // NeedsRecovery reports the failure that made this session unusable, or nil.
@@ -690,7 +724,9 @@ func (s *Session) recordOrder(p preparedOrder) error {
 	if err := s.protections.claim(p.order.ID); err != nil {
 		return err
 	}
-	if err := s.protections.claimGesture(p.decided); err != nil {
+	if err := s.claimGesture(Gesture{
+		Kind: GestureSubmitOrder, Decided: p.decided, Order: p.order,
+	}); err != nil {
 		return err
 	}
 	var err error
@@ -817,7 +853,9 @@ func (s *Session) cancelOrder(id string, decided Decision) error {
 		}); err != nil {
 			return err
 		}
-		if err := s.protections.claimGesture(decided); err != nil {
+		if err := s.claimGesture(Gesture{
+			Kind: GestureCancelOrder, Decided: decided, OrderID: id,
+		}); err != nil {
 			return err
 		}
 		s.working = append(s.working[:n], s.working[n+1:]...)

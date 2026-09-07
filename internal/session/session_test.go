@@ -19,6 +19,7 @@ func config() session.Config {
 		// helpers stamp coherent. A journal carrying one and no subject is
 		// refused, and so is the reverse.
 		SubjectID:                "t-01",
+		Pacing:                   session.PacingPilot,
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,
 		Rules: challenge.Rules{

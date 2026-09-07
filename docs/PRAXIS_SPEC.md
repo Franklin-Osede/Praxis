@@ -1099,6 +1099,18 @@ digest a pre-registration records. A participant who could change the pacing
 could change the experiment, and a journal that did not say which condition
 produced it would be a session nobody can classify afterwards.
 
+The pacing and the subject are **one claim**, and both readers refuse a journal
+that makes it twice:
+
+```text
+scripted             nobody named, and no decision anywhere
+pilot, confirmatory  somebody named, and every human command carries a decision
+```
+
+A test fixture that needs a driven session is `scripted` and anonymous. It must
+never be a journal labelled as though a person had traded it, because that is
+the one thing the pilot sample cannot contain.
+
 The confirmatory mode is **not built yet**, and should not be until the pilot
 interface has shown it can measure presentation, gesture, recovery and exclusive
 control without losing or duplicating a decision.
@@ -1154,24 +1166,58 @@ exactly that — a value nothing can reproduce, deciding which of two journals i
 the real one.
 
 The identifier travels on the decision, not on the order, so it covers every
-human command and not only a submission. The kernel refuses a gesture it has
-already recorded; what the application loop does with that refusal is the other
-half:
+human command and not only a submission.
+
+**A set of spent names is not enough to answer a retry.** It says the act
+happened; it does not say what it did, so it cannot tell a resend from a
+different command sent under a name reused by mistake. So the journal yields
+what each act *commanded*, reconstructed by `Replay` and carried by `Resume`:
+
+| the act | what a retry is compared against |
+|---|---|
+| submit an order | the whole order, and the stop and target placed with it |
+| cancel an order | the order it named |
+| replace a protection | the reference and the new levels |
+| withdraw a protection | the reference |
+
+The stamp is deliberately **not** part of that comparison. The server is the
+clock, so a retry arrives at a different instant; comparing stamps would make
+every retry a conflict, and re-stamping one would record a decision at a moment
+the person decided nothing. The original `Decision` is recovered from the
+journal.
+
+That gives the loop three answers and only one of them touches the kernel:
 
 ```text
-same gesture, same command    -> already committed, with the state it produced
-same gesture, different payload -> conflict
-a gesture never seen          -> execute
+a gesture never seen             -> add the time, execute, commit, respond
+the same gesture, same command   -> already committed, with the current state;
+                                    no kernel call and no new bytes
+the same gesture, other command  -> conflict
 ```
 
 A repeated request that already committed must not come back as "that name is
 taken". A lost HTTP response is a retry, not a false alarm in front of the
-participant, and the refusal and the report are different facts the interface
-has to tell apart.
+participant. And the client's counter, persisted before the request goes out,
+prevents accidental reuse — it does not prove confirmation. **The journal is the
+authority**, which is why the index is rebuilt from it and survives a restart.
 
-**One lease on the controls.** A reload takes a new lease and starts a new
-segment; the tab it replaced can no longer act, which is what the rule that an
-old segment never reappears records after the fact.
+**One lease on the controls, not one TCP connection.** A connection is the wrong
+unit: it drops and returns for reasons that have nothing to do with who is
+driving.
+
+```text
+one active lease at a time
+every command presents its lease
+taking a new lease opens a higher segment
+an old lease is never valid again
+a second tab is refused: 409, someone else is controlling
+losing the view may reconnect on the same lease
+handing control over is explicit, and opens a new segment
+```
+
+The lease token is infrastructure and never enters the journal. `Segment` does,
+because it changes how the times are read — and the rule that an old segment
+never reappears is the record, after the fact, of the lease having held.
 
 One active connection: a second tab is a second hand on the wheel, and the
 kernel's inputs must arrive in one order.

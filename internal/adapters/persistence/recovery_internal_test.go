@@ -20,6 +20,7 @@ func sessionConfig() session.Config {
 		// Somebody traded it, which is what makes the human clock these tests
 		// stamp coherent.
 		SubjectID:                "t-01",
+		Pacing:                   session.PacingPilot,
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,
 		Rules: challenge.Rules{

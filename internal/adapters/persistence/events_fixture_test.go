@@ -214,6 +214,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 		// Somebody traded it: these events carry a human clock, and a journal
 		// that claims both a decision and nobody to have made it is refused.
 		SubjectID:                "t-01",
+		Pacing:                   session.PacingPilot,
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,
 		Rules: challenge.Rules{

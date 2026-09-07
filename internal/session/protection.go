@@ -18,12 +18,6 @@ var (
 	ErrReservedNamespace  = errors.New("session: order identifiers beginning with praxis: belong to the system")
 	ErrOrderIDReused      = errors.New("session: this order identifier has already been used")
 
-	// ErrGestureReused reports a human act the journal already holds. It is
-	// how a retry is told from a second decision: a lost response resent under
-	// the same gesture is the same act, and the caller answers "already
-	// committed" rather than recording it twice.
-	ErrGestureReused = errors.New("session: this gesture has already been recorded")
-
 	// ErrMalformedDecision reports a stamp that is neither wholly absent nor
 	// wholly present, which would read as nobody having been there while
 	// plainly recording that somebody was.
@@ -146,13 +140,6 @@ type protectionProjection struct {
 	// result, which is why a map is the right structure here.
 	usedOrderIDs map[string]bool
 
-	// usedGestures is the same, for the acts rather than the things acted on.
-	// A repeated gesture is a retry — a lost response, a double click, a
-	// reloaded tab — and must not become a second decision. Reconstructing the
-	// set from the journal rather than holding it in a server's memory is what
-	// makes that survive a restart.
-	usedGestures map[string]bool
-
 	// owed holds the events the facts so far require, in order. The very next
 	// event must be the first of them: a consequence and the fact that caused
 	// it are one decision, so a reader that allowed anything between them would
@@ -164,25 +151,6 @@ func (p *protectionProjection) init() {
 	if p.usedOrderIDs == nil {
 		p.usedOrderIDs = map[string]bool{}
 	}
-	if p.usedGestures == nil {
-		p.usedGestures = map[string]bool{}
-	}
-}
-
-// claimGesture records an act as taken. A gesture identifier is spent forever,
-// exactly as an order identifier is: the point of it is that a retry arrives
-// under the same one and is recognised as the same decision rather than
-// becoming a second.
-func (p *protectionProjection) claimGesture(d Decision) error {
-	p.init()
-	if d.GestureID == "" {
-		return nil
-	}
-	if p.usedGestures[d.GestureID] {
-		return fmt.Errorf("%w: %s", ErrGestureReused, d.GestureID)
-	}
-	p.usedGestures[d.GestureID] = true
-	return nil
 }
 
 // checkGesture refuses an act the journal already holds, and one the record
@@ -202,27 +170,10 @@ func (s *Session) checkGesture(d Decision) error {
 	if err := market.ValidIdentifier(d.GestureID); err != nil {
 		return err
 	}
-	if s.protections.gestureUsed(d.GestureID) {
+	if s.gestures.used(d.GestureID) {
 		return fmt.Errorf("%w: %s", ErrGestureReused, d.GestureID)
 	}
 	return nil
-}
-
-func (p *protectionProjection) gestureUsed(id string) bool {
-	p.init()
-	return id != "" && p.usedGestures[id]
-}
-
-// usedGestureIdentifiers lists every act a journal has recorded, sorted so two
-// runs report it identically.
-func (p *protectionProjection) usedGestureIdentifiers() []string {
-	p.init()
-	out := make([]string, 0, len(p.usedGestures))
-	for id := range p.usedGestures {
-		out = append(out, id)
-	}
-	sortStrings(out)
-	return out
 }
 
 // claim records an identifier as used forever.
@@ -708,7 +659,7 @@ func (p *protectionProjection) activeSnapshot() []ActiveProtection {
 	return out
 }
 
-func (p *protectionProjection) restore(planned []PlannedProtection, active []ActiveProtection, symbol string, used, gestures []string) {
+func (p *protectionProjection) restore(planned []PlannedProtection, active []ActiveProtection, symbol string, used []string) {
 	p.init()
 	p.planned = p.planned[:0]
 	for _, s := range planned {
@@ -729,9 +680,6 @@ func (p *protectionProjection) restore(planned []PlannedProtection, active []Act
 	}
 	for _, id := range used {
 		p.usedOrderIDs[id] = true
-	}
-	for _, id := range gestures {
-		p.usedGestures[id] = true
 	}
 }
 
@@ -875,6 +823,15 @@ func (s *Session) submitOrderWithProtection(o market.Order, stop, target market.
 	return s.revalue(prepared.at)
 }
 
+// claimGesture records an act as taken, so a retry can be recognised as the
+// same decision rather than becoming a second one.
+func (s *Session) claimGesture(act Gesture) error { return s.gestures.claim(act) }
+
+// Gestures is every human act this journal holds, and what each commanded. A
+// caller answering a retry needs both: a set of spent names says the act
+// happened and not what it did.
+func (s *Session) Gestures() []Gesture { return s.gestures.snapshot() }
+
 // placeProtection records the levels planned with an entry.
 //
 // The names come from the sequence the journal actually assigns this event,
@@ -893,6 +850,7 @@ func (s *Session) placeProtection(at market.LogicalTime, entryOrderID string, st
 	}); err != nil {
 		return err
 	}
+	s.gestures.attachProtection(stop, target)
 	return s.protections.applyPlaced(placed)
 }
 
@@ -946,7 +904,10 @@ func (s *Session) replaceProtection(ref ProtectionRef, stop, target market.Ticks
 	}); err != nil {
 		return err
 	}
-	if err := s.protections.claimGesture(decided); err != nil {
+	if err := s.claimGesture(Gesture{
+		Kind: GestureReplaceProtection, Decided: decided, Ref: ref,
+		StopPrice: stop, TargetPrice: target,
+	}); err != nil {
 		return err
 	}
 	return s.protections.applyReplaced(replaced)
@@ -1026,8 +987,12 @@ func (s *Session) recordProtectionEnded(at market.LogicalTime, levels protection
 	}); err != nil {
 		return err
 	}
-	if err := s.protections.claimGesture(decided); err != nil {
-		return err
+	if !decided.IsZero() {
+		if err := s.claimGesture(Gesture{
+			Kind: GestureWithdrawProtection, Decided: decided, Ref: ref,
+		}); err != nil {
+			return err
+		}
 	}
 	return s.protections.applyEnded(ended)
 }

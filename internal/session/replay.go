@@ -105,10 +105,11 @@ type ReplayedState struct {
 	ActiveProtections  []ActiveProtection
 	UsedOrderIDs       []string
 
-	// UsedGestures is every human act the journal holds. A resumed session
-	// carries it so that a retry after a restart is still recognised as the
-	// same decision rather than becoming a second one.
-	UsedGestures []string
+	// Gestures is every human act the journal holds, and what each of them
+	// commanded. A resumed session carries it so that a retry after a restart
+	// is still recognised as the same decision rather than becoming a second
+	// one — the authority is the journal, not a server's memory.
+	Gestures []Gesture
 
 	// Working is the set of orders waiting for a later observation, in the
 	// order they were submitted. A session that resumed without it would
@@ -152,10 +153,15 @@ func Replay(events []Event) (*ReplayedState, error) {
 		return nil, err
 	}
 
+	if err := pacingAgreesWithSubject(started.Config); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStructure, err)
+	}
+
 	state := &ReplayedState{Config: started.Config, Account: account, Challenge: eval}
 	var (
 		episodes         episodeProjection
 		protections      protectionProjection
+		gestures         gestureIndex
 		lastTime         market.LogicalTime
 		clock            = humanClock{subjectID: started.Config.SubjectID}
 		pendingChanges   []portfolio.PositionEvent
@@ -196,8 +202,10 @@ func Replay(events []Event) (*ReplayedState, error) {
 		if err := clock.check(e); err != nil {
 			return nil, fmt.Errorf("%w: event %d: %v", ErrStructure, n, err)
 		}
-		if err := protections.claimGesture(decidedAtOf(e)); err != nil {
-			return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+		if act, ok := gestureOf(e); ok {
+			if err := gestures.claim(act); err != nil {
+				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+			}
 		}
 
 		if _, ok := e.(PositionChanged); !ok && len(pendingChanges) > 0 && !owedConsequenceStandsHere(e, &protections) {
@@ -387,6 +395,9 @@ func Replay(events []Event) (*ReplayedState, error) {
 			}
 
 		case ProtectionPlaced:
+			// An entry and the levels planned with it are one act, so the
+			// placement belongs to the submission it follows.
+			gestures.attachProtection(v.StopPrice, v.TargetPrice)
 			if err := protections.applyPlaced(v); err != nil {
 				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
 			}
@@ -422,7 +433,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 	state.PlannedProtections = protections.snapshot()
 	state.ActiveProtections = protections.activeSnapshot()
 	state.UsedOrderIDs = protections.usedIdentifiers()
-	state.UsedGestures = protections.usedGestureIdentifiers()
+	state.Gestures = gestures.snapshot()
 	state.Events = make([]Event, len(events))
 	copy(state.Events, events)
 	return state, nil
@@ -837,7 +848,8 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 		committer:           committer,
 	}
 	resumed.protections.restore(state.PlannedProtections, state.ActiveProtections,
-		state.Config.Instrument.Symbol, state.UsedOrderIDs, state.UsedGestures)
+		state.Config.Instrument.Symbol, state.UsedOrderIDs)
+	resumed.gestures.restore(state.Gestures)
 	return resumed, nil
 }
 
@@ -876,6 +888,7 @@ func Verify(events []Event) error {
 		// disagreement would be between a journal and the thing checking it.
 		episodes    episodeProjection
 		protections protectionProjection
+		gestures    gestureIndex
 
 		// sides remembers which way an entry would open, which is what makes a
 		// stop's move away from it a widening.
@@ -903,8 +916,10 @@ func Verify(events []Event) error {
 		if err := clock.check(e); err != nil {
 			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
 		}
-		if err := protections.claimGesture(decidedAtOf(e)); err != nil {
-			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+		if act, ok := gestureOf(e); ok {
+			if err := gestures.claim(act); err != nil {
+				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+			}
 		}
 
 		switch v := e.(type) {
@@ -977,6 +992,7 @@ func Verify(events []Event) error {
 			protections.legCancelled(v.OrderID)
 
 		case ProtectionPlaced:
+			gestures.attachProtection(v.StopPrice, v.TargetPrice)
 			if err := protections.applyPlaced(v); err != nil {
 				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
 			}
