@@ -246,7 +246,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
-	present(t, s)
+	present(t, s, 12_000_000)
 	if err := s.SubmitOrder(buy, humanAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
@@ -258,7 +258,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
-	present(t, s)
+	present(t, s, 40_000_000_000)
 	if err := s.SubmitOrder(sell, humanAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
@@ -285,14 +285,18 @@ func journalBytes(t *testing.T, batches ...[]session.Event) []byte {
 // present confirms whatever the session has just put on the screen. A human
 // command taken before this is refused, because an interval from a presentation
 // nobody confirmed has no beginning.
-func present(t *testing.T, s *session.Session) {
+// The reading is the caller's, because a presentation and the decision it
+// begins share one monotonic clock: a confirmation behind the decision already
+// recorded would be a negative interval, which is the one reading the whole
+// clock exists to make impossible.
+func present(t *testing.T, s *session.Session, elapsed session.ElapsedNanos) {
 	t.Helper()
 	id, waiting := s.Pending(1)
 	if !waiting {
 		return
 	}
 	if err := s.AcknowledgePresentation(id, session.Instant{
-		AtUTCNanos: 1_764_000_000_000_000_000, Segment: 1,
+		AtUTCNanos: 1_764_000_000_000_000_000, Segment: 1, ElapsedNanos: elapsed,
 	}); err != nil {
 		t.Fatalf("AcknowledgePresentation: %v", err)
 	}

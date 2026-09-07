@@ -863,7 +863,7 @@ func (s *Session) replaceProtection(ref ProtectionRef, stop, target market.Ticks
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	if err := s.checkGesture(decided); err != nil {
+	if err := s.checkDecision(KindProtectionReplaced, decided); err != nil {
 		return err
 	}
 	// After the session's own faults: no trading session open is the more
@@ -928,7 +928,7 @@ func (s *Session) endProtection(ref ProtectionRef, reason ProtectionEndReason, d
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	if err := s.checkGesture(decided); err != nil {
+	if err := s.checkDecision(KindProtectionEnded, decided); err != nil {
 		return err
 	}
 	current, at, err := s.protectionForCommand(ref)

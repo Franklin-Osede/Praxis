@@ -367,11 +367,12 @@ func (d Decision) IsZero() bool { return d.Segment == 0 }
 // would read as "nobody was there" while plainly recording that somebody was,
 // and the half that survived would be the half no interval can be computed
 // from.
-func (d Decision) Malformed() bool {
-	if d.Segment == 0 {
-		return d.AtUTCNanos != 0 || d.ElapsedNanos != 0 || d.GestureID != ""
-	}
-	return d.AtUTCNanos == 0 || d.ElapsedNanos < 0 || d.GestureID == ""
+func (d Decision) Malformed() bool { return malformedDecision(d.instant(), d.GestureID) }
+
+// instant is the moment inside a decision, without the act that names it. The
+// chronology is over moments, and a presentation has one too.
+func (d Decision) instant() Instant {
+	return Instant{AtUTCNanos: d.AtUTCNanos, Segment: d.Segment, ElapsedNanos: d.ElapsedNanos}
 }
 
 // CancelReason says why an order stopped working. It is a fact about what the

@@ -42,6 +42,12 @@ func (p PresentationID) String() string {
 // Pending is the presentation waiting to be confirmed, and whether there is
 // one. A session that has seen no observation has nothing to confirm.
 func (s *Session) Pending(segment uint64) (PresentationID, bool) {
+	// A scripted run has no interface and nobody in front of it. There is
+	// nothing to confirm, and answering otherwise would invite a caller to
+	// record a presentation that run may not contain.
+	if !s.clock.traded() {
+		return PresentationID{}, false
+	}
 	if s.lastObserved == 0 {
 		return PresentationID{}, false
 	}
@@ -71,16 +77,29 @@ func (s *Session) AcknowledgePresentation(id PresentationID, at Instant) error {
 }
 
 func (s *Session) acknowledgePresentation(id PresentationID, at Instant) error {
-	if at.Malformed() || at.IsZero() {
-		return fmt.Errorf("%w: %+v", ErrMalformedDecision, at)
+	// The shape of the stamp, before anything else: a half-written moment is
+	// refused whether or not this turns out to be a retry.
+	if err := s.clock.checkShape(classPresentation, KindObservationPresented, at, ""); err != nil {
+		return err
 	}
 	if id.Segment != at.Segment {
 		return fmt.Errorf("%w: %s confirmed in segment %d", ErrWrongPresentation, id, at.Segment)
 	}
 	if s.presented == id {
 		// Already confirmed. Nothing is recorded, which is what makes a retry
-		// free of consequence.
+		// free of consequence — and it is answered before the chronology is
+		// consulted, deliberately. A retry that arrives after a decision
+		// carries a reading now behind the log's, and checking it first would
+		// turn a lost response into an error the participant sees for a
+		// confirmation they already made.
 		return nil
+	}
+	// And only now the chronology, because a retry is answered above: it
+	// carries the stamp it originally sent, which the log has legitimately
+	// moved past. Asking first would turn a lost response into an error the
+	// participant sees for a confirmation they already made.
+	if err := s.clock.checkOrder(classPresentation, at); err != nil {
+		return err
 	}
 	pending, waiting := s.Pending(id.Segment)
 	if !waiting {

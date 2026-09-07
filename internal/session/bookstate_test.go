@@ -823,7 +823,10 @@ func TestAFillsSideTimeAndInstrumentAreChecked(t *testing.T) {
 // down. The kernel writes it and never reads it: nothing here decides anything
 // on a human clock, which is why rule 2 is untouched.
 func TestTheJournalRecordsWhenAPersonActed(t *testing.T) {
-	first, second := decided(0), decided(40_000_000_000) // forty seconds later
+	// Both readings sit after the presentation that confirmed the observation
+	// they were taken on: an interval runs from that beginning, so a decision
+	// before it is not a fast one, it is an impossible one.
+	first, second := decided(2_000_000), decided(40_002_000_000) // forty seconds later
 
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
@@ -880,16 +883,16 @@ func TestWhatWasDerivedCannotClaimAPersonDecidedIt(t *testing.T) {
 	tests := []struct {
 		name  string
 		kind  session.Kind
-		forge func(session.Event) session.Event
+		forge func(session.Event, session.Decision) session.Event
 	}{
-		{"an ending a fill required", session.KindProtectionEnded, func(e session.Event) session.Event {
+		{"an ending a fill required", session.KindProtectionEnded, func(e session.Event, d session.Decision) session.Event {
 			v := e.(session.ProtectionEnded)
-			v.Decided = decidedAt()
+			v.Decided = d
 			return v
 		}},
-		{"a leg its sibling cancelled", session.KindOrderCancelled, func(e session.Event) session.Event {
+		{"a leg its sibling cancelled", session.KindOrderCancelled, func(e session.Event, d session.Decision) session.Event {
 			v := e.(session.OrderCancelled)
-			v.Decided = decidedAt()
+			v.Decided = d
 			return v
 		}},
 	}
@@ -899,20 +902,51 @@ func TestWhatWasDerivedCannotClaimAPersonDecidedIt(t *testing.T) {
 			s := protectedLong(t)
 			mustObserve(t, s, sized(4_000, 20_500, 20_501, 50))
 			events := s.Events()
+
+			// The forged stamp is the reading the log has already reached, so
+			// folding it moves the chronology nowhere and nothing after it
+			// falls behind. Without that the forgery is caught for being out
+			// of order — a true rejection for the wrong reason, which would
+			// leave this rule with no test at all while looking like it had
+			// one. The assertion on the message is the other half of that.
+			neutral := decidedAtOf(t, events)
+			neutral.GestureID = "g-forged"
+
 			at := indexOfKind(t, events, tc.kind, 1)
-			events[at] = tc.forge(events[at])
+			events[at] = tc.forge(events[at], neutral)
 
 			// Structure, not arithmetic — the same family as a trading session
 			// opened while another is open, and one rule that both readers
 			// ask, because a second copy of it would eventually disagree.
-			if _, err := session.Replay(events); !errors.Is(err, session.ErrStructure) {
+			_, err := session.Replay(events)
+			if !errors.Is(err, session.ErrStructure) {
 				t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
 			}
-			if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
+			if !strings.Contains(err.Error(), "nobody commanded it") {
+				t.Fatalf("Replay rejected it for another reason: %v", err)
+			}
+			err = session.Verify(events)
+			if !errors.Is(err, session.ErrContradictoryLog) {
 				t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+			}
+			if !strings.Contains(err.Error(), "nobody commanded it") {
+				t.Fatalf("Verify rejected it for another reason: %v", err)
 			}
 		})
 	}
+}
+
+// decidedAtOf is the stamp the journal has already reached, so a forgery can
+// carry one that changes nothing about the order of what follows it.
+func decidedAtOf(t *testing.T, events []session.Event) session.Decision {
+	t.Helper()
+	for _, e := range events {
+		if v, ok := e.(session.OrderSubmitted); ok {
+			return v.Decided
+		}
+	}
+	t.Fatal("no decision in the journal to take a reading from")
+	return session.Decision{}
 }
 
 // Scenario: the monotonic reading cannot go back, and the wall clock may
@@ -955,7 +989,7 @@ func TestTheMonotonicReadingCannotGoBack(t *testing.T) {
 		s := open(t)
 		// Five seconds of monotonic time passed; the world's clock was set
 		// back four seconds in between, which is what a time server does.
-		if err := submit(t, s, "o1", session.Decision{GestureID: "g-a", AtUTCNanos: 5_000_000_000, Segment: 1, ElapsedNanos: 0}); err != nil {
+		if err := submit(t, s, "o1", session.Decision{GestureID: "g-a", AtUTCNanos: 5_000_000_000, Segment: 1, ElapsedNanos: 2_000_000}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
 		if err := submit(t, s, "o2", session.Decision{GestureID: "g-b", AtUTCNanos: 1_000_000_000, Segment: 1, ElapsedNanos: 5_000_000_000}); err != nil {
@@ -1034,14 +1068,42 @@ func TestTheMonotonicReadingCannotGoBack(t *testing.T) {
 // session no longer exists.
 func TestASubjectAndAClockMustAgree(t *testing.T) {
 	t.Run("a subject who decided nothing", func(t *testing.T) {
+		// Refused at the door now, not committed and refused afterwards. A
+		// journal the writing side accepted and its own readers rejected was
+		// clean on disk, invalid to everything that could read it, and beyond
+		// repair — nothing was damaged, so there was nothing to repair.
 		s := newSession(t)
 		mustOpen(t, s, 2_000, "d1")
 		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
-		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), session.Decision{}); err != nil {
-			t.Fatalf("SubmitOrder: %v", err)
+		before := s.JournalLen()
+
+		err := s.SubmitOrder(order("o1", market.SideBuy, 1), session.Decision{})
+		if !errors.Is(err, session.ErrInteractionStamp) {
+			t.Fatalf("SubmitOrder: got %v, want %v", err, session.ErrInteractionStamp)
 		}
-		if _, err := session.Replay(s.Events()); !errors.Is(err, session.ErrStructure) {
+		if s.JournalLen() != before {
+			t.Fatalf("journal: got %d events, want the %d it had", s.JournalLen(), before)
+		}
+		checked(t, s)
+	})
+
+	t.Run("and the readers still refuse one forged into a journal", func(t *testing.T) {
+		s := newSession(t)
+		mustOpen(t, s, 2_000, "d1")
+		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
+		mustSubmit(t, s, order("o1", market.SideBuy, 1))
+
+		events := s.Events()
+		at := indexOfKind(t, events, session.KindOrderSubmitted, 1)
+		submitted := events[at].(session.OrderSubmitted)
+		submitted.Decided = session.Decision{}
+		events[at] = submitted
+
+		if _, err := session.Replay(events); !errors.Is(err, session.ErrStructure) {
 			t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+		}
+		if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
+			t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
 		}
 	})
 

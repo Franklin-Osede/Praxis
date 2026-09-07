@@ -115,6 +115,12 @@ type ReplayedState struct {
 	ActiveProtections  []ActiveProtection
 	UsedOrderIDs       []string
 
+	// clock is the chronology the journal reached. It is carried whole rather
+	// than as two numbers, because a resumed session must refuse exactly what
+	// the uninterrupted one would have refused: a recovery is not an
+	// opportunity to launder a reading.
+	clock interactionClock
+
 	// Gestures is every human act the journal holds, and what each of them
 	// commanded. A resumed session carries it so that a retry after a restart
 	// is still recognised as the same decision rather than becoming a second
@@ -173,7 +179,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 		protections      protectionProjection
 		gestures         gestureIndex
 		lastTime         market.LogicalTime
-		clock            = humanClock{subjectID: started.Config.SubjectID}
+		clock            = interactionClock{subjectID: started.Config.SubjectID, pacing: started.Config.Pacing}
 		pendingChanges   []portfolio.PositionEvent
 		pendingDecisions []challenge.Event
 
@@ -209,9 +215,10 @@ func Replay(events []Event) (*ReplayedState, error) {
 		}
 		lastTime = header.Time
 
-		if err := clock.check(e); err != nil {
+		if err := clock.Check(e); err != nil {
 			return nil, fmt.Errorf("%w: event %d: %v", ErrStructure, n, err)
 		}
+		clock.Apply(e)
 		if act, ok := gestureOf(e); ok {
 			if err := gestures.claim(act); err != nil {
 				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
@@ -446,6 +453,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 		return nil, fmt.Errorf("%w: %v", ErrFabricated, err)
 	}
 
+	state.clock = clock
 	state.PlannedProtections = protections.snapshot()
 	state.ActiveProtections = protections.activeSnapshot()
 	state.UsedOrderIDs = protections.usedIdentifiers()
@@ -568,109 +576,6 @@ func proveOrderCancellation(submitted map[string]market.Order, book market.Quote
 			cancelled.OrderID, book.Bid, book.Ask, book.BidSize, book.AskSize)
 	}
 	return nil
-}
-
-// humanClock holds what a reader has to know about the clocks a person acted
-// on. It is one implementation with two callers, because the rule is the same
-// whichever reader asks and a second copy would eventually disagree.
-type humanClock struct {
-	subjectID string
-	segment   uint64
-	elapsed   ElapsedNanos
-}
-
-// check refuses a journal whose record of human decisions is incoherent.
-//
-// What it does *not* check is the wall clock's order. A wall clock can
-// legitimately move backwards — a time server corrects it, an operator sets
-// it, a suspended machine resumes — and one connection to one kernel does not
-// make it monotonic. Refusing a corrected clock would refuse a session that was
-// entirely honest, which is a worse failure than the one it would catch. The
-// monotonic reading is what intervals are computed from, and that one is held
-// to its discipline.
-func (h *humanClock) check(e Event) error {
-	d := decidedAtOf(e)
-	if d.Malformed() {
-		return fmt.Errorf("%v: records part of a decision — %+v — and not the rest of it",
-			e.Header().Kind, d)
-	}
-
-	if !d.IsZero() {
-		// A segment is a run of uninterrupted interaction and only ever goes
-		// up. An old one reappearing would be a stale tab interleaving its
-		// decisions with a resumed session's, which is the failure a single
-		// lease on the controls exists to prevent and this is the record of
-		// that lease holding.
-		if d.Segment < h.segment {
-			return fmt.Errorf("%v: decided in segment %d, after segment %d",
-				e.Header().Kind, d.Segment, h.segment)
-		}
-		// Within one segment the monotonic reading never goes back either. A
-		// new segment may begin at any elapsed, because nothing carries across
-		// the interruption that ended the last one.
-		if d.Segment == h.segment && d.ElapsedNanos < h.elapsed {
-			return fmt.Errorf("%v: decided %dns into segment %d, after %dns into it",
-				e.Header().Kind, d.ElapsedNanos, d.Segment, h.elapsed)
-		}
-		h.segment, h.elapsed = d.Segment, d.ElapsedNanos
-	}
-
-	// Zero means no person was there. Establishing that made the converse a
-	// rule worth holding: an interface that forgot to stamp a decision — or
-	// stamped it on three of the four commands — would produce a log asserting
-	// both that somebody traded it and that nobody decided anything in it, and
-	// nothing would notice until the analysis, by which time the timing data
-	// for that pilot session no longer exists.
-	if !decidedByAPerson(e) {
-		if !d.IsZero() {
-			return fmt.Errorf("%v: nobody commanded it, and it records a person deciding it", e.Header().Kind)
-		}
-		return nil
-	}
-	if h.subjectID == "" && !d.IsZero() {
-		return fmt.Errorf("%v: recorded as decided, and nobody is recorded as having traded this journal",
-			e.Header().Kind)
-	}
-	if h.subjectID != "" && d.IsZero() {
-		return fmt.Errorf("%v: %s traded this journal, and this records no moment at which they decided it",
-			e.Header().Kind, h.subjectID)
-	}
-	return nil
-}
-
-// decidedAtOf is the decision an event records, and the zero decision for one
-// that records none.
-func decidedAtOf(e Event) Decision {
-	switch v := e.(type) {
-	case OrderSubmitted:
-		return v.Decided
-	case OrderCancelled:
-		return v.Decided
-	case ProtectionReplaced:
-		return v.Decided
-	case ProtectionEnded:
-		return v.Decided
-	default:
-		return Decision{}
-	}
-}
-
-// decidedByAPerson reports whether an event is one a person commanded, as
-// opposed to one the log itself required. The four that carry a decision are
-// exactly the heads of the four human commands, so there are no exceptions.
-func decidedByAPerson(e Event) bool {
-	switch v := e.(type) {
-	case OrderSubmitted:
-		return true
-	case ProtectionReplaced:
-		return true
-	case OrderCancelled:
-		return v.Reason == CancelledByTrader
-	case ProtectionEnded:
-		return v.Reason == ProtectionWithdrawnByTrader
-	default:
-		return false
-	}
 }
 
 // proveEveryOrderEnded refuses a journal in which an order was submitted and
@@ -858,6 +763,7 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 		observedThisSession: state.ObservedThisSession,
 		lastObserved:        state.LastObserved,
 		presented:           state.Presented,
+		clock:               state.clock,
 		ordersThisSession:   state.OrdersThisSession,
 		consecutiveLosses:   state.ConsecutiveLosses,
 		episodes:            state.episodes,
@@ -917,12 +823,19 @@ func Verify(events []Event) error {
 		fillOrderID string
 
 		// clock is the same rule Replay applies, asked by the other reader.
-		clock humanClock
+		clock interactionClock
 	)
 
 	if len(events) > 0 {
 		if started, ok := events[0].(SessionStarted); ok {
-			clock.subjectID = started.Config.SubjectID
+			// The run's own claim about whether anybody was there has to hold
+			// together before it is used to judge anything else. Replay asks
+			// this too; Verify asking it as well is what keeps Verify as
+			// strong on its own as it was before the clock read pacing.
+			if err := pacingAgreesWithSubject(started.Config); err != nil {
+				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+			}
+			clock.subjectID, clock.pacing = started.Config.SubjectID, started.Config.Pacing
 		}
 	}
 
@@ -931,9 +844,10 @@ func Verify(events []Event) error {
 		if owedErr != nil {
 			return fmt.Errorf("%w: %v", ErrContradictoryLog, owedErr)
 		}
-		if err := clock.check(e); err != nil {
+		if err := clock.Check(e); err != nil {
 			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
 		}
+		clock.Apply(e)
 		if act, ok := gestureOf(e); ok {
 			if err := gestures.claim(act); err != nil {
 				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)

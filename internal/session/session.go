@@ -82,6 +82,11 @@ type Session struct {
 	lastQuote market.Quote
 	hasQuote  bool
 
+	// clock is the chronology of everything a person did to this journal. It
+	// is the same machine Replay and Verify run, so the writing side can never
+	// commit a stamp its own readers refuse.
+	clock interactionClock
+
 	// lastObserved is the journal position of the observation now on the
 	// screen, and presented the one an interface has confirmed showing. A
 	// human command is refused until they agree, because an interval from a
@@ -156,7 +161,10 @@ func New(cfg Config, at market.LogicalTime, committer BatchCommitter) (*Session,
 		return nil, err
 	}
 
-	s := &Session{cfg: cfg, account: account, eval: eval, journal: &Journal{}, committer: committer}
+	s := &Session{
+		cfg: cfg, account: account, eval: eval, journal: &Journal{}, committer: committer,
+		clock: interactionClock{subjectID: cfg.SubjectID, pacing: cfg.Pacing},
+	}
 	if err := s.command(func() error {
 		return s.record(at, KindSessionStarted, func(e Envelope) Event {
 			return SessionStarted{Envelope: e, Config: cfg}
@@ -238,10 +246,20 @@ func (s *Session) command(run func() error) error {
 // rejected command leaves no gap and the numbering stays contiguous.
 func (s *Session) record(at market.LogicalTime, k Kind, build func(Envelope) Event) error {
 	env := Envelope{Time: at, Sequence: s.sequence + 1, Kind: k}
-	if err := s.journal.Append(build(env)); err != nil {
+	e := build(env)
+	// Every event, not only the head of a command. The head has already been
+	// checked at the door, where a refusal costs nothing; this is the derived
+	// ones, where a stamp is a programming fault rather than bad input, and
+	// where the write path and the read path must be running the same rule or
+	// the asymmetry this machine exists to close reopens one event at a time.
+	if err := s.clock.Check(e); err != nil {
+		return err
+	}
+	if err := s.journal.Append(e); err != nil {
 		return err
 	}
 	s.sequence++
+	s.clock.Apply(e)
 	return nil
 }
 
@@ -679,7 +697,7 @@ func (s *Session) prepareOrder(o market.Order, decided Decision) (preparedOrder,
 	if s.protections.used(o.ID) {
 		return preparedOrder{}, fmt.Errorf("%w: %s", ErrOrderIDReused, o.ID)
 	}
-	if err := s.checkGesture(decided); err != nil {
+	if err := s.checkDecision(KindOrderSubmitted, decided); err != nil {
 		return preparedOrder{}, err
 	}
 	if err := s.requirePresented(decided); err != nil {
@@ -838,7 +856,12 @@ func (s *Session) cancelOrder(id string, decided Decision) error {
 	if !s.sessionOpen {
 		return ErrNoSessionOpen
 	}
-	if err := s.checkGesture(decided); err != nil {
+	if err := s.checkDecision(KindOrderCancelled, decided); err != nil {
+		return err
+	}
+	// A cancellation is a decision like any other, and its interval runs from
+	// the same beginning. This was the one human command that did not ask.
+	if err := s.requirePresented(decided); err != nil {
 		return err
 	}
 	if s.ended() {

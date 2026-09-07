@@ -1265,6 +1265,52 @@ with levels the geometry rule refuses *is* an attempt to widen — it belongs in
 an interaction log the interface keeps, never in the journal. Which of the two
 it is has to be decided, because the frozen protocol will have to say.
 
+### One chronology, five stamped events, three classes
+
+Everything a person did to a journal belongs to one non-decreasing chronology,
+and one machine holds it — `interactionClock`, asked by the live session, by
+`Verify` and by `Replay`. It was two rules in two places before, and the writing
+side ran the smaller one: a pilot session could commit a command its own readers
+refused, leaving a journal clean on disk, invalid to everything that could read
+it, and past repair, because nothing was damaged.
+
+Events fall into three classes and the class decides the rule:
+
+- **A human decision** — the head of the four commands: an order submitted, an
+  order the trader cancelled, a protection replaced, a protection withdrawn. It
+  carries a gesture and a moment, or in a scripted run neither.
+- **A presentation** — an interface confirming an observation reached a screen.
+  It commands nothing and names no act, but it is the beginning of every
+  interval the decisions are measured over, so it belongs to the same
+  chronology. A run nobody watched has none at all: not an unstamped one, none.
+- **Everything else** — what the events before it required. Nobody commanded
+  it, so nobody timed it, and it carries no moment.
+
+The classification reads an event's own reason field for the two kinds that can
+be either — a cancellation and an ending are a person's act only when they say
+so. That is safe only because `requireOwed` pins the reason of every
+cancellation and ending the log demanded. The two are load-bearing together:
+without the second, relabelling a derived cancellation as the trader's would
+move it into the class permitted to carry a clock.
+
+**Check is pure and Apply follows the record.** A check that advanced the clock
+and was then followed by a later refusal would turn a command that left no
+events into one that silently moved the chronology — a journal that still looks
+perfect with only its intervals wrong. So the door asks before anything decides,
+the journal asks again as every event passes, and only an event actually
+appended advances the reading. A refusal spends no gesture and moves nothing,
+which is what lets a client correct a stamp and send the same act again.
+
+**Equal readings are allowed and the wall clock is never compared.** Two things
+can happen at one reading, and a latency of zero is a measurement rather than an
+impossibility. A wall clock may legitimately move backwards — a time server
+corrects it, an operator sets it, a suspended machine resumes — and refusing a
+corrected clock would refuse a session that was entirely honest.
+
+Monotonicity and `requirePresented` are both needed and neither replaces the
+other: the first makes a negative interval unrepresentable, the second proves
+the subtraction is against the stimulus actually on the screen.
+
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not
 exist, and needs its own decision record before it does; `AccountSnapshot`
