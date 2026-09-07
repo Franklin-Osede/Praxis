@@ -1,0 +1,401 @@
+package ui
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"strings"
+
+	"praxis/internal/adapters/marketdata"
+	"praxis/internal/adapters/persistence"
+	"praxis/internal/market"
+	"praxis/internal/session"
+)
+
+// Errors reported when a journal cannot be driven by a person.
+var (
+	// ErrNotTraded reports a journal produced by a script. The interface must
+	// not quietly turn it into somebody's: the pacing and the subject are one
+	// claim, and adding human decisions to a run nobody made would be
+	// fabricating the sample.
+	ErrNotTraded = errors.New("ui: this journal was not traded by anyone, and this interface cannot make it so")
+
+	// ErrConfirmatoryNotBuilt reports a journal that says it was produced under
+	// a fixed automatic cadence, which does not exist yet. Serving it from the
+	// pilot interface would mean recording it as confirmatory while a person
+	// advanced it by hand.
+	ErrConfirmatoryNotBuilt = errors.New("ui: confirmatory pacing is not implemented, and this journal claims it")
+
+	// ErrUnwritableVersion reports a journal in a payload version with no
+	// place to record when a person decided anything. It stays readable; it
+	// cannot be continued from here.
+	ErrUnwritableVersion = errors.New("ui: this journal's payload version cannot record a human decision")
+
+	// ErrDamagedTail reports a journal whose last batch is not confirmed.
+	// Repair is never automatic: it is a decision about which bytes to
+	// discard, and it belongs to a person with a command line.
+	ErrDamagedTail = errors.New("ui: this journal has an unconfirmed tail; run praxis store inspect")
+)
+
+// Options are what a server is opened over.
+type Options struct {
+	// Journal is written and resumed under one lock, held for the life of the
+	// server.
+	Journal string
+
+	// Market is the canonical file the observations come from. A journal that
+	// does not describe this file is refused rather than continued.
+	Market string
+
+	// Addr is where to listen. It is forced to loopback: a local server can
+	// still be reached by a page open in the browser, so binding every
+	// interface would put an unauthenticated kernel on the network.
+	Addr string
+
+	// New is the configuration for a journal that does not exist yet. It is
+	// ignored for one that does — a resumed run cannot be reconfigured,
+	// because its account and evaluation already have a history.
+	New session.Config
+}
+
+// Server owns one session and gives exactly one client the controls.
+type Server struct {
+	writer  *persistence.Writer
+	session *session.Session
+	feed    *marketdata.Feed
+	cursor  int
+	cfg     session.Config
+
+	lease *lease
+
+	// commands is the only way to the kernel. Handlers post to it and wait;
+	// the loop is the single goroutine that touches the session, so the
+	// kernel's inputs arrive in one order however many sockets are open.
+	commands chan func()
+	done     chan struct{}
+
+	listener net.Listener
+	http     *http.Server
+	origin   string
+}
+
+// Open recovers a journal, refuses one this interface must not drive, and takes
+// the controls with nobody holding them.
+//
+// One lock, taken here and held for the life of the server. Reading the journal
+// and then opening a writer would leave a window in which another process could
+// take it.
+func Open(opts Options) (*Server, error) {
+	feed, err := marketdata.ReadFile(opts.Market)
+	if err != nil {
+		return nil, err
+	}
+
+	writer, err := persistence.OpenWriter(opts.Journal, persistence.DurableEveryBatch)
+	if errors.Is(err, persistence.ErrUnconfirmedTail) {
+		return nil, fmt.Errorf("%w: %v", ErrDamagedTail, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	s := &Server{writer: writer, feed: feed, commands: make(chan func()), done: make(chan struct{})}
+	if err := s.start(opts, feed); err != nil {
+		writer.Close()
+		return nil, err
+	}
+
+	addr := opts.Addr
+	if addr == "" {
+		addr = "127.0.0.1:0"
+	}
+	if err := s.listen(addr); err != nil {
+		writer.Close()
+		return nil, err
+	}
+	go s.loop()
+	return s, nil
+}
+
+// start builds or resumes the session, and refuses a journal the interface must
+// not continue.
+func (s *Server) start(opts Options, feed *marketdata.Feed) error {
+	recovered := writerJournal(s.writer)
+	if len(recovered.Batches) == 0 {
+		return s.begin(opts, feed)
+	}
+	return s.resume(recovered, feed)
+}
+
+func writerJournal(w *persistence.Writer) *persistence.Journal { return w.Recovered() }
+
+func (s *Server) begin(opts Options, feed *marketdata.Feed) error {
+	cfg := opts.New
+	cfg.Instrument = feed.Instrument
+	if err := usableHere(cfg, persistence.EventVersion); err != nil {
+		return err
+	}
+	built, err := session.New(cfg, feed.Observations[0].Quote.Time, s.writer)
+	if err != nil {
+		return err
+	}
+	s.session, s.cfg, s.cursor = built, cfg, 0
+	s.lease = newLease(0)
+	return nil
+}
+
+func (s *Server) resume(recovered *persistence.Journal, feed *marketdata.Feed) error {
+	events := recovered.Events()
+	if err := session.Verify(events); err != nil {
+		return err
+	}
+	state, err := session.Replay(events)
+	if err != nil {
+		return err
+	}
+	if err := usableHere(state.Config, recovered.PayloadVersion); err != nil {
+		return err
+	}
+	if state.Config.Instrument != feed.Instrument {
+		return fmt.Errorf("%w: the journal trades %s, the file carries %s",
+			marketdata.ErrFeedMismatch, state.Config.Instrument.Symbol, feed.Instrument.Symbol)
+	}
+	// Every observation the journal holds is compared with the row in the same
+	// position, field by field. Skipping a count of rows would replay a file
+	// that changed while keeping its length as though it were the one that
+	// produced the journal.
+	consumed, err := marketdata.Consumed(events, feed)
+	if err != nil {
+		return err
+	}
+	resumed, err := session.Resume(state, s.writer)
+	if err != nil {
+		return err
+	}
+	s.session, s.cfg, s.cursor = resumed, state.Config, consumed
+
+	// A restart continues above every segment the journal already holds, so
+	// that a lease never reuses a number whose decisions are recorded.
+	var highest uint64
+	for _, act := range state.Gestures {
+		if act.Decided.Segment > highest {
+			highest = act.Decided.Segment
+		}
+	}
+	s.lease = newLease(highest)
+	return nil
+}
+
+// usableHere refuses a journal this interface must not add human decisions to.
+func usableHere(cfg session.Config, version string) error {
+	switch cfg.Pacing {
+	case session.PacingScripted:
+		return fmt.Errorf("%w: %s", ErrNotTraded, describeSubject(cfg))
+	case session.PacingConfirmatory:
+		return ErrConfirmatoryNotBuilt
+	}
+	// Unreachable today, and kept for when it is not. Only the current payload
+	// version can express a pacing mode at all, so every journal in an older
+	// one is scripted and refused above. This becomes the reachable check the
+	// first time two writable versions exist at once.
+	if version != persistence.EventVersion {
+		return fmt.Errorf("%w: %s", ErrUnwritableVersion, version)
+	}
+	return nil
+}
+
+func describeSubject(cfg session.Config) string {
+	if cfg.SubjectID == "" {
+		return "nobody is recorded as having traded it"
+	}
+	return cfg.SubjectID
+}
+
+func (s *Server) listen(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("ui: %q is not host:port: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("ui: %q is not a loopback address; this server is never exposed", host)
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	s.listener = l
+	s.origin = "http://" + l.Addr().String()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/state", s.handleState)
+	mux.HandleFunc("/api/control", s.handleControl)
+	s.http = &http.Server{Handler: s.guard(mux)}
+	return nil
+}
+
+// Addr is where the server is listening, printed rather than opened: a browser
+// launched automatically is a second window nobody asked for and, in a study,
+// a step nobody recorded.
+func (s *Server) Addr() string { return s.listener.Addr().String() }
+
+// Origin is what this server calls itself, and the only one it answers to.
+func (s *Server) Origin() string { return s.origin }
+
+// Serve runs until Close.
+func (s *Server) Serve() error {
+	err := s.http.Serve(s.listener)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+// Close stops serving, stops the loop and releases the journal's lock.
+func (s *Server) Close() error {
+	if s.http != nil {
+		s.http.Close()
+	}
+	close(s.done)
+	return s.writer.Close()
+}
+
+// loop is the only goroutine that touches the session.
+func (s *Server) loop() {
+	for {
+		select {
+		case run := <-s.commands:
+			run()
+		case <-s.done:
+			return
+		}
+	}
+}
+
+// ask runs one function on the loop and waits for it. Handlers never reach the
+// session directly, so two requests arriving at once are serialised by the
+// kernel's single owner rather than by hope.
+func (s *Server) ask(run func()) error {
+	finished := make(chan struct{})
+	select {
+	case s.commands <- func() { run(); close(finished) }:
+		<-finished
+		return nil
+	case <-s.done:
+		return errors.New("ui: the server is closed")
+	}
+}
+
+// guard refuses what a local server must refuse.
+//
+// "Only local" is not a boundary. A malicious page open in the same browser can
+// reach 127.0.0.1, so an Origin that is not this server's is refused outright,
+// and commands are POST only — a form or an image tag can issue a cross-site
+// GET without any script at all.
+func (s *Server) guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && origin != s.origin {
+			http.Error(w, "ui: this server answers only its own origin", http.StatusForbidden)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/state" && r.Method != http.MethodPost {
+			http.Error(w, "ui: commands are POST", http.StatusMethodNotAllowed)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	var state State
+	if err := s.ask(func() { state = s.state() }); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+// control is what a client is given when it takes the controls.
+type control struct {
+	Lease   string `json:"lease"`
+	Segment string `json:"segment"`
+	State   State  `json:"state"`
+}
+
+func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
+	take := s.lease.acquire
+	if r.URL.Query().Get("transfer") == "yes" {
+		take = s.lease.transfer
+	}
+	token, segment, err := take()
+	if errors.Is(err, ErrControllerActive) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var state State
+	if err := s.ask(func() { state = s.state() }); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, control{
+		Lease: token, Segment: decimal(int64(segment)), State: state,
+	})
+}
+
+// state is read on the loop, so it is never a torn view of a session another
+// goroutine is changing.
+func (s *Server) state() State {
+	balance, equity := s.value()
+	return project(s.session, s.cursor, len(s.feed.Observations), s.cfg, balance, equity).
+		withBook(s.lastQuote())
+}
+
+func (s *Server) lastQuote() (market.Quote, bool) {
+	if s.cursor == 0 {
+		return market.Quote{}, false
+	}
+	return s.feed.Observations[s.cursor-1].Quote, true
+}
+
+// value is the account as the evaluation would see it, at the book the
+// participant is looking at.
+func (s *Server) value() (market.Cents, market.Cents) {
+	balance, err := s.session.Account().BalanceCts()
+	if err != nil {
+		return 0, 0
+	}
+	quote, has := s.lastQuote()
+	position, _ := s.session.Account().Position(s.cfg.Instrument)
+	if !has || position.IsFlat() {
+		return balance, balance
+	}
+	// A long is valued at the bid and a short at the ask: the exit side is
+	// what the position would actually fetch, and anything else shows money
+	// that could not be realised.
+	mark := quote.Bid
+	if position.IsShort() {
+		mark = quote.Ask
+	}
+	unrealised, err := position.UnrealisedCts(mark)
+	if err != nil {
+		return balance, balance
+	}
+	equity, err := market.AddCents(balance, unrealised)
+	if err != nil {
+		return balance, balance
+	}
+	return balance, equity
+}
+
+func writeJSON(w http.ResponseWriter, code int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(body)
+}

@@ -283,9 +283,13 @@ type Decision struct {
 	// Segment is a run of uninterrupted interaction, numbered from one, and it
 	// only ever goes up. A recovery or a reload starts a new one, because the
 	// monotonic reading that made ElapsedNanos meaningful did not survive the
-	// interruption — and an old segment must never reappear, or a stale tab
-	// could interleave its decisions with a resumed session's. Zero means no
-	// person was there at all, which is the honest shape of a scripted run.
+	// interruption.
+	//
+	// It keeps the chronology coherent; it does not prove that one person held
+	// the controls. Two tabs sharing a lease could interleave their gestures
+	// inside a single segment without breaking this rule at all — exclusive
+	// control is the adapter's invariant and is tested there. Zero means no
+	// person was there, which is the honest shape of a scripted run.
 	Segment uint64
 
 	// ElapsedNanos is monotonic since its segment began, and it is what an

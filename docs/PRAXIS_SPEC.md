@@ -1216,8 +1216,15 @@ handing control over is explicit, and opens a new segment
 ```
 
 The lease token is infrastructure and never enters the journal. `Segment` does,
-because it changes how the times are read — and the rule that an old segment
-never reappears is the record, after the fact, of the lease having held.
+because it changes how the times are read.
+
+**The segment rule does not prove the lease held**, and an earlier draft of this
+claimed it did. It proves the journal keeps a coherent chronology of segments —
+two tabs sharing one lease could interleave their gestures inside a single
+segment without breaking it at all. Exclusive control is an invariant of the
+adapter, and it needs its own tests: concurrent acquisition, a stale token
+refused after a transfer, and a late request from a lease that has been handed
+over.
 
 One active connection: a second tab is a second hand on the wheel, and the
 kernel's inputs must arrive in one order.

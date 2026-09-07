@@ -3,6 +3,7 @@
 // This is the real command, not a scaffold to be replaced. The replay loop
 // will join it as a sibling subcommand rather than as a second binary.
 //
+//	praxis ui <market-file> --journal <journal> [configuration]
 //	praxis store inspect <journal>
 //	praxis store verify  <journal>
 //	praxis store repair  <journal> [--apply] [--discard-corrupt-batch]
@@ -48,6 +49,8 @@ func run(args []string, out, errOut *os.File) int {
 		return storeCommand(args[1:], out, errOut)
 	case "replay":
 		return replayCommand(args[1:], out, errOut)
+	case "ui":
+		return uiCommand(args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "praxis: unknown command %q\n", args[0])
 		usage(errOut)
@@ -262,6 +265,7 @@ func printReport(out *os.File, r *persistence.Report) {
 func usage(out *os.File) {
 	fmt.Fprintln(out, "usage:")
 	fmt.Fprintln(out, "  praxis replay <market-file> --journal <journal> [configuration]")
+	fmt.Fprintln(out, "  praxis ui     <market-file> --journal <journal> --subject <label>")
 	fmt.Fprintln(out, "  praxis store inspect <journal>")
 	fmt.Fprintln(out, "  praxis store verify  <journal>")
 	fmt.Fprintln(out, "  praxis store repair  <journal> [--apply] [--discard-corrupt-batch]")
