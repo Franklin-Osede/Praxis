@@ -404,7 +404,9 @@ func TestOneCommandCommitsExactlyOneBatch(t *testing.T) {
 	mustObserve(t, s, quote(3_000, 20_000, 20_001))
 	mustSubmit(t, s, order("o-1", market.SideBuy, 2))
 
-	if len(committer.batches) != 4 {
+	// Five commands: the configuration, the boundary, the observation, the
+	// confirmation that it was presented, and the order.
+	if len(committer.batches) != 5 {
 		t.Fatalf("batches: got %d, want one per command", len(committer.batches))
 	}
 

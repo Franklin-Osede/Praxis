@@ -32,6 +32,7 @@ const (
 	KindAccountValued
 	KindChallengeDecision
 	KindSessionEnded
+	KindObservationPresented
 )
 
 func (k Kind) String() string {
@@ -64,6 +65,8 @@ func (k Kind) String() string {
 		return "challenge decision"
 	case KindSessionEnded:
 		return "session ended"
+	case KindObservationPresented:
+		return "observation presented"
 	default:
 		return "unspecified"
 	}
@@ -237,6 +240,60 @@ type OrderSubmitted struct {
 	// the market's, and two orders between one tick and the next carry the
 	// same one.
 	Decided Decision
+}
+
+// ObservationPresented records that an observation was put in front of the
+// person and their interface said so.
+//
+// The name is the whole of the claim. It means the browser finished rendering
+// and acknowledged it; it does not mean the participant looked at the screen,
+// and nothing here should ever be read as saying they did.
+//
+// It exists because latency needs both ends from one clock. The server stamps
+// this when the acknowledgement arrives and stamps a decision when the command
+// arrives, so the interval is server-receipt to server-receipt: it includes
+// render and transport, which are small and consistent, and it claims nothing
+// about the instant a pixel appeared. If the pilots show that separating
+// rendering matters, both stamps move into the browser together — never one of
+// each, which would make the subtraction meaningless.
+type ObservationPresented struct {
+	Envelope
+
+	// ObservedSequence is the MarketObserved this put on the screen. With the
+	// segment it is the presentation's identity: the same quote presented again
+	// in a new segment is a new presentation, because a reload is a new run of
+	// interaction and the elapsed reading starts over.
+	ObservedSequence uint64
+
+	// Presented is when the acknowledgement reached the server, and it shares
+	// the segment of the decisions it will be subtracted from. An interval is
+	// only ever computed inside one segment.
+	Presented Instant
+}
+
+// Instant is a moment on one clock, in the two forms that answer different
+// questions. It is what a decision and a presentation have in common, and the
+// reason they can be subtracted at all.
+type Instant struct {
+	// AtUTCNanos is the wall clock, for audit, and is never compared for
+	// order: a time server correcting it does not make a journal corrupt.
+	AtUTCNanos UnixNanos
+
+	// Segment is the run of uninterrupted interaction this belongs to.
+	Segment uint64
+
+	// ElapsedNanos is monotonic since that segment began, and is what an
+	// interval is computed from.
+	ElapsedNanos ElapsedNanos
+}
+
+func (i Instant) IsZero() bool { return i.Segment == 0 }
+
+func (i Instant) Malformed() bool {
+	if i.Segment == 0 {
+		return i.AtUTCNanos != 0 || i.ElapsedNanos != 0
+	}
+	return i.AtUTCNanos == 0 || i.ElapsedNanos < 0
 }
 
 // UnixNanos is nanoseconds since the Unix epoch, UTC. The unit is in the name

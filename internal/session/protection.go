@@ -866,8 +866,14 @@ func (s *Session) replaceProtection(ref ProtectionRef, stop, target market.Ticks
 	if err := s.checkGesture(decided); err != nil {
 		return err
 	}
+	// After the session's own faults: no trading session open is the more
+	// fundamental complaint, and naming the derived one would send a reader
+	// looking for a presentation that was never the problem.
 	current, at, err := s.protectionForCommand(ref)
 	if err != nil {
+		return err
+	}
+	if err := s.requirePresented(decided); err != nil {
 		return err
 	}
 	// Replacing both levels with nothing is withdrawing the protection, and
@@ -927,6 +933,9 @@ func (s *Session) endProtection(ref ProtectionRef, reason ProtectionEndReason, d
 	}
 	current, at, err := s.protectionForCommand(ref)
 	if err != nil {
+		return err
+	}
+	if err := s.requirePresented(decided); err != nil {
 		return err
 	}
 	return s.recordProtectionEnded(at, current, ref, reason, decided)

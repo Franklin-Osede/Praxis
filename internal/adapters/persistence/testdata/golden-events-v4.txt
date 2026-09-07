@@ -12,5 +12,6 @@ session_ended 9000 11 2026-08-27
 protection_placed 9000 12 o-4 19900 20400 praxis:12:stop praxis:12:target
 protection_replaced 9000 13 entry o-4 0 19900 20400 19800 0 praxis:12:stop - 1 g-2 1764000000000000000 1 40000000000
 protection_ended 9000 14 episode - 10 19800 0 withdrawn_by_trader - 0 0 0
-order_cancelled 9000 15 praxis:12:target 7 by_oco - 0 0 0
-order_cancelled 9000 16 praxis:12:stop 10 position_closed - 0 0 0
+observation_presented 9000 15 5 1764000000000000000 1 12000000
+order_cancelled 9000 16 praxis:12:target 7 by_oco - 0 0 0
+order_cancelled 9000 17 praxis:12:stop 10 position_closed - 0 0 0

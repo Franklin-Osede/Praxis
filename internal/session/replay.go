@@ -65,6 +65,8 @@ func kindOf(e Event) Kind {
 		return KindChallengeDecision
 	case SessionEnded:
 		return KindSessionEnded
+	case ObservationPresented:
+		return KindObservationPresented
 	default:
 		return 0
 	}
@@ -83,6 +85,14 @@ type ReplayedState struct {
 	LastQuote           market.Quote
 	HasQuote            bool
 	ObservedThisSession bool
+
+	// LastObserved is the journal position of the observation now on the
+	// screen, and Presented the one an interface confirmed showing. A resumed
+	// session carries both: reconstruction is faithful or it is nothing, and a
+	// new segment stops being confirmed on its own, because a confirmation
+	// names the segment it was made in.
+	LastObserved uint64
+	Presented    PresentationID
 
 	OrdersThisSession  uint32
 	ConsecutiveLosses  uint32
@@ -348,6 +358,11 @@ func Replay(events []Event) (*ReplayedState, error) {
 			}
 			pendingDecisions = pendingDecisions[1:]
 
+		case ObservationPresented:
+			state.Presented = PresentationID{
+				Segment: v.Presented.Segment, ObservedSequence: v.ObservedSequence,
+			}
+
 		case MarketObserved:
 			// Before this observation replaces the last one, everything that
 			// survived the last one has to account for surviving it.
@@ -357,6 +372,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 				}
 			}
 			state.LastQuote, state.HasQuote, state.ObservedThisSession = v.Quote, true, true
+			state.LastObserved = v.Sequence
 			// A session that is not open, or an evaluation that has ended, is
 			// offered nothing — so nothing that waited through it owes an
 			// explanation. This is the same gate the live session applies.
@@ -840,6 +856,8 @@ func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
 		openSessionID:       state.CurrentSessionID,
 		sessionOpen:         state.SessionOpen,
 		observedThisSession: state.ObservedThisSession,
+		lastObserved:        state.LastObserved,
+		presented:           state.Presented,
 		ordersThisSession:   state.OrdersThisSession,
 		consecutiveLosses:   state.ConsecutiveLosses,
 		episodes:            state.episodes,

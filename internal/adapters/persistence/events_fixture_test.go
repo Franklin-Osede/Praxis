@@ -97,12 +97,19 @@ func everyEventTypeV4() []session.Event {
 		}
 	}
 	return append(events,
-		session.OrderCancelled{
-			Envelope: session.Envelope{Time: 9_000, Sequence: 15, Kind: session.KindOrderCancelled},
-			OrderID:  "praxis:12:target", RemainingQty: 7, Reason: session.CancelledByOCO,
+		session.ObservationPresented{
+			Envelope:         session.Envelope{Time: 9_000, Sequence: 15, Kind: session.KindObservationPresented},
+			ObservedSequence: 5,
+			Presented: session.Instant{
+				AtUTCNanos: 1_764_000_000_000_000_000, Segment: 1, ElapsedNanos: 12_000_000,
+			},
 		},
 		session.OrderCancelled{
 			Envelope: session.Envelope{Time: 9_000, Sequence: 16, Kind: session.KindOrderCancelled},
+			OrderID:  "praxis:12:target", RemainingQty: 7, Reason: session.CancelledByOCO,
+		},
+		session.OrderCancelled{
+			Envelope: session.Envelope{Time: 9_000, Sequence: 17, Kind: session.KindOrderCancelled},
 			OrderID:  "praxis:12:stop", RemainingQty: 10, Reason: session.CancelledPositionClosed,
 		},
 	)
@@ -239,6 +246,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
+	present(t, s)
 	if err := s.SubmitOrder(buy, humanAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
@@ -250,6 +258,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
+	present(t, s)
 	if err := s.SubmitOrder(sell, humanAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
@@ -271,4 +280,20 @@ func journalBytes(t *testing.T, batches ...[]session.Event) []byte {
 		out = append(out, framed...)
 	}
 	return out
+}
+
+// present confirms whatever the session has just put on the screen. A human
+// command taken before this is refused, because an interval from a presentation
+// nobody confirmed has no beginning.
+func present(t *testing.T, s *session.Session) {
+	t.Helper()
+	id, waiting := s.Pending(1)
+	if !waiting {
+		return
+	}
+	if err := s.AcknowledgePresentation(id, session.Instant{
+		AtUTCNanos: 1_764_000_000_000_000_000, Segment: 1,
+	}); err != nil {
+		t.Fatalf("AcknowledgePresentation: %v", err)
+	}
 }

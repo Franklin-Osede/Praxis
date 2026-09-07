@@ -41,6 +41,7 @@ func writeSessionWithOrder(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
+	present(t, s)
 	if err := s.SubmitOrder(order, decidedAt()); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
@@ -689,6 +690,7 @@ func TestARealProtectedJournalRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLimitOrder: %v", err)
 	}
+	present(t, s)
 	if err := s.SubmitOrderWithProtection(entry, 18_900, 19_500, decidedAt()); err != nil {
 		t.Fatalf("SubmitOrderWithProtection: %v", err)
 	}

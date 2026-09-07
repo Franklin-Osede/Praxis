@@ -29,6 +29,7 @@ const (
 	typeAccountValued     = "account_valued"
 	typeChallengeDecision = "challenge_decision"
 	typeSessionEnded      = "session_ended"
+	typePresented         = "observation_presented"
 )
 
 // Enumeration names owned by this package.
@@ -240,6 +241,18 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		if err := f.decidedAt(version, v.Decided); err != nil {
 			return "", err
 		}
+
+	case session.ObservationPresented:
+		if header.Kind != session.KindObservationPresented {
+			return "", ErrKindMismatch
+		}
+		if !knows(version, EventVersionV4) {
+			return "", fmt.Errorf("%w: %s cannot say an observation was presented",
+				ErrUnsupportedInVersion, version)
+		}
+		f.name(typePresented).at(header)
+		f.uint(v.ObservedSequence)
+		f.int(int64(v.Presented.AtUTCNanos)).uint(v.Presented.Segment).int(int64(v.Presented.ElapsedNanos))
 
 	case session.SessionEnded:
 		if header.Kind != session.KindSessionEnded {

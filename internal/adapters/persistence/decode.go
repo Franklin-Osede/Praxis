@@ -192,6 +192,22 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		}
 		event = ended
 
+	case typePresented:
+		if !knows(version, EventVersionV4) {
+			return nil, fmt.Errorf("%w: %s cannot say an observation was presented",
+				ErrUnsupportedInVersion, version)
+		}
+		kind = session.KindObservationPresented
+		presented := session.ObservationPresented{
+			Envelope: envelope(at, sequence, kind), ObservedSequence: r.uint(),
+		}
+		presented.Presented = session.Instant{
+			AtUTCNanos:   session.UnixNanos(r.int()),
+			Segment:      r.uint(),
+			ElapsedNanos: session.ElapsedNanos(r.int()),
+		}
+		event = presented
+
 	case typeSessionEnded:
 		kind = session.KindSessionEnded
 		event = session.SessionEnded{Envelope: envelope(at, sequence, kind), SessionID: challenge.SessionID(r.id())}

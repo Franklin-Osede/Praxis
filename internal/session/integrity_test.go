@@ -316,6 +316,9 @@ func renumber(events []session.Event) []session.Event {
 		case session.ChallengeDecision:
 			v.Sequence = seq
 			out = append(out, v)
+		case session.ObservationPresented:
+			v.Sequence = seq
+			out = append(out, v)
 		case session.SessionEnded:
 			v.Sequence = seq
 			out = append(out, v)

@@ -149,6 +149,23 @@ func TestAVersionRefusesWhatItCannotExpress(t *testing.T) {
 	if _, err := persistence.EncodeEvents([]session.Event{paced}, persistence.EventVersionV4); err != nil {
 		t.Fatalf("a pacing mode under v4: %v", err)
 	}
+
+	// An observation being put in front of somebody is an event no earlier
+	// version has, and the one that begins every interval a hypothesis about
+	// hesitation is measured on.
+	presented := session.ObservationPresented{
+		Envelope:         session.Envelope{Time: 1, Sequence: 1, Kind: session.KindObservationPresented},
+		ObservedSequence: 5,
+		Presented:        session.Instant{AtUTCNanos: 1, Segment: 1},
+	}
+	for _, older := range []string{persistence.EventVersionV1, persistence.EventVersionV2, persistence.EventVersionV3} {
+		if _, err := persistence.EncodeEvents([]session.Event{presented}, older); !errors.Is(err, persistence.ErrUnsupportedInVersion) {
+			t.Fatalf("a presentation under %s: got %v, want %v", older, err, persistence.ErrUnsupportedInVersion)
+		}
+	}
+	if _, err := persistence.EncodeEvents([]session.Event{presented}, persistence.EventVersionV4); err != nil {
+		t.Fatalf("a presentation under v4: %v", err)
+	}
 	// And an older reader refuses the name rather than guessing at it, even
 	// though the rest of the line is one it understands perfectly.
 	v4Line, err := persistence.EncodeEvents([]session.Event{byOCO}, persistence.EventVersionV4)
@@ -266,7 +283,7 @@ func TestTheGoldenBytesAreTheFormat(t *testing.T) {
 		{persistence.EventVersionV1, everyEventType(), "testdata/golden-events.txt", 11},
 		{persistence.EventVersionV2, everyEventTypeV2(), "testdata/golden-events-v2.txt", 11},
 		{persistence.EventVersionV3, everyEventTypeV3(), "testdata/golden-events-v3.txt", 14},
-		{persistence.EventVersionV4, everyEventTypeV4(), "testdata/golden-events-v4.txt", 16},
+		{persistence.EventVersionV4, everyEventTypeV4(), "testdata/golden-events-v4.txt", 17},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			payload, err := persistence.EncodeEvents(tc.events, tc.version)

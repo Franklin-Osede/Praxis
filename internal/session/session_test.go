@@ -33,7 +33,7 @@ func config() session.Config {
 
 func newSession(t *testing.T) *session.Session {
 	t.Helper()
-	gestures = 0
+	gestures, acknowledgements, elapsedNow = 0, 0, 0
 	s, err := session.New(config(), 1_000, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -71,10 +71,40 @@ func mustOpen(t *testing.T, s *session.Session, at market.LogicalTime, id challe
 	}
 }
 
+// presentedIn is the segment the test helpers act in. Every human decision they
+// take belongs to it, so every observation they make is confirmed as presented
+// in it — an interface that showed a quote and said so.
+const presentedIn = uint64(1)
+
+// acknowledgements counts the confirmations a fixture has made, so each carries
+// a monotonic reading that moves forward the way a real one would.
+var acknowledgements int64
+
 func mustObserve(t *testing.T, s *session.Session, q market.Quote) {
 	t.Helper()
 	if err := s.Observe(q, 1); err != nil {
 		t.Fatalf("Observe: %v", err)
+	}
+	mustPresent(t, s)
+}
+
+// mustPresent confirms whatever the session has just put on the screen. A
+// command taken before this is refused, because an interval from a presentation
+// nobody confirmed has no beginning.
+func mustPresent(t *testing.T, s *session.Session) {
+	t.Helper()
+	id, waiting := s.Pending(presentedIn)
+	if !waiting {
+		return
+	}
+	acknowledgements++
+	err := s.AcknowledgePresentation(id, session.Instant{
+		AtUTCNanos:   session.UnixNanos(1_764_000_000_000_000_000 + acknowledgements),
+		Segment:      presentedIn,
+		ElapsedNanos: tick(),
+	})
+	if err != nil {
+		t.Fatalf("AcknowledgePresentation: %v", err)
 	}
 }
 
@@ -82,6 +112,17 @@ func mustObserve(t *testing.T, s *session.Session, q market.Quote) {
 // the way a real client's counter would. newSession resets it, which is what
 // keeps a scripted run reproducible.
 var gestures int
+
+// elapsedNow is the segment's monotonic reading, shared by everything that
+// stamps one: a confirmation that a quote was shown moves it, and so does a
+// decision. That is what a real clock does, and it is what makes an interval
+// between them mean anything.
+var elapsedNow session.ElapsedNanos
+
+func tick() session.ElapsedNanos {
+	elapsedNow += 1_000_000
+	return elapsedNow
+}
 
 // decided is a stand-in for a person acting: a gesture, a moment in the world,
 // and a monotonic reading inside one run of uninterrupted interaction. Tests
@@ -98,7 +139,7 @@ func decided(elapsed session.ElapsedNanos) session.Decision {
 
 // decidedAt is a fresh gesture at the start of the segment, which is what most
 // tests want: an act distinct from every other act, with no interval to speak of.
-func decidedAt() session.Decision { return decided(0) }
+func decidedAt() session.Decision { return decided(tick()) }
 
 func mustSubmit(t *testing.T, s *session.Session, o market.Order) {
 	t.Helper()
@@ -320,8 +361,13 @@ func TestATerminalChallengeBlocksFurtherOrders(t *testing.T) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrChallengeEnded)
 	}
 
+	// The observation alone, with nothing acknowledging it: the point is that
+	// an ended evaluation produces no valuation and no decision, not that the
+	// interface stops drawing.
 	before := s.JournalLen()
-	mustObserve(t, s, quote(5_000, 19_700, 19_701))
+	if err := s.Observe(quote(5_000, 19_700, 19_701), 1); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
 	if s.JournalLen() != before+1 {
 		t.Fatalf("an observation after the end produced more than the observation itself")
 	}

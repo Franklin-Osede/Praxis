@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -241,41 +240,94 @@ func TestAnOlderJournalIsRefusedForHumanControl(t *testing.T) {
 	}
 }
 
-// Scenario: the state a participant sees carries nothing they may not know
+// Scenario: the state carries exactly the fields the protocol authorises
 //
 // A field in the payload is available in the browser's developer tools whatever
-// the stylesheet does, so for the experiment, sent is shown. A drawdown
+// the stylesheet does, so for the experiment **sent is shown**. A drawdown
 // threshold here would change what a hypothesis about rule breaches is
 // measuring — from "people break rules when already down" to "people react to a
 // number they were shown".
-func TestTheStateCarriesNothingTheParticipantMayNotKnow(t *testing.T) {
+//
+// The set is checked exactly rather than searched for forbidden words. Looking
+// for "threshold" or "100000" catches a threshold that happens to be called
+// that and happens not to collide with an authorised value; it catches nothing
+// else. Any field added here must break this test until the protocol has
+// approved it, which is the only version of the rule worth having.
+func TestTheStateHasExactlyTheAuthorisedFields(t *testing.T) {
+	authorised := map[string]bool{
+		"subject": true, "pacing": true,
+		"cursor": true, "observations": true,
+		"sessionOpen": true, "sessionId": true,
+		"book.time": true, "book.bid": true, "book.ask": true,
+		"book.bidSize": true, "book.askSize": true,
+		"position.symbol": true, "position.netQty": true,
+		"money.balanceCts": true, "money.equityCts": true,
+		"evaluation.state": true, "evaluation.reason": true,
+		"consecutiveLosingTrades": true,
+		"working[].id":            true, "working[].side": true, "working[].type": true,
+		"working[].qty": true, "working[].limitPrice": true, "working[].stopPrice": true,
+		"protection[].status": true, "protection[].entryOrderId": true,
+		"protection[].episodeId": true, "protection[].stopPrice": true,
+		"protection[].targetPrice": true, "protection[].protectedQty": true,
+		"needsRecovery": true,
+	}
+
+	// A state with something in every collection, so the fields inside them
+	// are reached rather than assumed absent.
 	marketPath, journalPath := paths(t)
-	s := open(t, marketPath, journalPath, pilotConfig())
+	writeRestingAndProtected(t, marketPath, journalPath)
+	s := open(t, marketPath, journalPath, session.Config{})
 
 	resp := stateResponse(t, s)
 	defer resp.Body.Close()
-	raw, err := readAll(resp)
-	if err != nil {
-		t.Fatalf("read: %v", err)
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
 
-	forbidden := []string{
-		"maxDailyLoss", "MaxDailyLoss", "100000",
-		"profitTarget", "ProfitTarget",
-		"maxTotalLoss", "MaxTotalLoss", "200000",
-		"trailing", "Trailing", "threshold", "Threshold",
-		"highWater", "HighWater", "rules", "Rules",
+	seen := map[string]bool{}
+	collect("", body, seen)
+	if len(seen) == 0 {
+		t.Fatal("the state is empty, so this proves nothing")
 	}
-	for _, field := range forbidden {
-		if strings.Contains(raw, field) {
-			t.Fatalf("the state carries %q:\n%s", field, raw)
+	for path := range seen {
+		if !authorised[path] {
+			t.Fatalf("the state carries %q, which the protocol has not authorised", path)
 		}
 	}
+	// And the collections were actually populated, or the fields inside them
+	// were never examined.
+	for _, path := range []string{"book.bid", "working[].id", "protection[].status"} {
+		if !seen[path] {
+			t.Fatalf("the fixture never produced %q, so its fields went unchecked", path)
+		}
+	}
+}
 
-	// And it does carry the streak, because the journal claims the participant
-	// knew it and only the screen can make that true.
-	if !strings.Contains(raw, "consecutiveLosingTrades") {
-		t.Fatalf("the state hides the streak the journal says was known:\n%s", raw)
+// collect walks decoded JSON into dotted paths, so that a field added anywhere
+// in the shape has to be authorised by name.
+func collect(prefix string, value any, into map[string]bool) {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, inner := range v {
+			path := key
+			if prefix != "" {
+				path = prefix + "." + key
+			}
+			if _, nested := inner.(map[string]any); nested {
+				collect(path, inner, into)
+				continue
+			}
+			if _, list := inner.([]any); list {
+				collect(path, inner, into)
+				continue
+			}
+			into[path] = true
+		}
+	case []any:
+		for _, item := range v {
+			collect(prefix+"[]", item, into)
+		}
 	}
 }
 
@@ -436,6 +488,7 @@ func writeDecisionInSegment(t *testing.T, marketPath, journalPath string, segmen
 	if err != nil {
 		t.Fatalf("NewMarketOrder: %v", err)
 	}
+	presentIn(t, s, segment)
 	act := session.Decision{
 		GestureID: "g-1", AtUTCNanos: 1_764_000_000_000_000_000,
 		Segment: segment, ElapsedNanos: 0,
@@ -457,5 +510,57 @@ func writeRaw(t *testing.T, path, version string, events []session.Event) {
 	}
 	if err := os.WriteFile(path, append(out, framed...), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+// writeRestingAndProtected produces a journal holding a resting order and a
+// planned protection, so a state projection has something in every collection.
+func writeRestingAndProtected(t *testing.T, marketPath, journalPath string) {
+	t.Helper()
+	feed, err := marketdata.ReadFile(marketPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	w, err := persistence.OpenWriter(journalPath, persistence.DurableEveryBatch)
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	defer w.Close()
+
+	cfg := pilotConfig()
+	cfg.Instrument = feed.Instrument
+	s, err := session.New(cfg, feed.Observations[0].Quote.Time, w)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := marketdata.Drive(s, feed, 0); err != nil {
+		t.Fatalf("Drive: %v", err)
+	}
+	entry, err := market.NewLimitOrder("o-1", feed.Instrument, market.SideBuy, 2, 19_000)
+	if err != nil {
+		t.Fatalf("NewLimitOrder: %v", err)
+	}
+	presentIn(t, s, 1)
+	act := session.Decision{
+		GestureID: "g-1", AtUTCNanos: 1_764_000_000_000_000_000, Segment: 1,
+	}
+	if err := s.SubmitOrderWithProtection(entry, 18_900, 19_500, act); err != nil {
+		t.Fatalf("SubmitOrderWithProtection: %v", err)
+	}
+}
+
+// presentIn confirms whatever is on the screen, in a given run of interaction.
+// A human command before this is refused: an interval from a presentation
+// nobody confirmed has no beginning.
+func presentIn(t *testing.T, s *session.Session, segment uint64) {
+	t.Helper()
+	id, waiting := s.Pending(segment)
+	if !waiting {
+		t.Fatalf("segment %d has nothing to confirm", segment)
+	}
+	if err := s.AcknowledgePresentation(id, session.Instant{
+		AtUTCNanos: 1_764_000_000_000_000_000, Segment: segment,
+	}); err != nil {
+		t.Fatalf("AcknowledgePresentation: %v", err)
 	}
 }

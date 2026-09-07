@@ -608,13 +608,29 @@ the command arrived — which includes render and transport in the measure, but
 both are small and consistent. If the pilots show that separating rendering
 matters, the browser acknowledges presentation and both stamps move there.
 
-The presentation stamp itself is **not here yet, deliberately**: the thing that
-presents observations is the interface, and this repository's hardest-won lesson
-is that a schema is not proven until something both produces and consumes it —
-`praxis.event.v2` declared protection events ahead of any producer and every one
-of them was wrong. It lands **in the interface's first vertical slice**, while
-`praxis.event.v4` is still a draft, and therefore before the first pilot
-journal.
+`ObservationPresented` is that other end, and **its name is the whole of its
+claim**: the browser finished rendering and said so. It does not mean the
+participant looked at the screen, and nothing may be read as saying they did.
+Recording it when the response is written would be worse — that says only that
+the server tried to send something, and the connection may have dropped with
+nothing drawn. So the interface acknowledges, and the acknowledgement is what is
+stamped.
+
+A presentation is identified by `<segment>:<observation sequence>`, derived
+rather than minted. The same quote shown again after a reload is a *different*
+presentation, because a reload is a new run of interaction and the reading an
+interval is computed from starts over. From that follow the rules the readers
+enforce:
+
+```text
+a repeated acknowledgement records nothing      a retry, not a second showing
+one naming another observation is refused       a stale tab must not stand in
+one made in another segment is refused          the interval would be on another clock
+a human command before it is refused            a decision with no beginning
+each observation is confirmed on its own        a new quote is a new showing
+a resumed session keeps its confirmation        reconstruction is faithful
+a new segment does not inherit one              it has seen nothing yet
+```
 
 Checking a log against itself is not enough, and the difference is testable. A
 forged realised amount can be made internally coherent by adjusting every

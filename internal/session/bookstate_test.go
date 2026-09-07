@@ -186,7 +186,7 @@ func TestAStopFindsWhatAnEarlierOrderLeft(t *testing.T) {
 	}
 	// One act, issued to both: the same person doing the same thing once, which
 	// is what makes the two journals comparable at all.
-	after, act := order("after", market.SideSell, 3), decided(0)
+	after, act := order("after", market.SideSell, 3), decidedAt()
 	if err := resumed.SubmitOrder(after, act); err != nil {
 		t.Fatalf("SubmitOrder: %v", err)
 	}
@@ -935,6 +935,21 @@ func TestTheMonotonicReadingCannotGoBack(t *testing.T) {
 		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
 		return s
 	}
+	// A decision in another segment needs that segment to have confirmed what
+	// is on the screen: a new run of interaction has seen nothing yet.
+	presentIn := func(t *testing.T, s *session.Session, segment uint64) {
+		t.Helper()
+		id, waiting := s.Pending(segment)
+		if !waiting {
+			t.Fatalf("segment %d has nothing to confirm", segment)
+		}
+		err := s.AcknowledgePresentation(id, session.Instant{
+			AtUTCNanos: 1_764_000_000_000_000_000, Segment: segment,
+		})
+		if err != nil {
+			t.Fatalf("AcknowledgePresentation: %v", err)
+		}
+	}
 
 	t.Run("a wall clock corrected backwards is accepted", func(t *testing.T) {
 		s := open(t)
@@ -956,39 +971,52 @@ func TestTheMonotonicReadingCannotGoBack(t *testing.T) {
 		if err := submit(t, s, "o1", session.Decision{GestureID: "g-a", AtUTCNanos: 1_000, Segment: 1, ElapsedNanos: 90_000_000_000}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
+		presentIn(t, s, 2)
 		if err := submit(t, s, "o2", session.Decision{GestureID: "g-b", AtUTCNanos: 2_000, Segment: 2, ElapsedNanos: 0}); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
 		checked(t, s)
 	})
 
+	// These are refused by the readers rather than at the door, because the
+	// door refuses them earlier now: a decision in a segment that has confirmed
+	// nothing has no beginning to be measured from, whichever way its clock
+	// runs. So the journal is honest and the second decision is forged.
 	refused := []struct {
-		name         string
-		first, later session.Decision
+		name  string
+		forge func(*session.Decision)
+		says  string
 	}{
 		{"the monotonic reading goes back inside one segment",
-			session.Decision{GestureID: "g-a", AtUTCNanos: 1_000, Segment: 1, ElapsedNanos: 5_000_000_000},
-			session.Decision{GestureID: "g-b", AtUTCNanos: 2_000, Segment: 1, ElapsedNanos: 1_000_000_000}},
+			func(d *session.Decision) { d.ElapsedNanos = 1 }, "after"},
 		{"a segment is returned to",
-			session.Decision{GestureID: "g-a", AtUTCNanos: 1_000, Segment: 2, ElapsedNanos: 0},
-			session.Decision{GestureID: "g-b", AtUTCNanos: 2_000, Segment: 1, ElapsedNanos: 0}},
+			func(d *session.Decision) { d.Segment = 0 + 1; d.ElapsedNanos = 0 }, "after"},
 	}
 	for _, tc := range refused {
 		t.Run(tc.name, func(t *testing.T) {
 			s := open(t)
-			if err := submit(t, s, "o1", tc.first); err != nil {
+			presentIn(t, s, 2)
+			if err := submit(t, s, "o1", session.Decision{
+				GestureID: "g-a", AtUTCNanos: 1_000, Segment: 2, ElapsedNanos: 5_000_000_000,
+			}); err != nil {
 				t.Fatalf("SubmitOrder: %v", err)
 			}
-			// The kernel records what it is given; nothing here decides on a
-			// human clock, so this is accepted at the door and refused by the
-			// readers.
-			if err := submit(t, s, "o2", tc.later); err != nil {
+			if err := submit(t, s, "o2", session.Decision{
+				GestureID: "g-b", AtUTCNanos: 2_000, Segment: 2, ElapsedNanos: 9_000_000_000,
+			}); err != nil {
 				t.Fatalf("SubmitOrder: %v", err)
 			}
-			if _, err := session.Replay(s.Events()); !errors.Is(err, session.ErrStructure) {
+
+			events := s.Events()
+			at := indexOfKind(t, events, session.KindOrderSubmitted, 2)
+			second := events[at].(session.OrderSubmitted)
+			tc.forge(&second.Decided)
+			events[at] = second
+
+			if _, err := session.Replay(events); !errors.Is(err, session.ErrStructure) {
 				t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
 			}
-			if err := session.Verify(s.Events()); !errors.Is(err, session.ErrContradictoryLog) {
+			if err := session.Verify(events); !errors.Is(err, session.ErrContradictoryLog) {
 				t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
 			}
 		})
@@ -1216,7 +1244,7 @@ func TestADecisionIsWhollyPresentOrWhollyAbsent(t *testing.T) {
 func TestAGestureIsSpentOnceWhateverItCommanded(t *testing.T) {
 	t.Run("a replacement resent", func(t *testing.T) {
 		s := protectedSession(t, 18_900, 19_500)
-		act := decided(0)
+		act := decidedAt()
 		if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_500, act); err != nil {
 			t.Fatalf("ReplaceProtection: %v", err)
 		}
@@ -1232,7 +1260,7 @@ func TestAGestureIsSpentOnceWhateverItCommanded(t *testing.T) {
 
 	t.Run("a withdrawal resent", func(t *testing.T) {
 		s := protectedSession(t, 18_900, 19_500)
-		act := decided(0)
+		act := decidedAt()
 		if err := s.CancelProtection(entryRef("entry"), act); err != nil {
 			t.Fatalf("CancelProtection: %v", err)
 		}
@@ -1244,7 +1272,7 @@ func TestAGestureIsSpentOnceWhateverItCommanded(t *testing.T) {
 
 	t.Run("a cancellation resent", func(t *testing.T) {
 		s := protectedSession(t, 18_900, 19_500)
-		act := decided(0)
+		act := decidedAt()
 		if err := s.CancelOrder("entry", act); err != nil {
 			t.Fatalf("CancelOrder: %v", err)
 		}
@@ -1294,7 +1322,7 @@ func TestAGestureIsSpentOnceWhateverItCommanded(t *testing.T) {
 		s := newSession(t)
 		mustOpen(t, s, 2_000, "d1")
 		mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
-		act := decided(0)
+		act := decidedAt()
 		if err := s.SubmitOrder(order("o1", market.SideBuy, 1), act); err != nil {
 			t.Fatalf("SubmitOrder: %v", err)
 		}
@@ -1364,7 +1392,7 @@ func TestThePacingAndTheSubjectAreOneClaim(t *testing.T) {
 // journal is the authority on what was confirmed.
 func TestWhatAGestureCommandedIsRecoverable(t *testing.T) {
 	s := protectedSession(t, 18_900, 19_500)
-	replace := decided(0)
+	replace := decidedAt()
 	if err := s.ReplaceProtection(entryRef("entry"), 18_800, 19_500, replace); err != nil {
 		t.Fatalf("ReplaceProtection: %v", err)
 	}

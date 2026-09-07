@@ -212,3 +212,19 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// present confirms whatever the session has just put on the screen. A human
+// command taken before this is refused, because an interval from a presentation
+// nobody confirmed has no beginning.
+func present(t *testing.T, s *session.Session) {
+	t.Helper()
+	id, waiting := s.Pending(1)
+	if !waiting {
+		return
+	}
+	if err := s.AcknowledgePresentation(id, session.Instant{
+		AtUTCNanos: 1_764_000_000_000_000_000, Segment: 1,
+	}); err != nil {
+		t.Fatalf("AcknowledgePresentation: %v", err)
+	}
+}

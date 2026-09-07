@@ -82,6 +82,13 @@ type Session struct {
 	lastQuote market.Quote
 	hasQuote  bool
 
+	// lastObserved is the journal position of the observation now on the
+	// screen, and presented the one an interface has confirmed showing. A
+	// human command is refused until they agree, because an interval from a
+	// presentation nobody confirmed has no beginning.
+	lastObserved uint64
+	presented    PresentationID
+
 	// working holds the orders waiting for a later observation, in the order
 	// they were submitted. It is a slice and not a map because the order in
 	// which they are offered an observation decides which of them fills a
@@ -587,6 +594,7 @@ func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 		return err
 	}
 	s.lastQuote, s.hasQuote, s.observedThisSession = q, true, true
+	s.lastObserved = s.sequence
 
 	if s.sessionOpen && !s.ended() {
 		if err := s.offerObservation(q.Time); err != nil {
@@ -672,6 +680,9 @@ func (s *Session) prepareOrder(o market.Order, decided Decision) (preparedOrder,
 		return preparedOrder{}, fmt.Errorf("%w: %s", ErrOrderIDReused, o.ID)
 	}
 	if err := s.checkGesture(decided); err != nil {
+		return preparedOrder{}, err
+	}
+	if err := s.requirePresented(decided); err != nil {
 		return preparedOrder{}, err
 	}
 	at := s.lastQuote.Time

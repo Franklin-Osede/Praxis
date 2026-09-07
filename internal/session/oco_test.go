@@ -372,7 +372,7 @@ func TestProtectionReconstructsAfterExecution(t *testing.T) {
 // a cancellation and an ending. Half of it on disk would be a journal claiming
 // a protection over a position that never opened.
 func TestAProtectiveBatchIsAllOrNothing(t *testing.T) {
-	committer := &failOnce{failAt: 4}
+	committer := &failOnce{failAt: 5}
 	s, err := session.New(config(), 1_000, committer)
 	if err != nil {
 		t.Fatalf("New: %v", err)
