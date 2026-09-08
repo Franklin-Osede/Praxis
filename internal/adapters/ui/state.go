@@ -109,7 +109,7 @@ func project(s *session.Session, cursor, observations int, cfg session.Config, b
 		Pacing:       cfg.Pacing.String(),
 		Cursor:       cursor,
 		Observations: observations,
-		SessionOpen:  s.OpenSessionID() != "",
+		SessionOpen:  s.TradingSessionOpen(),
 		SessionID:    string(s.OpenSessionID()),
 		Money:        Money{BalanceCts: decimal(int64(balance)), EquityCts: decimal(int64(equity))},
 	}

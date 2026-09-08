@@ -109,8 +109,8 @@ func replayCommand(args []string, out, errOut *os.File) int {
 	}
 	// The end of a file is not a session boundary, so the last trading session
 	// is left open rather than closed on its behalf.
-	if id := s.OpenSessionID(); id != "" {
-		fmt.Fprintf(out, "open:      trading session %s is still open\n", id)
+	if s.TradingSessionOpen() {
+		fmt.Fprintf(out, "open:      trading session %s is still open\n", s.OpenSessionID())
 	}
 	return exitClean
 }

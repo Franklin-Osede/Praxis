@@ -3,6 +3,8 @@ package marketdata
 import (
 	"fmt"
 
+	"praxis/internal/challenge"
+
 	"praxis/internal/session"
 )
 
@@ -21,7 +23,12 @@ func Drive(s *session.Session, feed *Feed, from int) error {
 	if from < 0 || from > len(feed.Observations) {
 		return fmt.Errorf("marketdata: cannot start at row %d of %d", from, len(feed.Observations))
 	}
-	current := s.OpenSessionID()
+	// The session that is open, and nothing if none is: a name on its own
+	// cannot say whether the boundary it belongs to has been crossed.
+	var current challenge.SessionID
+	if s.TradingSessionOpen() {
+		current = s.OpenSessionID()
+	}
 	for _, o := range feed.Observations[from:] {
 		if o.SessionID != current {
 			if current != "" {

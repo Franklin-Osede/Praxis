@@ -15,6 +15,19 @@ import (
 // with itself.
 var (
 	ErrNoSessionStarted   = errors.New("session: the log does not begin with a session start")
+
+	// ErrIncoherentState reports a replayed state that is two claims at once
+	// about the trading session: open under no name, or named with none open.
+	//
+	// Replay never builds one — the two move together, in one place each — but
+	// ReplayedState is an exported struct of exported fields, so one can be
+	// composed. A session resumed from it is past every door the constructor
+	// holds: it reports open with nothing to name, and EndTradingSession then
+	// records a boundary whose identifier is empty, which is a valid command
+	// the record has no way to write and which kills the session at commit.
+	// That is exactly the failure the identifier rule exists to prevent,
+	// reachable again through a type rather than through a name.
+	ErrIncoherentState = errors.New("session: the replayed state disagrees with itself about the open trading session")
 	ErrContradictoryLog   = errors.New("session: a recorded context contradicts the events before it")
 	ErrUnexpectedSequence = errors.New("session: the log is not one contiguous ordering")
 	ErrCounterOverflow    = errors.New("session: a counter in the log cannot be represented")
@@ -338,6 +351,9 @@ func Replay(events []Event) (*ReplayedState, error) {
 				return nil, fmt.Errorf("%w: event %d ends %s, which is not the open session", ErrStructure, n, v.SessionID)
 			}
 			state.SessionOpen, state.ObservedThisSession = false, false
+			// Reconstruction is faithful or it is not reconstruction: a live
+			// session drops the name here, so a replayed one does too.
+			state.CurrentSessionID = ""
 
 		case AccountValued:
 			if !state.SessionOpen || v.SessionID != state.CurrentSessionID {
@@ -746,6 +762,13 @@ func checkValuation(a *portfolio.Account, i market.Instrument, state *ReplayedSt
 // commit is discarded, never repaired, because nothing inside it can know what
 // reached the disk.
 func Resume(state *ReplayedState, committer BatchCommitter) (*Session, error) {
+	// Whether a trading session is open and which one it is are one fact in
+	// two fields. A session is only ever as coherent as the state it was
+	// resumed from, so this is where that fact is held together.
+	if state.SessionOpen != (state.CurrentSessionID != "") {
+		return nil, fmt.Errorf("%w: open=%v, named %q",
+			ErrIncoherentState, state.SessionOpen, state.CurrentSessionID)
+	}
 	journal, err := newJournalFrom(state.Events)
 	if err != nil {
 		return nil, err

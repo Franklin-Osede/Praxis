@@ -365,6 +365,18 @@ func (s *Session) JournalLen() int { return s.journal.Len() }
 
 func (s *Session) Account() *portfolio.Account        { return s.account }
 func (s *Session) Challenge() *challenge.Challenge    { return s.eval }
+// TradingSessionOpen reports whether a trading session is open.
+//
+// It exists because openness was being inferred from a non-empty identifier in
+// three separate places, and the identifier outlived the session it named. A
+// boolean derived from a name is a second representation of a fact the session
+// already holds, and the two drifted the moment a session ended: the name
+// stayed, so a reader asking it carried on into the next boundary as though one
+// were still running.
+func (s *Session) TradingSessionOpen() bool { return s.sessionOpen }
+
+// OpenSessionID is the identifier of the open trading session, and empty when
+// none is open. It is never the name of one that has closed.
 func (s *Session) OpenSessionID() challenge.SessionID { return s.openSessionID }
 
 // OpenTradingSession asserts a session boundary and immediately values the
@@ -913,6 +925,8 @@ func (s *Session) endTradingSession(at market.LogicalTime) error {
 	}); err != nil {
 		return err
 	}
-	s.sessionOpen, s.observedThisSession = false, false
+	// The name goes with the session. Keeping it would leave the only fact a
+	// reader could ask pointing at something that is over.
+	s.openSessionID, s.sessionOpen, s.observedThisSession = "", false, false
 	return nil
 }
