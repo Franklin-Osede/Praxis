@@ -178,10 +178,14 @@ func (c interactionClock) check(class interactionClass, kind Kind, at Instant, g
 // the stamp it originally sent, which is legitimately behind the log by then,
 // but nothing makes a half-written stamp acceptable.
 func (c interactionClock) checkShape(class interactionClass, kind Kind, at Instant, gestureID string) error {
-	// A presentation names no act, so it is only the moment. A decision is the
-	// moment and the act together.
+	// A presentation names no act, so it is only the moment: its gesture is
+	// empty by construction and the whole predicate would refuse every one of
+	// them. Everything else carries a Decision, and for a Decision the act is
+	// half of the rule — including a derived one, whose act must be absent
+	// exactly as its moment is. Narrowing this to human decisions let a
+	// journal name an act on a cancellation nobody ordered.
 	malformed := at.Malformed()
-	if class == classHumanDecision {
+	if class != classPresentation {
 		malformed = malformedDecision(at, gestureID)
 	}
 	if malformed {

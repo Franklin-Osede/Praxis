@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"praxis/internal/challenge"
@@ -434,5 +435,61 @@ func TestVerifyAloneRefusesAContradictoryRun(t *testing.T) {
 	}
 	if _, err := session.Replay(events); !errors.Is(err, session.ErrStructure) {
 		t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+	}
+}
+
+// Scenario: what the log required names no act either
+//
+//	Given an event the events before it demanded — a leg its sibling cancelled,
+//	  an ending a fill required
+//	When it carries a gesture identifier and no moment
+//	Then both readers refuse it.
+//
+// The moment and the act are two halves of one rule and a derived event is held
+// to both: its act must be absent exactly as its moment is. Holding only the
+// moment let a journal name a person's act on something nobody ordered — inert,
+// because nothing reads a gesture off a derived event, but half a claim that
+// somebody was behind what the log demanded of itself, in a record whose whole
+// purpose is that only real acts are named.
+func TestWhatTheLogRequiredNamesNoAct(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind session.Kind
+	}{
+		{"a leg its sibling cancelled", session.KindOrderCancelled},
+		{"an ending a fill required", session.KindProtectionEnded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := protectedLong(t)
+			mustObserve(t, s, sized(4_000, 20_500, 20_501, 50))
+			events := s.Events()
+			at := indexOfKind(t, events, tc.kind, 1)
+
+			switch v := events[at].(type) {
+			case session.OrderCancelled:
+				v.Decided = session.Decision{GestureID: "g-forged"}
+				events[at] = v
+			case session.ProtectionEnded:
+				v.Decided = session.Decision{GestureID: "g-forged"}
+				events[at] = v
+			}
+
+			// The readers wrap the inner cause with %v, so the sentinel to
+			// match is theirs and the sentence is what says which rule fired.
+			_, err := session.Replay(events)
+			if !errors.Is(err, session.ErrStructure) {
+				t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+			}
+			if !strings.Contains(err.Error(), `gesture "g-forged"`) {
+				t.Fatalf("Replay rejected it for another reason: %v", err)
+			}
+			err = session.Verify(events)
+			if !errors.Is(err, session.ErrContradictoryLog) {
+				t.Fatalf("Verify: got %v, want %v", err, session.ErrContradictoryLog)
+			}
+			if !strings.Contains(err.Error(), `gesture "g-forged"`) {
+				t.Fatalf("Verify rejected it for another reason: %v", err)
+			}
+		})
 	}
 }
