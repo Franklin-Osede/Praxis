@@ -580,9 +580,11 @@ func TestAnOrderStarvedByTheOneAheadOfItIsAccepted(t *testing.T) {
 	checked(t, s)
 }
 
-// The evaluation ending stops the offering too, and a reader that forgot it
-// would reject a journal the engine produces.
-func TestAnOrderIsAskedNothingOnceTheEvaluationHasEnded(t *testing.T) {
+// The evaluation ending stops the market, so it stops the offering: a working
+// order is untouched not because it was offered a quote and declined it, but
+// because no quote arrives. A reader that forgot either half would reject a
+// journal the engine produces.
+func TestNoMarketReachesAWorkingOrderOnceTheEvaluationHasEnded(t *testing.T) {
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
@@ -596,11 +598,21 @@ func TestAnOrderIsAskedNothingOnceTheEvaluationHasEnded(t *testing.T) {
 		t.Fatalf("the fixture did not end the evaluation: %v", s.Challenge().State())
 	}
 
-	// The market now walks through the resting stop. Nothing is offered it,
-	// because the evaluation is over.
-	mustObserve(t, s, sized(5_000, 21_100, 21_101, 50))
-	mustObserve(t, s, sized(6_000, 21_200, 21_201, 50))
-
+	// The market would now walk through the resting stop, and never reaches
+	// it: the journal ends where the evaluation ends, so the observation is
+	// refused rather than recorded and offered to nothing.
+	before := s.JournalLen()
+	for _, q := range []market.Quote{
+		sized(5_000, 21_100, 21_101, 50),
+		sized(6_000, 21_200, 21_201, 50),
+	} {
+		if err := s.Observe(q, 1); !errors.Is(err, session.ErrChallengeEnded) {
+			t.Fatalf("Observe: got %v, want %v", err, session.ErrChallengeEnded)
+		}
+	}
+	if s.JournalLen() != before {
+		t.Fatalf("journal: got %d events, want the %d it had", s.JournalLen(), before)
+	}
 	if len(s.WorkingOrders()) != 1 {
 		t.Fatalf("working: got %+v, want the stop untouched", s.WorkingOrders())
 	}

@@ -321,6 +321,14 @@ func (s *Session) value() (balanceCts, equityCts market.Cents, err error) {
 // revalue values the account and feeds the evaluation. It is called after
 // every observation and after every order, so an unrealised loss can end an
 // evaluation without a trade being closed.
+//
+// The ended() half of its guard is currently unreachable: every caller refuses
+// a terminal evaluation before it gets here. It stays because this is the only
+// path that feeds the evaluation and it has four callers, so its precondition
+// is stated here rather than assumed of all of them — the same reason
+// EndTradingSession's missing gate is written down rather than left to be
+// inferred. If it ever fires, a caller acquired a terminal state mid-command,
+// and that is a fact worth not stepping over.
 func (s *Session) revalue(at market.LogicalTime) error {
 	if !s.sessionOpen || s.ended() {
 		return nil
@@ -365,6 +373,11 @@ func (s *Session) JournalLen() int { return s.journal.Len() }
 
 func (s *Session) Account() *portfolio.Account        { return s.account }
 func (s *Session) Challenge() *challenge.Challenge    { return s.eval }
+// ChallengeEnded reports whether the evaluation has reached a terminal state.
+// An adapter driving a file asks it to stop consuming, and stopping is not an
+// error: the evaluation ending is the result.
+func (s *Session) ChallengeEnded() bool { return s.ended() }
+
 // TradingSessionOpen reports whether a trading session is open.
 //
 // It exists because openness was being inferred from a non-empty identifier in
@@ -609,6 +622,14 @@ func (s *Session) applyAndRecord(at market.LogicalTime, fills []market.Fill) (ma
 }
 
 func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
+	// The journal ends where the evaluation ends. Market after that point is
+	// market nobody can act on, and the file it came from still holds it, so
+	// recording it would be a second copy — one that is not free, because an
+	// observation belongs to a trading session and keeping it means crossing
+	// the next boundary onto an evaluation that is over.
+	if s.ended() {
+		return ErrChallengeEnded
+	}
 	if q.Instrument != s.cfg.Instrument {
 		return ErrWrongInstrument
 	}
@@ -626,7 +647,7 @@ func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 	s.lastQuote, s.hasQuote, s.observedThisSession = q, true, true
 	s.lastObserved = s.sequence
 
-	if s.sessionOpen && !s.ended() {
+	if s.sessionOpen {
 		if err := s.offerObservation(q.Time); err != nil {
 			return err
 		}
@@ -915,6 +936,13 @@ func (s *Session) EndTradingSession(at market.LogicalTime) error {
 	return s.command(func() error { return s.endTradingSession(at) })
 }
 
+// endTradingSession has no ended() gate and OpenTradingSession does. The
+// asymmetry reads like an oversight and is not: opening a session on an
+// evaluation that is over would ask the challenge engine to leave a terminal
+// state, and closing one asks nothing of it. Closing the books after an
+// evaluation ends is a legitimate operator act. It was only ever a defect when
+// it happened automatically inside a run that then could not continue, and the
+// terminal check at the top of Drive removes that run.
 func (s *Session) endTradingSession(at market.LogicalTime) error {
 	if !s.sessionOpen {
 		return ErrNoSessionOpen

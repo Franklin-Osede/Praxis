@@ -1311,6 +1311,46 @@ Monotonicity and `requirePresented` are both needed and neither replaces the
 other: the first makes a negative interval unrepresentable, the second proves
 the subtraction is against the stimulus actually on the screen.
 
+### The journal ends where the evaluation ends
+
+A prop-firm evaluation reaching passed or failed in the middle of a file is the
+normal case, not an error. The run stops consuming, cleanly: it does not close
+the trading session on the participant's behalf, does not open the next one, and
+exits zero, because an evaluation ending is a result rather than a failure.
+
+Market after that point is market nobody can act on, and the file it came from
+still holds it, so recording it would be a second copy. It is also not free.
+`Consumed` requires every recorded observation to sit in the trading session the
+file assigns it, so keeping the later market means crossing the next boundary,
+and crossing it means opening a session on an evaluation that is over — the
+terminal state of that machine is terminal in both directions, and reopening it
+to store a quote nobody can trade against is the wrong trade.
+
+`Consumed` needs nothing for this. It walks events rather than rows, so a
+journal shorter than its file is the interruption case it was already written
+for.
+
+The rule is in `Session.Observe` and the stop is in `Drive`, and the second is
+not a duplicate of the first. The kernel's refusal is what holds the next
+adapter honest when an interface starts feeding observations by hand. Drive's
+check is at the top of its loop rather than in reaction to that refusal, because
+the boundary logic runs before the observation does: reacting would close the
+trading session first and commit a `SessionEnded` this policy says should not
+exist, so the run would still stop and the journal would grow every time it ran.
+
+`EndTradingSession` keeps no `ended()` gate while `OpenTradingSession` has one.
+The asymmetry is deliberate: opening a session on an evaluation that is over
+asks the challenge engine to leave a terminal state, and closing one asks
+nothing of it. Closing the books after an evaluation ends is a legitimate
+operator act, and it was only ever a defect when it happened automatically
+inside a run that then could not continue.
+
+**The exit code stays zero, so what was consumed is a line and not a status.**
+`praxis replay` prints the outcome and the rows it did not take. That is
+deliberate: "the file was consumed whole" is no longer deducible from the exit
+status, so anything automating that question reads `remaining:`. Adding a code
+for it later would break every caller that had learned to read zero as success.
+
 Known gaps: commission is a flat per-contract figure, not a schedule; a
 provider normalizer that turns raw data into the canonical format does not
 exist, and needs its own decision record before it does; `AccountSnapshot`

@@ -361,15 +361,17 @@ func TestATerminalChallengeBlocksFurtherOrders(t *testing.T) {
 		t.Fatalf("error: got %v, want %v", err, session.ErrChallengeEnded)
 	}
 
-	// The observation alone, with nothing acknowledging it: the point is that
-	// an ended evaluation produces no valuation and no decision, not that the
-	// interface stops drawing.
+	// And the market stops too. An evaluation that has ended is the end of the
+	// journal, not a session that goes on recording quotes nobody can act on:
+	// the file it came from still holds them, and a second copy is not free —
+	// keeping it means crossing the next boundary onto an evaluation that is
+	// over.
 	before := s.JournalLen()
-	if err := s.Observe(quote(5_000, 19_700, 19_701), 1); err != nil {
-		t.Fatalf("Observe: %v", err)
+	if err := s.Observe(quote(5_000, 19_700, 19_701), 1); !errors.Is(err, session.ErrChallengeEnded) {
+		t.Fatalf("Observe: got %v, want %v", err, session.ErrChallengeEnded)
 	}
-	if s.JournalLen() != before+1 {
-		t.Fatalf("an observation after the end produced more than the observation itself")
+	if s.JournalLen() != before {
+		t.Fatalf("journal: got %d events, want the %d it had", s.JournalLen(), before)
 	}
 }
 

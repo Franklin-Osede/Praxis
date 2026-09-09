@@ -30,6 +30,15 @@ func Drive(s *session.Session, feed *Feed, from int) error {
 		current = s.OpenSessionID()
 	}
 	for _, o := range feed.Observations[from:] {
+		// Before the boundary, not after it. An evaluation that ends is a
+		// result and not a failure, so the run stops cleanly rather than
+		// erroring — and it stops here rather than reacting to the kernel's
+		// refusal, because the boundary logic runs before the observation
+		// does: reacting would close the trading session first and commit a
+		// SessionEnded the policy says should not exist.
+		if s.ChallengeEnded() {
+			return nil
+		}
 		if o.SessionID != current {
 			if current != "" {
 				if err := s.EndTradingSession(o.Quote.Time); err != nil {

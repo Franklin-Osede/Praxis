@@ -97,10 +97,19 @@ func replayCommand(args []string, out, errOut *os.File) int {
 		return exitFatal
 	}
 
+	// What the journal actually holds, not what the file offers: a run that
+	// stopped because the evaluation ended consumed less than the whole file,
+	// and saying otherwise would report rows nobody took.
+	held, err := marketdata.Consumed(s.Events(), feed)
+	if err != nil {
+		fmt.Fprintf(errOut, "praxis: %v\n", err)
+		return exitFatal
+	}
+
 	fmt.Fprintf(out, "market:    %s\n", operands[0])
 	fmt.Fprintf(out, "journal:   %s\n", *journalPath)
 	fmt.Fprintf(out, "verified:  %d rows already in the journal\n", consumed)
-	fmt.Fprintf(out, "consumed:  %d new rows\n", len(feed.Observations)-consumed)
+	fmt.Fprintf(out, "consumed:  %d new rows\n", held-consumed)
 	fmt.Fprintf(out, "batches:   %d confirmed this run\n", writer.NextBatchNumber()-batchesBefore)
 	fmt.Fprintf(out, "sequence:  last event %d\n", writer.NextSequence()-1)
 	fmt.Fprintf(out, "challenge: %v\n", s.Challenge().State())
@@ -109,6 +118,13 @@ func replayCommand(args []string, out, errOut *os.File) int {
 	}
 	// The end of a file is not a session boundary, so the last trading session
 	// is left open rather than closed on its behalf.
+	// An evaluation that ends is a result, not a failure, so the run is clean
+	// and the outcome is a line rather than an exit code. That means "the file
+	// was consumed whole" is no longer deducible from the status, which is why
+	// it is stated: anything automating that question reads this line.
+	if remaining := len(feed.Observations) - held; remaining > 0 {
+		fmt.Fprintf(out, "remaining: %d market rows not consumed\n", remaining)
+	}
 	if s.TradingSessionOpen() {
 		fmt.Fprintf(out, "open:      trading session %s is still open\n", s.OpenSessionID())
 	}
