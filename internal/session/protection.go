@@ -659,8 +659,11 @@ func (p *protectionProjection) activeSnapshot() []ActiveProtection {
 	return out
 }
 
+// restore replaces everything this projection holds, the spent names included.
+// Clearing two collections and keeping the third would leave a name spent that
+// the restored journal never spent, and refuse an order it has every right to.
 func (p *protectionProjection) restore(planned []PlannedProtection, active []ActiveProtection, symbol string, used []string) {
-	p.init()
+	p.usedOrderIDs = map[string]bool{}
 	p.planned = p.planned[:0]
 	for _, s := range planned {
 		p.planned = append(p.planned, plannedProtection{

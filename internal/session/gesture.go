@@ -159,8 +159,11 @@ func (g *gestureIndex) snapshot() []Gesture {
 	return out
 }
 
+// restore replaces everything this index holds. Both halves go: keeping the
+// names while replacing the acts would refuse a gesture the restored journal
+// never spent, and answer a retry with what a different run committed.
 func (g *gestureIndex) restore(taken []Gesture) {
-	g.init()
+	g.byID = map[string]int{}
 	g.taken = g.taken[:0]
 	for _, act := range taken {
 		g.byID[act.Decided.GestureID] = len(g.taken)
