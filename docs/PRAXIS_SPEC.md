@@ -1311,6 +1311,28 @@ Monotonicity and `requirePresented` are both needed and neither replaces the
 other: the first makes a negative interval unrepresentable, the second proves
 the subtraction is against the stimulus actually on the screen.
 
+### A working order outlives a session boundary
+
+An order still waiting when a trading session ends is still waiting when the
+next one opens, and so is a protection planned against it. They cross the way a
+position does: `openTradingSession` re-bases the evaluation's reference and
+resets the session's counters, and touches neither. The first book of the new
+session is offered to them exactly as the old session's would have been.
+
+This is provisional and it is deliberate. It is not `TimeInForce`: one
+behaviour needs no abstraction, and if the pilots turn out to want day orders
+that is a typed field and a typed cancellation arrived at on purpose — not a
+silent change to what a journal already means.
+
+It has a test rather than only this paragraph, because until it did the
+behaviour was an accident: nothing cleared `s.working` because nobody had
+written the line, and a paragraph asserting it would have documented an
+omission. The next person to add that line would have broken nothing red.
+
+The participant sees it: `project` serves `working` and `protection` from the
+session, so an order carried across a boundary is on the screen under the new
+session's identifier.
+
 ### The journal ends where the evaluation ends
 
 A prop-firm evaluation reaching passed or failed in the middle of a file is the
