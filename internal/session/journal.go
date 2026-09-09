@@ -62,6 +62,27 @@ func newJournalFrom(events []Event) (*Journal, error) {
 	return j, nil
 }
 
+// EventsSince returns the events recorded from position n onwards.
+//
+// It copies that tail and not the whole journal, which is what a command asks
+// for after running: the events it produced. Handing back j.events[n:] would be
+// cheaper still and wrong — the slice would alias the journal's own array, and
+// a committer that kept it, or appended to it, would be writing into the next
+// event's place.
+//
+// Events() copies everything and stays that way. Its callers ask once per run;
+// this one is asked once per command, and copying the whole journal there made
+// the cost of a session quadratic in its own length: at ten thousand events an
+// observation was allocating 164KB to hand over the two or three it produced.
+// A position outside the journal is a fault in the caller, and the slice
+// expression says so. Answering nil instead would turn it into an empty batch,
+// which the store refuses much later and for a reason that names none of this.
+func (j *Journal) EventsSince(n int) []Event {
+	out := make([]Event, len(j.events)-n)
+	copy(out, j.events[n:])
+	return out
+}
+
 // Events returns the recorded events in order.
 func (j *Journal) Events() []Event {
 	out := make([]Event, len(j.events))

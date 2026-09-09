@@ -211,7 +211,7 @@ func (s *Session) command(run func() error) error {
 
 	start := s.journal.Len()
 	err := run()
-	produced := s.journal.Events()[start:]
+	produced := s.journal.EventsSince(start)
 
 	if err != nil {
 		// A command that refused before recording anything leaves the session

@@ -254,10 +254,10 @@ func (s *Server) Serve() error {
 	return err
 }
 
-// Close stops serving, stops the loop and releases the journal's lock.
-// Close stops the server and releases the journal. It is safe to call more
-// than once, because it is: from a defer, from a signal handler, and from a
-// test's cleanup, any two of which can run. A close of a closed channel is a
+// Close stops serving, stops the loop and releases the journal's lock. It is
+// safe to call more than once, because it is called more than once: from a
+// defer, from a signal handler, and from a test's cleanup, any two of which
+// can run. A close of a closed channel is a
 // panic that takes the process down while it is shutting down cleanly — which
 // is the one moment a journal is most likely to be mid-commit.
 func (s *Server) Close() error {
