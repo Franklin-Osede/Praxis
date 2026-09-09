@@ -373,6 +373,40 @@ func (s *Session) JournalLen() int { return s.journal.Len() }
 
 func (s *Session) Account() *portfolio.Account        { return s.account }
 func (s *Session) Challenge() *challenge.Challenge    { return s.eval }
+// Valuation is an account's two figures, taken together at one set of marks.
+// A rule reading balance and a rule reading equity must never disagree about
+// when they were measured, and a caller handed them separately eventually gets
+// one of each.
+type Valuation struct {
+	BalanceCts market.Cents
+	EquityCts  market.Cents
+}
+
+// Valuation values the account at the book the session last saw, by the one
+// implementation of that rule.
+//
+// It is exported because an adapter that showed the participant a different
+// figure would falsify what OrderContext claims they knew — and the only way to
+// be sure the screen and the journal agree is that neither computes it.
+// Deriving it outside was a second implementation of the marking rule, and it
+// answered balance on every error, so a participant holding a losing position
+// could be shown money they did not have.
+func (s *Session) Valuation() (Valuation, error) {
+	balance, equity, err := s.value()
+	if err != nil {
+		return Valuation{}, err
+	}
+	return Valuation{BalanceCts: balance, EquityCts: equity}, nil
+}
+
+// ConsecutiveLosingTrades is the streak of completed losing episodes as it
+// stands. It is what OrderContext will record on the next decision, so an
+// interface that shows the participant anything else makes that field's
+// documented meaning false.
+func (s *Session) ConsecutiveLosingTrades() uint32 {
+	return s.episodes.consecutiveLosingTradesNow()
+}
+
 // ChallengeEnded reports whether the evaluation has reached a terminal state.
 // An adapter driving a file asks it to stop consuming, and stopping is not an
 // error: the evaluation ending is the result.

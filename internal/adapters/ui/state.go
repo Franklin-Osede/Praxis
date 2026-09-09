@@ -33,9 +33,12 @@ type State struct {
 	SessionOpen  bool   `json:"sessionOpen"`
 	SessionID    string `json:"sessionId"`
 
-	Book       *Book      `json:"book"`
-	Position   Position   `json:"position"`
-	Money      Money      `json:"money"`
+	Book     *Book    `json:"book"`
+	Position Position `json:"position"`
+	// Money is absent rather than empty when there is none to show, the same
+	// way Book is. An empty string is not a decimal, and a client parsing one
+	// gets NaN beside the notice telling it something is wrong.
+	Money      *Money     `json:"money,omitempty"`
 	Evaluation Evaluation `json:"evaluation"`
 
 	// ConsecutiveLosingTrades is here because the journal claims the
@@ -46,8 +49,16 @@ type State struct {
 	Working    []Order      `json:"working"`
 	Protection []Protection `json:"protection"`
 
-	// NeedsRecovery is set when the session has stopped and will accept
-	// nothing further. It is terminal and the interface must say so.
+	// NeedsRecovery is why the interface stopped, and it carries two different
+	// facts. A session that has stopped will accept nothing further: that one
+	// is terminal for the session. A valuation that could not be taken is not
+	// — the session is alive — but it is terminal for the screen, which may
+	// show nothing and may not show something else in money's place.
+	//
+	// When both hold, the stopped session is what is reported. It is the more
+	// fundamental of the two and the one an operator acts on; a valuation
+	// failing inside a dead session is a consequence of it, not a second thing
+	// to fix.
 	NeedsRecovery string `json:"needsRecovery,omitempty"`
 }
 
@@ -103,7 +114,7 @@ type Protection struct {
 func decimal(v int64) string { return strconv.FormatInt(v, 10) }
 
 // project builds what the participant may see from what the session holds.
-func project(s *session.Session, cursor, observations int, cfg session.Config, balance, equity market.Cents) State {
+func project(s *session.Session, cursor, observations int, cfg session.Config, valuation session.Valuation, valueErr error) State {
 	state := State{
 		Subject:      cfg.SubjectID,
 		Pacing:       cfg.Pacing.String(),
@@ -111,8 +122,26 @@ func project(s *session.Session, cursor, observations int, cfg session.Config, b
 		Observations: observations,
 		SessionOpen:  s.TradingSessionOpen(),
 		SessionID:    string(s.OpenSessionID()),
-		Money:        Money{BalanceCts: decimal(int64(balance)), EquityCts: decimal(int64(equity))},
+		Money: &Money{
+			BalanceCts: decimal(int64(valuation.BalanceCts)),
+			EquityCts:  decimal(int64(valuation.EquityCts)),
+		},
+
+		// The streak the journal will record on the next decision. It is asked
+		// of the session rather than derived, because OrderContext documents it
+		// as what the trader knew and the screen is the only thing that can
+		// make that true.
+		ConsecutiveLosingTrades: s.ConsecutiveLosingTrades(),
 	}
+	// A valuation that could not be taken leaves no money on the screen. It is
+	// not a figure to be replaced by another one: the balance it used to fall
+	// back to is money a participant holding a losing position does not have,
+	// and it is a number they act on.
+	if valueErr != nil {
+		state.Money, state.NeedsRecovery = nil, valueErr.Error()
+	}
+	// And a session that has stopped is said last, because it is the more
+	// fundamental of the two.
 	if err := s.NeedsRecovery(); err != nil {
 		state.NeedsRecovery = err.Error()
 	}

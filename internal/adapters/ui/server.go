@@ -351,8 +351,11 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 // state is read on the loop, so it is never a torn view of a session another
 // goroutine is changing.
 func (s *Server) state() State {
-	balance, equity := s.value()
-	return project(s.session, s.cursor, len(s.feed.Observations), s.cfg, balance, equity).
+	// The session values itself. A valuation that fails is terminal on the
+	// screen and never a figure: showing balance in equity's place would be a
+	// number the participant acts on and nothing downstream could tell.
+	valuation, err := s.session.Valuation()
+	return project(s.session, s.cursor, len(s.feed.Observations), s.cfg, valuation, err).
 		withBook(s.lastQuote())
 }
 
@@ -361,36 +364,6 @@ func (s *Server) lastQuote() (market.Quote, bool) {
 		return market.Quote{}, false
 	}
 	return s.feed.Observations[s.cursor-1].Quote, true
-}
-
-// value is the account as the evaluation would see it, at the book the
-// participant is looking at.
-func (s *Server) value() (market.Cents, market.Cents) {
-	balance, err := s.session.Account().BalanceCts()
-	if err != nil {
-		return 0, 0
-	}
-	quote, has := s.lastQuote()
-	position, _ := s.session.Account().Position(s.cfg.Instrument)
-	if !has || position.IsFlat() {
-		return balance, balance
-	}
-	// A long is valued at the bid and a short at the ask: the exit side is
-	// what the position would actually fetch, and anything else shows money
-	// that could not be realised.
-	mark := quote.Bid
-	if position.IsShort() {
-		mark = quote.Ask
-	}
-	unrealised, err := position.UnrealisedCts(mark)
-	if err != nil {
-		return balance, balance
-	}
-	equity, err := market.AddCents(balance, unrealised)
-	if err != nil {
-		return balance, balance
-	}
-	return balance, equity
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
