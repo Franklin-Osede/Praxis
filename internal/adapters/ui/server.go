@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 
 	"praxis/internal/adapters/marketdata"
 	"praxis/internal/adapters/persistence"
@@ -73,8 +74,9 @@ type Server struct {
 	// commands is the only way to the kernel. Handlers post to it and wait;
 	// the loop is the single goroutine that touches the session, so the
 	// kernel's inputs arrive in one order however many sockets are open.
-	commands chan func()
-	done     chan struct{}
+	commands  chan func()
+	done      chan struct{}
+	closeOnce sync.Once
 
 	listener net.Listener
 	http     *http.Server
@@ -253,12 +255,21 @@ func (s *Server) Serve() error {
 }
 
 // Close stops serving, stops the loop and releases the journal's lock.
+// Close stops the server and releases the journal. It is safe to call more
+// than once, because it is: from a defer, from a signal handler, and from a
+// test's cleanup, any two of which can run. A close of a closed channel is a
+// panic that takes the process down while it is shutting down cleanly — which
+// is the one moment a journal is most likely to be mid-commit.
 func (s *Server) Close() error {
-	if s.http != nil {
-		s.http.Close()
-	}
-	close(s.done)
-	return s.writer.Close()
+	var err error
+	s.closeOnce.Do(func() {
+		if s.http != nil {
+			s.http.Close()
+		}
+		close(s.done)
+		err = s.writer.Close()
+	})
+	return err
 }
 
 // loop is the only goroutine that touches the session.
@@ -324,6 +335,17 @@ type control struct {
 }
 
 func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
+	// The loop answers first, and the lease is taken only once it has. A
+	// segment is spent to say "a new run of uninterrupted interaction begins
+	// here", and segments only go up: minting one for a request that is then
+	// refused records a run that never happened and leaves the controls held
+	// by a client that was told it failed.
+	var state State
+	if err := s.ask(func() { state = s.state() }); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
 	take := s.lease.acquire
 	if r.URL.Query().Get("transfer") == "yes" {
 		take = s.lease.transfer
@@ -335,12 +357,6 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var state State
-	if err := s.ask(func() { state = s.state() }); err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	writeJSON(w, http.StatusOK, control{
