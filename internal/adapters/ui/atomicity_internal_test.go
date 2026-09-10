@@ -49,7 +49,7 @@ func TestOneCommandIsOneTurnOfTheLoop(t *testing.T) {
 	}
 	s := &Server{
 		session: sess, cfg: cfg, feed: feed, cursor: len(feed.Observations),
-		lease:    newLease(0),
+		lease:    newLease(0, nil),
 		commands: make(chan func()), done: make(chan struct{}),
 	}
 	defer close(s.done)
@@ -84,7 +84,7 @@ func TestOneCommandIsOneTurnOfTheLoop(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleCommand(w, httptest.NewRequest(http.MethodPost, "/api/command",
 		bytes.NewReader([]byte(`{"kind":"submit_order","lease":"`+token+`",`+
-			`"gesture":"`+market.FormatUint(segment)+`:1","atUtcNanos":"1764000000000000001","elapsedNanos":"2000",`+
+			`"gesture":"`+market.FormatUint(segment)+`:1",`+
 			`"orderId":"o-1","side":"buy","type":"market","qty":"1"}`))))
 
 	if got := turns.Load() - before; got != 1 {

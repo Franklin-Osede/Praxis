@@ -46,7 +46,6 @@ func readyToTrade(t *testing.T) (*ui.Server, string, uint64) {
 	}
 	resp := acknowledge(t, server, map[string]string{
 		"lease": control.Lease, "observedSequence": observedSequenceOf(t, server),
-		"atUtcNanos": "1764000000000000000", "elapsedNanos": "1000",
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -75,7 +74,7 @@ func TestAnOrderSubmittedTwiceUnderOneGestureIsOneOrder(t *testing.T) {
 	server, lease, segment := readyToTrade(t)
 	body := map[string]string{
 		"kind": "submit_order", "lease": lease,
-		"gesture": gestureName(segment, 1), "atUtcNanos": "1764000000000000001", "elapsedNanos": "2000",
+		"gesture": gestureName(segment, 1),
 		"orderId": "o-1", "side": "buy", "type": "market", "qty": "2",
 	}
 
@@ -109,7 +108,7 @@ func TestOneNameForADifferentCommandIsAConflict(t *testing.T) {
 	name := gestureName(segment, 1)
 	first := postCommand(t, server, map[string]string{
 		"kind": "submit_order", "lease": lease,
-		"gesture": name, "atUtcNanos": "1764000000000000001", "elapsedNanos": "2000",
+		"gesture": name,
 		"orderId": "o-1", "side": "buy", "type": "market", "qty": "2",
 	})
 	defer first.Body.Close()
@@ -119,7 +118,7 @@ func TestOneNameForADifferentCommandIsAConflict(t *testing.T) {
 
 	second := postCommand(t, server, map[string]string{
 		"kind": "submit_order", "lease": lease,
-		"gesture": name, "atUtcNanos": "1764000000000000002", "elapsedNanos": "3000",
+		"gesture": name,
 		"orderId": "o-2", "side": "sell", "type": "market", "qty": "5",
 	})
 	defer second.Body.Close()
@@ -146,7 +145,7 @@ func TestAnActMustNameTheRunItBelongsTo(t *testing.T) {
 	server, lease, segment := readyToTrade(t)
 	resp := postCommand(t, server, map[string]string{
 		"kind": "submit_order", "lease": lease,
-		"gesture": gestureName(segment+7, 1), "atUtcNanos": "1764000000000000001", "elapsedNanos": "2000",
+		"gesture": gestureName(segment+7, 1),
 		"orderId": "o-1", "side": "buy", "type": "market", "qty": "1",
 	})
 	defer resp.Body.Close()
@@ -179,7 +178,7 @@ func TestTwoRetriesOfOneGestureLeaveOneOrder(t *testing.T) {
 	server, lease, segment := readyToTrade(t)
 	body := map[string]string{
 		"kind": "submit_order", "lease": lease,
-		"gesture": gestureName(segment, 1), "atUtcNanos": "1764000000000000001", "elapsedNanos": "2000",
+		"gesture": gestureName(segment, 1),
 		"orderId": "o-1", "side": "buy", "type": "market", "qty": "1",
 	}
 
@@ -218,7 +217,7 @@ func TestAnActsNameCarriesBothHalves(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			resp := postCommand(t, server, map[string]string{
 				"kind": "submit_order", "lease": lease,
-				"gesture": name, "atUtcNanos": "1764000000000000001", "elapsedNanos": "2000",
+				"gesture": name,
 				"orderId": "o-1", "side": "buy", "type": "market", "qty": "1",
 			})
 			defer resp.Body.Close()
@@ -244,7 +243,7 @@ func TestAnEntryAndItsLevelsAreOneCommand(t *testing.T) {
 	server, lease, segment := readyToTrade(t)
 	resp := postCommand(t, server, map[string]string{
 		"kind": "submit_order", "lease": lease,
-		"gesture": gestureName(segment, 1), "atUtcNanos": "1764000000000000001", "elapsedNanos": "2000",
+		"gesture": gestureName(segment, 1),
 		"orderId": "e-1", "side": "buy", "type": "market", "qty": "1",
 		"protectionStop": "19000", "protectionTarget": "21000",
 	})

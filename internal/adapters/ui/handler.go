@@ -22,9 +22,12 @@ type command struct {
 	// Gesture is the act's name, minted by the client as <Segment>:<Sequence>.
 	// The segment is the one the server issued with the lease, and the sequence
 	// is the client's counter within it.
-	Gesture      string `json:"gesture"`
-	AtUTCNanos   string `json:"atUtcNanos"`
-	ElapsedNanos string `json:"elapsedNanos"`
+	//
+	// The client sends no clock. Both ends of an interval are stamped here,
+	// when the request arrives, so the measurement is server receipt to server
+	// receipt — and so that the one quantity this whole apparatus exists to
+	// produce is not a figure the browser supplied and nothing can contradict.
+	Gesture string `json:"gesture"`
 
 	// An order. Qty, and the prices the type requires.
 	OrderID    string `json:"orderId"`
@@ -72,12 +75,12 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		refusedBy error
 	)
 	if err := s.ask(func() {
-		segment, err := s.lease.check(body.Lease)
+		at, err := s.lease.stamp(body.Lease)
 		if err != nil {
 			refusedBy = err
 			return
 		}
-		refusedBy = s.run(body, segment)
+		refusedBy = s.run(body, at)
 		state = s.state()
 	}); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonNeedsRecovery, err.Error()})
@@ -92,8 +95,8 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 
 // run is the preamble and the switch, on the loop. It is one implementation for
 // all four commands, which is the reason there is one route.
-func (s *Server) run(body command, segment uint64) error {
-	decided, err := decisionOf(body, segment)
+func (s *Server) run(body command, at session.Instant) error {
+	decided, err := decisionOf(body, at)
 	if err != nil {
 		return err
 	}
@@ -139,15 +142,7 @@ func (s *Server) run(body command, segment uint64) error {
 // believed. The refusal then names what actually happened: an act belonging to
 // a run this is not, instead of a reading out of order, which is what the clock
 // would have reported for a client whose lease had been taken.
-func decisionOf(body command, segment uint64) (session.Decision, error) {
-	atUTC, err := market.ParseInt(body.AtUTCNanos)
-	if err != nil {
-		return session.Decision{}, err
-	}
-	elapsed, err := market.ParseInt(body.ElapsedNanos)
-	if err != nil {
-		return session.Decision{}, err
-	}
+func decisionOf(body command, at session.Instant) (session.Decision, error) {
 	if err := market.ValidIdentifier(body.Gesture); err != nil {
 		return session.Decision{}, err
 	}
@@ -163,15 +158,15 @@ func decisionOf(body command, segment uint64) (session.Decision, error) {
 		return session.Decision{}, fmt.Errorf("%w: %q has no sequence: %v",
 			errWrongSegment, body.Gesture, err)
 	}
-	if named != market.FormatUint(segment) {
+	if named != market.FormatUint(at.Segment) {
 		return session.Decision{}, fmt.Errorf("%w: %q names run %s, and this lease is run %d",
-			errWrongSegment, body.Gesture, named, segment)
+			errWrongSegment, body.Gesture, named, at.Segment)
 	}
 	return session.Decision{
 		GestureID:    body.Gesture,
-		AtUTCNanos:   session.UnixNanos(atUTC),
-		Segment:      segment,
-		ElapsedNanos: session.ElapsedNanos(elapsed),
+		AtUTCNanos:   at.AtUTCNanos,
+		Segment:      at.Segment,
+		ElapsedNanos: at.ElapsedNanos,
 	}, nil
 }
 

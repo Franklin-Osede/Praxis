@@ -63,7 +63,6 @@ func TestAcknowledgingAnObservationAndAcknowledgingItAgain(t *testing.T) {
 
 	body := map[string]string{
 		"lease": control.Lease, "observedSequence": observedSequenceOf(t, server),
-		"atUtcNanos": "1764000000000000000", "elapsedNanos": "1000000",
 	}
 
 	first := acknowledge(t, server, body)
@@ -106,22 +105,18 @@ func TestEveryRefusalCarriesATypedReason(t *testing.T) {
 	}{
 		{"a lease nobody holds", map[string]string{
 			"lease": "not-the-lease", "observedSequence": observed,
-			"atUtcNanos": "1764000000000000000", "elapsedNanos": "1000000",
 		}, http.StatusConflict, "lease_stale"},
 
 		{"an integer that is not canonical", map[string]string{
-			"lease": control.Lease, "observedSequence": observed,
-			"atUtcNanos": "+1764000000000000000", "elapsedNanos": "1000000",
+			"lease": control.Lease, "observedSequence": "+" + observed,
 		}, http.StatusBadRequest, "not_canonical"},
 
 		{"a leading zero", map[string]string{
-			"lease": control.Lease, "observedSequence": observed,
-			"atUtcNanos": "1764000000000000000", "elapsedNanos": "01000000",
+			"lease": control.Lease, "observedSequence": "0" + observed,
 		}, http.StatusBadRequest, "not_canonical"},
 
 		{"an observation that is not the one waiting", map[string]string{
 			"lease": control.Lease, "observedSequence": "999",
-			"atUtcNanos": "1764000000000000000", "elapsedNanos": "1000000",
 		}, http.StatusUnprocessableEntity, "not_presented"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

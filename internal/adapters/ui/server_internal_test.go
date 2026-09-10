@@ -50,7 +50,7 @@ func TestClosingTwiceIsNotACrash(t *testing.T) {
 // that was told it failed.
 func TestTakingTheControlsWhenTheLoopIsGoneSpendsNothing(t *testing.T) {
 	s := &Server{commands: make(chan func()), done: make(chan struct{})}
-	s.lease = newLease(4)
+	s.lease = newLease(4, nil)
 	close(s.done) // the loop is not running
 
 	w := httptest.NewRecorder()

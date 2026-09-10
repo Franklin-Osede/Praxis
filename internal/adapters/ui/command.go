@@ -105,8 +105,6 @@ func (s *Server) refuse(w http.ResponseWriter, err error) {
 type acknowledgement struct {
 	Lease            string `json:"lease"`
 	ObservedSequence string `json:"observedSequence"`
-	AtUTCNanos       string `json:"atUtcNanos"`
-	ElapsedNanos     string `json:"elapsedNanos"`
 }
 
 // handleAcknowledge records that an observation was put in front of a person.
@@ -126,23 +124,13 @@ func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, err)
 		return
 	}
-	atUTC, err := market.ParseInt(body.AtUTCNanos)
-	if err != nil {
-		s.refuse(w, err)
-		return
-	}
-	elapsed, err := market.ParseInt(body.ElapsedNanos)
-	if err != nil {
-		s.refuse(w, err)
-		return
-	}
 
 	var (
 		state     State
 		refusedBy error
 	)
 	if err := s.ask(func() {
-		segment, err := s.lease.check(body.Lease)
+		at, err := s.lease.stamp(body.Lease)
 		if err != nil {
 			refusedBy = err
 			return
@@ -150,12 +138,7 @@ func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
 		// The presentation's identity is the segment it was shown in and the
 		// observation it showed. A repeat records nothing and is not an error.
 		refusedBy = s.session.AcknowledgePresentation(
-			session.PresentationID{Segment: segment, ObservedSequence: observed},
-			session.Instant{
-				AtUTCNanos:   session.UnixNanos(atUTC),
-				Segment:      segment,
-				ElapsedNanos: session.ElapsedNanos(elapsed),
-			})
+			session.PresentationID{Segment: at.Segment, ObservedSequence: observed}, at)
 		state = s.state()
 	}); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonNeedsRecovery, err.Error()})

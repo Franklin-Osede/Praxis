@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"praxis/internal/adapters/marketdata"
 	"praxis/internal/adapters/persistence"
@@ -55,6 +56,16 @@ type Options struct {
 	// interface would put an unauthenticated kernel on the network.
 	Addr string
 
+	// Now is the clock the server stamps with. Nil means time.Now.
+	//
+	// It is injected rather than called, and that is what makes a run
+	// reproducible: the same commands with the same clock produce the same
+	// journal, which is how a journal written through HTTP can be compared
+	// byte for byte with one written directly. Rule 2 forbids a clock in the
+	// domain and allows one here; injecting it is the difference between an
+	// adapter that can be tested and one that cannot.
+	Now func() time.Time
+
 	// New is the configuration for a journal that does not exist yet. It is
 	// ignored for one that does — a resumed run cannot be reconfigured,
 	// because its account and evaluation already have a history.
@@ -75,6 +86,7 @@ type Server struct {
 	// the loop is the single goroutine that touches the session, so the
 	// kernel's inputs arrive in one order however many sockets are open.
 	commands  chan func()
+	now       func() time.Time
 	done      chan struct{}
 	closeOnce sync.Once
 
@@ -103,7 +115,12 @@ func Open(opts Options) (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{writer: writer, feed: feed, commands: make(chan func()), done: make(chan struct{})}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	s := &Server{writer: writer, feed: feed, now: now,
+		commands: make(chan func()), done: make(chan struct{})}
 	if err := s.start(opts, feed); err != nil {
 		writer.Close()
 		return nil, err
@@ -144,7 +161,7 @@ func (s *Server) begin(opts Options, feed *marketdata.Feed) error {
 		return err
 	}
 	s.session, s.cfg, s.cursor = built, cfg, 0
-	s.lease = newLease(0)
+	s.lease = newLease(0, s.now)
 	return nil
 }
 
@@ -186,7 +203,7 @@ func (s *Server) resume(recovered *persistence.Journal, feed *marketdata.Feed) e
 			highest = act.Decided.Segment
 		}
 	}
-	s.lease = newLease(highest)
+	s.lease = newLease(highest, s.now)
 	return nil
 }
 

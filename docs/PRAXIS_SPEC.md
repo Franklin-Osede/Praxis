@@ -603,10 +603,34 @@ commanded it.
 Latency is `decision.ElapsedNanos − presentation.ElapsedNanos` **within one
 segment and from one clock**. If the presentation were stamped by the server and
 the decision by the browser, the subtraction would mean nothing. For a local
-interface both come from the server — the moment state was sent, and the moment
-the command arrived — which includes render and transport in the measure, but
-both are small and consistent. If the pilots show that separating rendering
-matters, the browser acknowledges presentation and both stamps move there.
+interface both come from the server — the moment the acknowledgement arrived,
+and the moment the command arrived — which includes render and transport in the
+measure, but both are small and consistent. If the pilots show that separating
+rendering matters, the browser acknowledges presentation and both stamps move
+there, together.
+
+**The client sends no clock at all**, and that is stronger than sending one that
+must agree. The lease records when its segment began, and every request the
+server admits is stamped on arrival against it: the wall reading for audit, and
+an elapsed measured from the segment's start with Go's monotonic reading, so a
+clock correction cannot move it. A browser figure would be the one quantity in
+this journal that nothing can contradict — monotonicity catches a reading that
+goes backwards, and catches nothing about one that runs slow, fast or invented —
+and this system recomputes derived facts rather than believing them everywhere
+else.
+
+The clock is injected rather than called. Rule 2 forbids one in the domain and
+allows one in an adapter; injecting it is what makes a run reproducible, and
+that is not a convenience. It is what allows the same acts taken through HTTP
+and taken directly to be compared byte for byte, which is the only way "the
+interface is an adapter" is a fact rather than an intention.
+
+A consequence worth recording, in the same family as `ErrGestureReused` becoming
+unreachable over HTTP: with the server stamping, the chronology rules cannot be
+broken by a client. `ErrInteractionOrder` is unreachable through the interface,
+because the readings the interface produces are monotonic by construction. The
+kernel's guard stays, for a direct caller — which is what every test in the
+suite is.
 
 `ObservationPresented` is that other end, and **its name is the whole of its
 claim**: the browser finished rendering and said so. It does not mean the
@@ -1398,7 +1422,7 @@ and it is the same fix as `%w` one layer in.
 
 | status | what it means | reasons |
 |---|---|---|
-| 400 | the bytes are wrong | unreadable body, non-canonical integer, invalid identifier |
+| 400 | the bytes are wrong | unreadable body, non-canonical integer, invalid identifier, unknown tag |
 | 409 | something is already taken | lease held, lease stale, same gesture with a different command |
 | 422 | the session refuses this command now | reading out of order, nothing presented, evaluation ended, no session open |
 | 503 | the session has stopped | needs recovery, and the screen says so |

@@ -13,7 +13,7 @@ import (
 // token could interleave their gestures inside a single segment without
 // breaking it. So the lease is tested here, on the thing that enforces it.
 func TestALeaseThatHasBeenReplacedNoLongerControls(t *testing.T) {
-	l := newLease(0)
+	l := newLease(0, nil)
 
 	first, firstSegment, err := l.acquire()
 	if err != nil {
@@ -54,7 +54,7 @@ func TestALeaseThatHasBeenReplacedNoLongerControls(t *testing.T) {
 // losing the controls, and a new segment would say a run of interaction ended
 // when only a socket did.
 func TestReconnectingOnTheSameLeaseKeepsItsSegment(t *testing.T) {
-	l := newLease(3)
+	l := newLease(3, nil)
 	token, segment, err := l.acquire()
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -74,7 +74,7 @@ func TestReconnectingOnTheSameLeaseKeepsItsSegment(t *testing.T) {
 // decisions were made in it, so there is no segment to record — and the next
 // one continues from where the journal actually is.
 func TestALeaseAbandonedWithoutDecisionsLeavesNothing(t *testing.T) {
-	l := newLease(0)
+	l := newLease(0, nil)
 	token, first, err := l.acquire()
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
