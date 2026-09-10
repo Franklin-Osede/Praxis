@@ -1314,6 +1314,80 @@ with levels the geometry rule refuses *is* an attempt to widen — it belongs in
 an interaction log the interface keeps, never in the journal. Which of the two
 it is has to be decided, because the frozen protocol will have to say.
 
+### The shape of a command, decided before the first handler
+
+Seven decisions, written here rather than settled by whichever handler was
+written first. They are protocol: a client author reads them, and changing one
+after a pilot has run means the pilot ran under a different protocol.
+
+**One route, a tagged body.** `POST /api/command`, and the body says which of
+the four human commands it is. Not four routes, because the preamble every one
+of them needs — find the gesture, check the lease, compare, execute — would be
+copied four times and the four copies would drift, which is the defect this
+document has spent its last several revisions removing. A tagged payload is a
+shape this system already knows: it is what an event is. It also puts the
+canonical integer parsing in one decoder instead of four, which is where
+`market.ParseInt` earns its place at this boundary.
+
+**Finding, checking and executing happen inside one turn of the loop.** All of
+it in a single `ask`. Two turns would let two concurrent retries of one gesture
+both find nothing and both execute. The lease cannot serialise this — the
+paragraph above says a segment does not prove exclusive control, and two tabs
+sharing a token can interleave — so the loop is the only serialisation there is,
+and the check and the act have to be on the same side of it.
+
+The lease check goes inside that turn too, and for the message rather than the
+race. A transfer between an outside check and an inside execution leaves a
+command running under a revoked lease; the clock catches it, because the old
+client's segment is now behind, but it reports *your reading went backwards* to
+someone whose controls were taken away. The refusal has to name what happened.
+
+**A retry answers 200 with the current state, indistinguishable from success.**
+A lost response is a retry, not a false alarm in front of a participant. Current
+state means *now*, not the state the original command produced: if three
+observations arrived in between, the retry carries those. That is correct — the
+client paints what it receives — but it means the response cannot be read as
+"this is what my command did". It does not need to be: the effect is in the
+position, the money and the orders standing. The server counts retries, because
+§8 measures sessions lost to interruption and a retry rate is a fact about the
+network; the participant is shown nothing.
+
+**A success and a retry return the same body: the whole `State`.** The client
+never has to chain a GET, and the two paths returning one shape is what makes
+them indistinguishable in fact rather than only in status code.
+
+**The status is a coarse bucket and the reason is typed in the body.** There are
+several distinct 409s already — a lease held by someone else, a stale lease, a
+gesture reused with a different command — so a client discriminating on status
+cannot. Every non-200 carries a typed reason from a closed set enumerated here,
+because a reason that is not enumerated is a string a client will match on and a
+string will drift. That is the `strings.Contains` problem moved one layer out,
+and it is the same fix as `%w` one layer in.
+
+| status | what it means | reasons |
+|---|---|---|
+| 400 | the bytes are wrong | unreadable body, non-canonical integer, invalid identifier |
+| 409 | something is already taken | lease held, lease stale, same gesture with a different command |
+| 422 | the session refuses this command now | reading out of order, nothing presented, evaluation ended, no session open |
+| 503 | the session has stopped | needs recovery, and the screen says so |
+
+**The retry is recognised in the handler, so `ErrGestureReused` becomes
+unreachable over HTTP.** `checkDecision` refuses a repeated gesture without
+looking at what it committed; the handler looks first, and answers a matching
+command with the state. The kernel's guard stays: it is the guard for a direct
+caller, which is what every test in the suite is. It has a test of its own —
+the same gesture twice must not reach the kernel — so the interception is a
+decision and not an accident of the order two lines are written in.
+
+**The acknowledgement is idempotent by content, and the other four by name.**
+It carries no gesture. Its identity *is* its content — the segment and the
+observation — so there is no "same name, different command" case for it to
+have, which is why it needs no name. Repeating it records nothing and answers
+200, and it answers before the chronology is consulted, deliberately: a retry
+carries the reading it originally sent, which the log has legitimately moved
+past by then. Two forms of idempotency in one API is a hazard, so a client
+author is told which is which here rather than discovering it.
+
 ### One chronology, five stamped events, three classes
 
 Everything a person did to a journal belongs to one non-decreasing chronology,

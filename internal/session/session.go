@@ -408,6 +408,12 @@ func (s *Session) ConsecutiveLosingTrades() uint32 {
 	return s.episodes.consecutiveLosingTradesNow()
 }
 
+// LastObserved is the journal position of the observation on the screen, and
+// zero when none is. It is what names a presentation, so an interface has to be
+// able to send it back: a confirmation that could not say which observation it
+// confirmed would let a stale tab stand in for the one in front of somebody.
+func (s *Session) LastObserved() uint64 { return s.lastObserved }
+
 // LastQuote is the observation the session is standing on, and whether it has
 // seen one. It is the book as the session holds it, which is the book as it was
 // left: the displayed size is consumed with every fill, so what this returns is

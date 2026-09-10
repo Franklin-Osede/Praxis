@@ -256,7 +256,7 @@ func TestAnOlderJournalIsRefusedForHumanControl(t *testing.T) {
 func TestTheStateHasExactlyTheAuthorisedFields(t *testing.T) {
 	authorised := map[string]bool{
 		"subject": true, "pacing": true,
-		"cursor": true, "observations": true,
+		"cursor": true, "observations": true, "observedSequence": true,
 		"sessionOpen": true, "sessionId": true,
 		"book.time": true, "book.bid": true, "book.ask": true,
 		"book.bidSize": true, "book.askSize": true,

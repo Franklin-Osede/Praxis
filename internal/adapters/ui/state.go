@@ -33,6 +33,10 @@ type State struct {
 	SessionOpen  bool   `json:"sessionOpen"`
 	SessionID    string `json:"sessionId"`
 
+	// ObservedSequence names the observation on the screen, so a confirmation
+	// can say which one it confirms. Zero — absent — when none is.
+	ObservedSequence string `json:"observedSequence,omitempty"`
+
 	Book     *Book    `json:"book"`
 	Position Position `json:"position"`
 	// Money is absent rather than empty when there is none to show, the same
@@ -145,6 +149,9 @@ func project(s *session.Session, cursor, observations int, cfg session.Config, v
 	}
 	// And a session that has stopped is said last, because it is the more
 	// fundamental of the two.
+	if observed := s.LastObserved(); observed != 0 {
+		state.ObservedSequence = market.FormatUint(observed)
+	}
 	if err := s.NeedsRecovery(); err != nil {
 		state.NeedsRecovery = err.Error()
 	}
