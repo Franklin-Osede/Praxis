@@ -1154,7 +1154,39 @@ comment is false. Worse, showing the distance to a trailing drawdown threshold
 changes what a hypothesis about rule breaches on losing days is measuring:
 "people break rules when already down" becomes "people react to a number they
 were shown". The inventory of what is displayed is written before the screen is
-drawn and belongs to the protocol, not the layout.
+drawn and belongs to the protocol, not the layout. It is this:
+
+| field | what it is |
+|---|---|
+| `subject`, `pacing` | which run this is, and under which condition |
+| `cursor`, `observations` | how far through the file, and how long it is |
+| `observedSequence` | which observation is on the screen, so a confirmation can name it |
+| `sessionOpen`, `sessionId` | whether a trading session is open, and which |
+| `book.time`, `book.bid`, `book.ask`, `book.bidSize`, `book.askSize` | the book as the session holds it — what is left, not what the file offered |
+| `position.symbol`, `position.netQty` | what is held |
+| `money.balanceCts`, `money.equityCts` | settled and marked, by the session's own valuation |
+| `evaluation.state`, `evaluation.reason` | active, passed or failed, and why |
+| `consecutiveLosingTrades` | the streak `OrderContext` will record on the next decision |
+| `working[]` | id, side, type, qty, limit price, stop price |
+| `protection[]` | status, entry order id, episode id, stop price, target price, protected qty |
+| `needsRecovery` | the session has stopped, or its valuation could not be taken |
+
+Nothing else. In particular: no distance to any threshold, no high-water mark,
+no drawdown figure, and no count of anything the participant has not done.
+
+**`observedSequence` is the journal position, and that is a decision rather than
+what was to hand.** An opaque token would read as nothing, but it would need a
+mapping the server keeps and a restart rebuilds — machinery bought with no
+measured gain. The raw sequence is safe to show for a reason that can stop being
+true: every event the journal records is either on this list or derivable from
+something on it, so the gap between two sequences tells a participant nothing
+they were not already told. If the journal ever records something the screen
+does not show, this field becomes a channel and has to be reconsidered.
+
+The test that enforces this list cites it. It used to *be* it — the only
+enumeration of what a participant may know lived in a `_test.go`, so "the
+protocol approved it" was unfalsifiable and a pre-registration would have been
+citing a file that the same commit adding a field can edit.
 
 **A name the record cannot hold is refused at the door — and the rule is the
 format's.** Identifiers are letters, digits and `. _ : -`, and the domain

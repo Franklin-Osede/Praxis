@@ -252,8 +252,13 @@ func TestAnOlderJournalIsRefusedForHumanControl(t *testing.T) {
 // for "threshold" or "100000" catches a threshold that happens to be called
 // that and happens not to collide with an authorised value; it catches nothing
 // else. Any field added here must break this test until the protocol has
-// approved it, which is the only version of the rule worth having.
+// approved it, which is the only version of the rule worth having — and the
+// protocol is docs/PRAXIS_SPEC.md §11, which carries the inventory. This list
+// is a copy of that one and not the original: a pre-registration cites the
+// document, and if the only enumeration lived here then the commit that adds a
+// field could approve it by editing the thing that was supposed to refuse it.
 func TestTheStateHasExactlyTheAuthorisedFields(t *testing.T) {
+	// The inventory from §11, "The interface is experimental apparatus".
 	authorised := map[string]bool{
 		"subject": true, "pacing": true,
 		"cursor": true, "observations": true, "observedSequence": true,
