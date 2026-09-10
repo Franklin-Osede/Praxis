@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 )
 
 // Ticks is a price expressed in whole instrument ticks. Converting ticks to
@@ -457,4 +459,84 @@ func (f Fill) SignedQty() Qty {
 		return -f.Qty
 	}
 	return f.Qty
+}
+
+// ErrNotCanonicalInt reports an integer written in a form the domain does not
+// accept.
+var ErrNotCanonicalInt = errors.New("market: integer is not in canonical form")
+
+// FormatInt and ParseInt are how the domain's integers cross a boundary, and
+// they are exact inverses.
+//
+// Every quantity that leaves this domain is a whole count of its smallest unit
+// — cents, ticks, contracts — written in decimal with no separator, no sign on
+// a positive, no leading zero and no negative zero. Nothing crosses with a
+// decimal point: the names say so, and `balanceCts` is not `balance`.
+//
+// The rule lives here rather than in an adapter for a reason that is not the
+// one ValidIdentifier gives. That one is here because a value the record cannot
+// hold is a command that kills a session at commit; a malformed integer never
+// becomes a domain value at all, because it is refused on the way in. This is
+// here because it is how a Cents, a Ticks and a Qty are written down, and those
+// types are the domain's: a journal, a market file and an interface all read
+// and write them, and none of the three owns the spelling.
+//
+// Reading is where the rule really is. Two callers formatting with
+// strconv.FormatInt are two calls to one function and cannot disagree; two
+// callers each deciding for themselves whether "020000" or "+1" or "-0" is a
+// number are two policies, and they will. The writer moves with the reader
+// because the two have to be exact inverses, and that property can only be
+// stated where they live together.
+func FormatInt(v int64) string { return strconv.FormatInt(v, 10) }
+
+// ParseInt reads a canonical integer, refusing every other spelling of the same
+// number rather than accepting it. Two spellings would be two files meaning the
+// same thing, which is what makes a golden byte comparison worth having.
+func ParseInt(s string) (int64, error) {
+	digits, negative := s, strings.HasPrefix(s, "-")
+	if negative {
+		digits = s[1:]
+	}
+	if err := canonicalDigits(s, digits, negative); err != nil {
+		return 0, err
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q: %v", ErrNotCanonicalInt, s, err)
+	}
+	return v, nil
+}
+
+// FormatUint and ParseUint are the same rule for a count that has no sign.
+func FormatUint(v uint64) string { return strconv.FormatUint(v, 10) }
+
+func ParseUint(s string) (uint64, error) {
+	if err := canonicalDigits(s, s, false); err != nil {
+		return 0, err
+	}
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q: %v", ErrNotCanonicalInt, s, err)
+	}
+	return v, nil
+}
+
+// canonicalDigits is the whole of the policy: digits and nothing else, no empty
+// string, no leading zero on a longer number, and no negative zero.
+func canonicalDigits(whole, digits string, negative bool) error {
+	if digits == "" {
+		return fmt.Errorf("%w: %q has no digits", ErrNotCanonicalInt, whole)
+	}
+	for _, c := range digits {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("%w: %q", ErrNotCanonicalInt, whole)
+		}
+	}
+	if len(digits) > 1 && digits[0] == '0' {
+		return fmt.Errorf("%w: %q has a leading zero", ErrNotCanonicalInt, whole)
+	}
+	if negative && digits == "0" {
+		return fmt.Errorf("%w: negative zero", ErrNotCanonicalInt)
+	}
+	return nil
 }

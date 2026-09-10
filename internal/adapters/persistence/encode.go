@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"praxis/internal/challenge"
@@ -281,12 +280,12 @@ func (f *fields) at(h session.Envelope) *fields {
 }
 
 func (f *fields) int(v int64) *fields {
-	f.parts = append(f.parts, strconv.FormatInt(v, 10))
+	f.parts = append(f.parts, market.FormatInt(v))
 	return f
 }
 
 func (f *fields) uint(v uint64) *fields {
-	f.parts = append(f.parts, strconv.FormatUint(v, 10))
+	f.parts = append(f.parts, market.FormatUint(v))
 	return f
 }
 

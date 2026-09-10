@@ -38,7 +38,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 
 	"praxis/internal/challenge"
 	"praxis/internal/market"
@@ -167,7 +166,7 @@ func parseVersion(record []string) (market.Instrument, error) {
 	if record[0] != Version {
 		return market.Instrument{}, fmt.Errorf("%w: %q, want %q", ErrVersion, record[0], Version)
 	}
-	centsPerTick, err := strconv.ParseInt(record[2], 10, 64)
+	centsPerTick, err := market.ParseInt(record[2])
 	if err != nil {
 		return market.Instrument{}, fmt.Errorf("%w: cents per tick %q: %v", ErrField, record[2], err)
 	}
@@ -183,7 +182,7 @@ func parseRow(i market.Instrument, record []string, row int) (Observation, error
 	if err != nil {
 		return Observation{}, err
 	}
-	sequence, err := strconv.ParseUint(record[1], 10, 64)
+	sequence, err := market.ParseUint(record[1])
 	if err != nil {
 		return Observation{}, fmt.Errorf("%w: row %d sequence %q: %v", ErrField, row, record[1], err)
 	}
@@ -230,7 +229,7 @@ func parseRow(i market.Instrument, record []string, row int) (Observation, error
 // parseInt rejects a value that does not fit, so a number too large for the
 // domain is an error rather than a wrapped one.
 func parseInt(field, name string, row int) (int64, error) {
-	v, err := strconv.ParseInt(field, 10, 64)
+	v, err := market.ParseInt(field)
 	if err != nil {
 		return 0, fmt.Errorf("%w: row %d %s %q: %v", ErrField, row, name, field, err)
 	}

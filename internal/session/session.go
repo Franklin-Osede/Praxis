@@ -407,6 +407,14 @@ func (s *Session) ConsecutiveLosingTrades() uint32 {
 	return s.episodes.consecutiveLosingTradesNow()
 }
 
+// Gesture is what one human act commanded, and whether the journal holds it.
+//
+// It answers one identifier rather than handing back every act: the loop is
+// asked to recognise a retry on every request that carries a gesture, and
+// walking a copy of the whole register to do it is the same mistake a command
+// used to make with the whole journal.
+func (s *Session) Gesture(id string) (Gesture, bool) { return s.gestures.find(id) }
+
 // ChallengeEnded reports whether the evaluation has reached a terminal state.
 // An adapter driving a file asks it to stop consuming, and stopping is not an
 // error: the evaluation ending is the result.

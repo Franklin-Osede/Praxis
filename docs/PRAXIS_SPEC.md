@@ -1104,10 +1104,25 @@ button is named one. Removing the button removes the name, not the behaviour. So
 the confirmatory condition is: **a fixed automatic cadence, no pause, no rewind,
 no speed control, and the same information visible to everyone.**
 
-The pilots may allow controls **and must record them** — pause, resumption,
-speed, and the moment each observation was presented — because wanting to pause
-is itself data about time pressure and is one of the things the pilots exist to
-find out.
+**The pilots advance by hand, and the gap between two presentations is the
+record.** An earlier draft of this required the pilots to record pause,
+resumption, speed and the moment each observation was presented. Only the last
+exists, and the other three are not missing: with manual advance there is no
+speed, and a participant who sits for forty seconds before asking for the next
+observation produces that interval without anything being called a pause.
+
+A button would record something a gap cannot — the intention to stop — and that
+is exactly the substitution this document refuses everywhere else. `OrderContext`
+records facts and leaves naming a pattern to analysis; a pause button is an
+interpretation the participant supplies, and the gap is how long they actually
+took. Pause is also barred from confirmatory sessions by the paragraph above, so
+its events could only ever appear in journals the confirmatory sample excludes:
+the weakest possible case for a payload version.
+
+So it is not built, and the cost is stated rather than discovered: if the pilots
+run without a pause control and it turns out one was needed, those sessions are
+not re-run. Asking the five participants whether they wanted to stop belongs in
+the pilot protocol, before the first session and not after.
 
 **Which of the two a session was is configuration, not a screen setting.**
 `Config.Pacing` is `scripted`, `pilot` or `confirmatory`, so it sits inside the
@@ -1175,11 +1190,38 @@ the gesture and sends it, so a retry sends the same one and the kernel refuses
 it. Identifiers are already spent forever and never reused, so a whole class of
 interface bug becomes a domain guard that exists and is tested.
 
-It is `<SubjectID>:<RunID>:<GestureSequence>`, with the counter incremented and
-persisted **before** the request goes out. Not a random identifier: rule 3 of
-this document forbids unrecorded randomness, and a browser's random source is
-exactly that — a value nothing can reproduce, deciding which of two journals is
-the real one.
+It is `<Segment>:<GestureSequence>`, and the segment is **issued by the server
+with the lease**, not minted by the client.
+
+An earlier draft asked the client for a `<SubjectID>:<RunID>:<GestureSequence>`
+with the counter persisted before the request went out. That is not
+constructible. Rule 3 forbids a random identifier — a browser's random source is
+a value nothing can reproduce, deciding which of two journals is the real one —
+and a counter alone does not survive a reload. Nothing a browser can see
+guarantees uniqueness across restarts, because the only thing that does is the
+journal, and the client cannot read it.
+
+The segment already has exactly that property and is already proved to have it:
+`newLease` starts from the highest segment the journal holds, so a reload takes
+a new lease and is issued a higher one. The counter can then live in memory and
+start at one, and the persisting the old draft required is a mechanism that
+would now do nothing. The subject is not repeated in the identifier: it is in
+the configuration, constant for the whole journal, and a third copy has no
+reader.
+
+The segment therefore appears twice — in the identifier and on the decision —
+and that is a duplication, so it is checked rather than trusted: `checkDecision`
+refuses an act whose identifier names a segment its decision does not. Same
+discipline as `Widened`, and the refusal names the actual fault instead of
+reporting a confusing "this gesture is already spent".
+
+**And it makes a failure the segment rule cannot prevent into a refusal.** Two
+tabs sharing one lease can interleave their gestures inside a single segment
+without breaking any rule above; with the client minting `<Segment>:<Sequence>`
+they collide on the sequence, and the second is refused as an act already
+recorded. That turns a fault which would have duplicated a decision into one
+that rejects it. It is written down because a behaviour nobody wrote down is one
+the next change removes without anything going red.
 
 The identifier travels on the decision, not on the order, so it covers every
 human command and not only a submission.
@@ -1253,10 +1295,17 @@ Three smaller decisions, settled the same way:
 - **A `ReplayedState` is consumed by one `Resume`.** Two share one account and
   one evaluation, which fails loudly rather than silently — but an interface
   that retries a recovery can reach it.
-- **Decimals are parsed totally and formatted in Go.** A malformed amount is
-  refused, never rounded, and no `toFixed` in JavaScript: a second
-  implementation of the money-to-string rule will eventually disagree with the
-  first.
+- **Quantities cross as canonical integers, parsed totally and formatted in
+  Go.** Nothing crosses with a decimal point: every figure is a whole count of
+  its smallest unit, and the field names say so — `balanceCts`, not `balance`.
+  A spelling that is not canonical is refused, never repaired: no leading zero,
+  no sign on a positive, no negative zero, no empty string. `market.ParseInt`
+  and `market.FormatInt` are that rule and are exact inverses, and the journal,
+  the market file and the interface all use them. The rule lives in the domain
+  because it is how a `Cents`, a `Ticks` and a `Qty` are written down and none
+  of the three boundaries owns the spelling — and because a second reader, each
+  deciding for itself whether `020000` is a number, is a second policy. No
+  `toFixed` in JavaScript either, for the same reason.
 
 **A refused attempt leaves no trace, deliberately.** `prepareOrder` refuses
 before recording anything, so an order with inverted levels never reaches the

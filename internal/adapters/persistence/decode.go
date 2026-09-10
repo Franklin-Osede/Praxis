@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"praxis/internal/challenge"
@@ -456,47 +455,9 @@ func (r *reader) failure() challenge.FailureReason {
 // a leading zero, a negative zero, or anything strconv would tolerate that this
 // format does not. Normalising them silently would let two different files mean
 // the same thing.
-func canonicalInt(s string) (int64, error) {
-	digits := s
-	negative := strings.HasPrefix(s, "-")
-	if negative {
-		digits = s[1:]
-	}
-	if err := canonicalDigits(s, digits, negative); err != nil {
-		return 0, err
-	}
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %q: %v", ErrNotCanonicalInt, s, err)
-	}
-	return v, nil
-}
-
-func canonicalUint(s string) (uint64, error) {
-	if err := canonicalDigits(s, s, false); err != nil {
-		return 0, err
-	}
-	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %q: %v", ErrNotCanonicalInt, s, err)
-	}
-	return v, nil
-}
-
-func canonicalDigits(whole, digits string, negative bool) error {
-	if digits == "" {
-		return fmt.Errorf("%w: %q has no digits", ErrNotCanonicalInt, whole)
-	}
-	for _, c := range digits {
-		if c < '0' || c > '9' {
-			return fmt.Errorf("%w: %q", ErrNotCanonicalInt, whole)
-		}
-	}
-	if len(digits) > 1 && digits[0] == '0' {
-		return fmt.Errorf("%w: %q has a leading zero", ErrNotCanonicalInt, whole)
-	}
-	if negative && digits == "0" {
-		return fmt.Errorf("%w: negative zero", ErrNotCanonicalInt)
-	}
-	return nil
-}
+// canonicalInt and canonicalUint read the domain's spelling of an integer. The
+// rule is market's, because a Cents and a Ticks are market's and a journal is
+// one of three places that write them down; this asserts it rather than
+// deciding it a second time.
+func canonicalInt(s string) (int64, error)   { return market.ParseInt(s) }
+func canonicalUint(s string) (uint64, error) { return market.ParseUint(s) }

@@ -111,7 +111,10 @@ type Protection struct {
 	ProtectedQty string `json:"protectedQty,omitempty"`
 }
 
-func decimal(v int64) string { return strconv.FormatInt(v, 10) }
+// decimal is market's spelling, not a second one. Every quantity crosses as a
+// whole count of its smallest unit, and the reader on the other side of this
+// boundary is held to the same rule.
+func decimal(v int64) string { return market.FormatInt(v) }
 
 // project builds what the participant may see from what the session holds.
 func project(s *session.Session, cursor, observations int, cfg session.Config, valuation session.Valuation, valueErr error) State {

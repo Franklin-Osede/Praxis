@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"strings"
 
+	"praxis/internal/market"
 	"praxis/internal/session"
 )
 
@@ -116,9 +117,11 @@ const (
 
 // Errors reported for a payload that is not canonical event text.
 var (
-	ErrSyntax          = errors.New("persistence: line is not canonical event text")
-	ErrUnknownEvent    = errors.New("persistence: unknown event type")
-	ErrNotCanonicalInt = errors.New("persistence: integer is not in canonical form")
+	ErrSyntax       = errors.New("persistence: line is not canonical event text")
+	ErrUnknownEvent = errors.New("persistence: unknown event type")
+	// ErrNotCanonicalInt is the domain's, so a caller matching on it matches
+	// whichever boundary refused the spelling.
+	ErrNotCanonicalInt = market.ErrNotCanonicalInt
 	ErrIdentifier      = errors.New("persistence: identifier uses a character the format forbids")
 	ErrTooLarge        = errors.New("persistence: input exceeds the format's limits")
 	ErrTrailingBytes   = errors.New("persistence: payload does not end with a complete line")
