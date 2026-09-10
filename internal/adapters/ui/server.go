@@ -234,6 +234,7 @@ func (s *Server) listen(addr string) error {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/control", s.handleControl)
 	mux.HandleFunc("/api/acknowledge", s.handleAcknowledge)
+	mux.HandleFunc("/api/command", s.handleCommand)
 	s.http = &http.Server{Handler: s.guard(mux)}
 	return nil
 }

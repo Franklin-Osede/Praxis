@@ -28,6 +28,7 @@ const (
 	ReasonLeaseHeld       Reason = "lease_held"
 	ReasonLeaseStale      Reason = "lease_stale"
 	ReasonGestureConflict Reason = "gesture_conflict"
+	ReasonWrongRun        Reason = "wrong_run"
 
 	// 422: the session refuses this command now.
 	ReasonOutOfOrder      Reason = "out_of_order"
@@ -38,6 +39,13 @@ const (
 
 	// 503: the session has stopped.
 	ReasonNeedsRecovery Reason = "needs_recovery"
+)
+
+// errUnknownKind and errWrongSegment are this adapter's own refusals: a tag it
+// does not know, and an act naming a run it does not belong to.
+var (
+	errUnknownKind  = errors.New("ui: the body does not name something this accepts")
+	errWrongSegment = errors.New("ui: this act names a run it does not belong to")
 )
 
 // refusal is the body of every response that is not a 200.
@@ -63,6 +71,10 @@ func classify(err error) (int, refusal) {
 		return http.StatusConflict, refusal{ReasonLeaseStale, err.Error()}
 	case errors.Is(err, session.ErrGestureReused):
 		return http.StatusConflict, refusal{ReasonGestureConflict, err.Error()}
+	case errors.Is(err, errWrongSegment):
+		return http.StatusConflict, refusal{ReasonWrongRun, err.Error()}
+	case errors.Is(err, errUnknownKind):
+		return http.StatusBadRequest, refusal{ReasonUnreadable, err.Error()}
 	case errors.Is(err, market.ErrNotCanonicalInt):
 		return http.StatusBadRequest, refusal{ReasonNotCanonical, err.Error()}
 	case errors.Is(err, market.ErrIdentifierCharacter), errors.Is(err, market.ErrEmptyOrderID):
