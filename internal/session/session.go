@@ -371,8 +371,9 @@ func (s *Session) Events() []Event { return s.journal.Events() }
 // JournalLen is the number of events recorded so far.
 func (s *Session) JournalLen() int { return s.journal.Len() }
 
-func (s *Session) Account() *portfolio.Account        { return s.account }
-func (s *Session) Challenge() *challenge.Challenge    { return s.eval }
+func (s *Session) Account() *portfolio.Account     { return s.account }
+func (s *Session) Challenge() *challenge.Challenge { return s.eval }
+
 // Valuation is an account's two figures, taken together at one set of marks.
 // A rule reading balance and a rule reading equity must never disagree about
 // when they were measured, and a caller handed them separately eventually gets
@@ -406,6 +407,16 @@ func (s *Session) Valuation() (Valuation, error) {
 func (s *Session) ConsecutiveLosingTrades() uint32 {
 	return s.episodes.consecutiveLosingTradesNow()
 }
+
+// LastQuote is the observation the session is standing on, and whether it has
+// seen one. It is the book as the session holds it, which is the book as it was
+// left: the displayed size is consumed with every fill, so what this returns is
+// what is still there rather than what the file showed.
+//
+// An adapter that read the file instead would put depth on the screen that the
+// participant's own order had already taken, and the next order sized against
+// it would be sized against a quantity that is not there.
+func (s *Session) LastQuote() (market.Quote, bool) { return s.lastQuote, s.hasQuote }
 
 // Gesture is what one human act commanded, and whether the journal holds it.
 //

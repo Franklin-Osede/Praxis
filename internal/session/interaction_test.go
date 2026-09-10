@@ -474,11 +474,15 @@ func TestWhatTheLogRequiredNamesNoAct(t *testing.T) {
 				events[at] = v
 			}
 
-			// The readers wrap the inner cause with %v, so the sentinel to
-			// match is theirs and the sentence is what says which rule fired.
+			// Both sentinels: the reader's and the rule's. The sentence stays
+			// because it says which branch of the rule fired, which no
+			// sentinel distinguishes.
 			_, err := session.Replay(events)
 			if !errors.Is(err, session.ErrStructure) {
 				t.Fatalf("Replay: got %v, want %v", err, session.ErrStructure)
+			}
+			if !errors.Is(err, session.ErrMalformedDecision) {
+				t.Fatalf("Replay: %v does not name the rule that refused it", err)
 			}
 			if !strings.Contains(err.Error(), `gesture "g-forged"`) {
 				t.Fatalf("Replay rejected it for another reason: %v", err)

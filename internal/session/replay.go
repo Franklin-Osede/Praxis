@@ -14,7 +14,7 @@ import (
 // Errors reported when a journal cannot be reconstructed or does not agree
 // with itself.
 var (
-	ErrNoSessionStarted   = errors.New("session: the log does not begin with a session start")
+	ErrNoSessionStarted = errors.New("session: the log does not begin with a session start")
 
 	// ErrIncoherentState reports a replayed state that is two claims at once
 	// about the trading session: open under no name, or named with none open.
@@ -27,7 +27,7 @@ var (
 	// the record has no way to write and which kills the session at commit.
 	// That is exactly the failure the identifier rule exists to prevent,
 	// reachable again through a type rather than through a name.
-	ErrIncoherentState = errors.New("session: the replayed state disagrees with itself about the open trading session")
+	ErrIncoherentState    = errors.New("session: the replayed state disagrees with itself about the open trading session")
 	ErrContradictoryLog   = errors.New("session: a recorded context contradicts the events before it")
 	ErrUnexpectedSequence = errors.New("session: the log is not one contiguous ordering")
 	ErrCounterOverflow    = errors.New("session: a counter in the log cannot be represented")
@@ -183,7 +183,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 	}
 
 	if err := pacingAgreesWithSubject(started.Config); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrStructure, err)
+		return nil, fmt.Errorf("%w: %w", ErrStructure, err)
 	}
 
 	state := &ReplayedState{Config: started.Config, Account: account, Challenge: eval}
@@ -229,12 +229,12 @@ func Replay(events []Event) (*ReplayedState, error) {
 		lastTime = header.Time
 
 		if err := clock.Check(e); err != nil {
-			return nil, fmt.Errorf("%w: event %d: %v", ErrStructure, n, err)
+			return nil, fmt.Errorf("%w: event %d: %w", ErrStructure, n, err)
 		}
 		clock.Apply(e)
 		if act, ok := gestureOf(e); ok {
 			if err := gestures.claim(act); err != nil {
-				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 			}
 		}
 
@@ -248,7 +248,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 		}
 		owedThis, err := protections.requireOwed(e)
 		if err != nil {
-			return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+			return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 		}
 		state.LastSequence = header.Sequence
 
@@ -267,7 +267,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 			// The fill is re-executed against the book it met, before that
 			// book is reduced by it.
 			if err := proveFill(submitted, &protections, state, started.Config.Instrument, v.Fill); err != nil {
-				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 			}
 			if o, ok := submitted[v.Fill.OrderID]; ok {
 				if o.Qty, err = market.AddQty(o.Qty, -v.Fill.Qty); err != nil {
@@ -391,7 +391,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 			// survived the last one has to account for surviving it.
 			if offered {
 				if err := proveNothingSurvivedFillable(state, &protections, started.Config.Instrument); err != nil {
-					return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+					return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 				}
 			}
 			state.LastQuote, state.HasQuote, state.ObservedThisSession = v.Quote, true, true
@@ -413,10 +413,10 @@ func Replay(events []Event) (*ReplayedState, error) {
 			// explain, and for a protective leg the book still can.
 			if !owedThis {
 				if err := proveLegCancellation(&protections, state.LastQuote, started.Config.Instrument, v); err != nil {
-					return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+					return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 				}
 				if err := proveOrderCancellation(submitted, state.LastQuote, v); err != nil {
-					return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+					return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 				}
 			}
 			delete(submitted, v.OrderID)
@@ -430,7 +430,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 				return nil, err
 			}
 			if err := protections.claim(v.Order.ID); err != nil {
-				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 			}
 
 		case ProtectionPlaced:
@@ -438,17 +438,17 @@ func Replay(events []Event) (*ReplayedState, error) {
 			// placement belongs to the submission it follows.
 			gestures.attachProtection(v.StopPrice, v.TargetPrice)
 			if err := protections.applyPlaced(v); err != nil {
-				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 			}
 
 		case ProtectionReplaced:
 			if err := protections.applyReplaced(v); err != nil {
-				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 			}
 
 		case ProtectionEnded:
 			if err := protections.applyEnded(v); err != nil {
-				return nil, fmt.Errorf("%w: event %d: %v", ErrFabricated, n, err)
+				return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 			}
 		}
 	}
@@ -458,15 +458,15 @@ func Replay(events []Event) (*ReplayedState, error) {
 			ErrFabricated, len(pendingChanges), len(pendingDecisions))
 	}
 	if err := protections.settled(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrFabricated, err)
+		return nil, fmt.Errorf("%w: %w", ErrFabricated, err)
 	}
 	if offered {
 		if err := proveNothingSurvivedFillable(state, &protections, started.Config.Instrument); err != nil {
-			return nil, fmt.Errorf("%w: the log ends and %v", ErrFabricated, err)
+			return nil, fmt.Errorf("%w: the log ends and %w", ErrFabricated, err)
 		}
 	}
 	if err := proveEveryOrderEnded(submitted, outstanding, state.Working); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrFabricated, err)
+		return nil, fmt.Errorf("%w: %w", ErrFabricated, err)
 	}
 
 	state.clock = clock
@@ -856,7 +856,7 @@ func Verify(events []Event) error {
 			// this too; Verify asking it as well is what keeps Verify as
 			// strong on its own as it was before the clock read pacing.
 			if err := pacingAgreesWithSubject(started.Config); err != nil {
-				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+				return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
 			}
 			clock.subjectID, clock.pacing = started.Config.SubjectID, started.Config.Pacing
 		}
@@ -865,15 +865,15 @@ func Verify(events []Event) error {
 	for _, e := range events {
 		owedThis, owedErr := protections.requireOwed(e)
 		if owedErr != nil {
-			return fmt.Errorf("%w: %v", ErrContradictoryLog, owedErr)
+			return fmt.Errorf("%w: %w", ErrContradictoryLog, owedErr)
 		}
 		if err := clock.Check(e); err != nil {
-			return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+			return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
 		}
 		clock.Apply(e)
 		if act, ok := gestureOf(e); ok {
 			if err := gestures.claim(act); err != nil {
-				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+				return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
 			}
 		}
 
@@ -949,7 +949,7 @@ func Verify(events []Event) error {
 		case ProtectionPlaced:
 			gestures.attachProtection(v.StopPrice, v.TargetPrice)
 			if err := protections.applyPlaced(v); err != nil {
-				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+				return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
 			}
 
 		case ProtectionReplaced:
@@ -976,7 +976,7 @@ func Verify(events []Event) error {
 					ErrContradictoryLog, v.Widened, want)
 			}
 			if err := protections.applyReplaced(v); err != nil {
-				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+				return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
 			}
 
 		case ProtectionEnded:
@@ -989,12 +989,12 @@ func Verify(events []Event) error {
 					ErrContradictoryLog, v.StopPrice, v.TargetPrice, current.stopPrice, current.targetPrice)
 			}
 			if err := protections.applyEnded(v); err != nil {
-				return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+				return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
 			}
 		}
 	}
 	if err := protections.settled(); err != nil {
-		return fmt.Errorf("%w: %v", ErrContradictoryLog, err)
+		return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
 	}
 	return nil
 }

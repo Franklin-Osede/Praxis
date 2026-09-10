@@ -1255,8 +1255,8 @@ the same gesture, other command  -> conflict
 
 A repeated request that already committed must not come back as "that name is
 taken". A lost HTTP response is a retry, not a false alarm in front of the
-participant. And the client's counter, persisted before the request goes out,
-prevents accidental reuse — it does not prove confirmation. **The journal is the
+participant. The client's counter prevents accidental reuse within a run and the
+segment keeps two runs apart — neither proves confirmation. **The journal is the
 authority**, which is why the index is rebuilt from it and survives a restart.
 
 **One lease on the controls, not one TCP connection.** A connection is the wrong

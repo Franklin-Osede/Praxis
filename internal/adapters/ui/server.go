@@ -375,12 +375,15 @@ func (s *Server) state() State {
 		withBook(s.lastQuote())
 }
 
-func (s *Server) lastQuote() (market.Quote, bool) {
-	if s.cursor == 0 {
-		return market.Quote{}, false
-	}
-	return s.feed.Observations[s.cursor-1].Quote, true
-}
+// lastQuote is the session's book, not the file's row. The two carry the same
+// prices and different sizes: the session consumes the displayed size with
+// every fill, so the file's row is what was offered and this is what is left.
+//
+// s.cursor is no longer the source of the book. It is how far through the file
+// this run has read, and it serves Cursor and Observations — the progress the
+// participant is shown — and nothing else. Wiring the book back to it would
+// undo this without anything looking wrong.
+func (s *Server) lastQuote() (market.Quote, bool) { return s.session.LastQuote() }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
 	w.Header().Set("Content-Type", "application/json")
