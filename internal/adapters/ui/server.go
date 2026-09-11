@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"praxis/internal/adapters/marketdata"
 	"praxis/internal/adapters/persistence"
@@ -56,7 +55,7 @@ type Options struct {
 	// interface would put an unauthenticated kernel on the network.
 	Addr string
 
-	// Now is the clock the server stamps with. Nil means time.Now.
+	// Now is the clock the server stamps with. Nil means SystemClock.
 	//
 	// It is injected rather than called, and that is what makes a run
 	// reproducible: the same commands with the same clock produce the same
@@ -64,7 +63,7 @@ type Options struct {
 	// byte for byte with one written directly. Rule 2 forbids a clock in the
 	// domain and allows one here; injecting it is the difference between an
 	// adapter that can be tested and one that cannot.
-	Now func() time.Time
+	Now Clock
 
 	// New is the configuration for a journal that does not exist yet. It is
 	// ignored for one that does — a resumed run cannot be reconfigured,
@@ -86,7 +85,7 @@ type Server struct {
 	// the loop is the single goroutine that touches the session, so the
 	// kernel's inputs arrive in one order however many sockets are open.
 	commands  chan func()
-	now       func() time.Time
+	now       Clock
 	done      chan struct{}
 	closeOnce sync.Once
 
@@ -117,7 +116,7 @@ func Open(opts Options) (*Server, error) {
 
 	now := opts.Now
 	if now == nil {
-		now = time.Now
+		now = SystemClock()
 	}
 	s := &Server{writer: writer, feed: feed, now: now,
 		commands: make(chan func()), done: make(chan struct{})}

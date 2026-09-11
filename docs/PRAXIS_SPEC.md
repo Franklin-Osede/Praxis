@@ -619,6 +619,17 @@ goes backwards, and catches nothing about one that runs slow, fast or invented �
 and this system recomputes derived facts rather than believing them everywhere
 else.
 
+The clock hands back two readings and not one. A wall time for audit, which may
+legitimately move backwards, and a monotonic count which may not — the two facts
+an `Instant` already models apart. A clock that returned one `time.Time` would
+collapse them and leave the receiver to split them again, which is how a wall
+reading ends up inside a measurement by accident. It is not hypothetical: an
+elapsed computed on the wall would go backwards after a correction, `checkOrder`
+would refuse the command, and `Apply` runs only after a successful record — so
+every act for the length of the correction is refused with "your reading went
+backwards", to a participant who did nothing, and then recovers on its own with
+nobody able to say why.
+
 The clock is injected rather than called. Rule 2 forbids one in the domain and
 allows one in an adapter; injecting it is what makes a run reproducible, and
 that is not a convenience. It is what allows the same acts taken through HTTP

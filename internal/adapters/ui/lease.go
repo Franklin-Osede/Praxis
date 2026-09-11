@@ -56,32 +56,29 @@ type lease struct {
 	// are already recorded.
 	highest uint64
 
-	// startedAt is when the open segment began, and it is what an elapsed
-	// reading is measured from. A time.Time from time.Now carries a monotonic
-	// reading, so subtracting from it is monotonic whatever the wall clock
-	// does — which is the whole reason the two are different fields on an
-	// Instant.
+	// startedMono is the monotonic reading the open segment began at, and it is
+	// the only thing an elapsed is measured from. The wall reading is taken
+	// fresh at every stamp and never subtracted: a clock correction moves it
+	// and must not move an interval.
 	//
-	// That property is not reachable through the injected clock, and saying so
-	// is better than implying it is tested: a time.Time built by a fixture
-	// carries no monotonic reading, so Sub falls back to the wall difference
-	// and a mutation replacing Sub with UnixNano arithmetic passes. Closing
-	// that would mean the seam yielding the two readings separately, which is
-	// a change to its shape rather than to this line.
-	startedAt time.Time
+	// Keeping only this one is what makes that testable. While the clock was a
+	// func() time.Time the property was unreachable — a time.Time built by a
+	// fixture carries no monotonic reading, so Sub fell back to the wall
+	// difference and the two were indistinguishable under injection.
+	startedMono time.Duration
 
 	// now is the clock this lease stamps with. Injected so a test can produce
-	// the same journal twice; rule 2 lets an adapter hold a clock and this is
-	// what makes holding one testable.
-	now func() time.Time
+	// the same journal twice, and so that a wall clock going backwards while
+	// the monotonic count goes forward is something a fixture can express.
+	now Clock
 }
 
 // newLease starts with the highest segment the journal already holds. Nothing
 // is granted yet: a server that has recovered a journal has not thereby given
 // anyone the controls.
-func newLease(highest uint64, now func() time.Time) *lease {
+func newLease(highest uint64, now Clock) *lease {
 	if now == nil {
-		now = time.Now
+		now = SystemClock()
 	}
 	return &lease{highest: highest, now: now}
 }
@@ -121,7 +118,7 @@ func (l *lease) grant() (string, uint64, error) {
 	l.highest++
 	l.segment = l.highest
 	// A new run of interaction begins here, so its readings start here too.
-	l.startedAt = l.now()
+	l.startedMono = l.now().Mono
 	return l.token, l.segment, nil
 }
 
@@ -143,9 +140,9 @@ func (l *lease) stamp(token string) (session.Instant, error) {
 	}
 	at := l.now()
 	return session.Instant{
-		AtUTCNanos:   session.UnixNanos(at.UnixNano()),
+		AtUTCNanos:   session.UnixNanos(at.Wall.UnixNano()),
 		Segment:      l.segment,
-		ElapsedNanos: session.ElapsedNanos(at.Sub(l.startedAt).Nanoseconds()),
+		ElapsedNanos: session.ElapsedNanos((at.Mono - l.startedMono).Nanoseconds()),
 	}, nil
 }
 

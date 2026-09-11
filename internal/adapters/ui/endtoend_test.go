@@ -17,12 +17,15 @@ import (
 // tickingClock hands out a fixed sequence, so the same run twice is the same
 // run. It is what makes the comparison below possible at all: with the stamps
 // coming from the server, a reproducible journal needs a reproducible clock.
-func tickingClock() func() time.Time {
+func tickingClock() ui.Clock {
 	base := time.Unix(0, 1_764_000_000_000_000_000).UTC()
 	var n int64
-	return func() time.Time {
+	return func() ui.Reading {
 		n++
-		return base.Add(time.Duration(n) * time.Millisecond)
+		return ui.Reading{
+			Wall: base.Add(time.Duration(n) * time.Millisecond),
+			Mono: time.Duration(n) * time.Millisecond,
+		}
 	}
 }
 
@@ -160,11 +163,14 @@ func driveDirectly(t *testing.T, marketPath, journalPath string, segment uint64)
 
 // instantAt is the stamp the lease would have produced: the wall reading, and
 // the elapsed measured from the moment the lease was granted.
-func instantAt(at time.Time, segment uint64) session.Instant {
-	granted := time.Unix(0, 1_764_000_000_000_000_000).UTC().Add(time.Millisecond)
+// instantAt is the stamp the lease would have produced: the wall reading as
+// given, and the elapsed measured from the monotonic count the lease was
+// granted at — which is the first tick.
+func instantAt(at ui.Reading, segment uint64) session.Instant {
+	const granted = time.Millisecond
 	return session.Instant{
-		AtUTCNanos:   session.UnixNanos(at.UnixNano()),
+		AtUTCNanos:   session.UnixNanos(at.Wall.UnixNano()),
 		Segment:      segment,
-		ElapsedNanos: session.ElapsedNanos(at.Sub(granted).Nanoseconds()),
+		ElapsedNanos: session.ElapsedNanos((at.Mono - granted).Nanoseconds()),
 	}
 }
