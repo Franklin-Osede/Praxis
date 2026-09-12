@@ -249,6 +249,12 @@ func episodeIDOf(t *testing.T, s *ui.Server) string {
 // every other test: it calls the right method, so the journal is right, and only
 // a retry notices that the act it is compared with is the wrong kind. Which is
 // the one thing the whole gesture register exists to get right.
+//
+// **This test is the only witness gestureOf's four cases have**, and that is
+// structural rather than an accident of coverage: the kind of a registered
+// gesture is observable only through a retry, because nothing else reads it. If
+// this is ever trimmed to retry fewer than all four commands, that switch loses
+// its guard and nothing will go red. Each subtest below is carrying a case.
 func TestEveryCommandIsIdempotentUnderItsName(t *testing.T) {
 	retry := func(t *testing.T, s *ui.Server, body map[string]string) {
 		t.Helper()
