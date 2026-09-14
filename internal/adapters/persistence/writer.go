@@ -1,8 +1,12 @@
 package persistence
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -72,6 +76,23 @@ type Writer struct {
 	// leave a window in which another process could take it.
 	recovered *Journal
 
+	// digest is the running SHA-256 of every confirmed byte, from the version
+	// line onwards, and it is what makes an anchor cost nothing.
+	//
+	// The alternative is re-reading the journal to take one, which is O(n) a
+	// call and therefore quadratic in the journal's own length at the cadence
+	// ADR-015 asks for — the same shape this repository already paid for once
+	// and wrote down in session/journal.go. It also cannot work: an anchor is
+	// due at the moment a batch is confirmed, and this writer holds the lock
+	// then, so a reader taking one would be refused by the very policy that
+	// keeps a moving tail from being read.
+	digest hash.Hash
+
+	// anchoredBatch and anchoredSequence are where the digest currently stands.
+	// They are the last confirmed batch, not the next one.
+	anchoredBatch    uint64
+	anchoredSequence uint64
+
 	// poisoned records a failure that left the file in a state this writer
 	// cannot reason about. It never clears.
 	poisoned error
@@ -98,8 +119,8 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 	}
 
 	w := &Writer{file: file, path: path, policy: policy, nextNumber: 1, nextSequence: 1,
-		payloadVersion: EventVersion,
-		recovered:      &Journal{ContainerVersion: ContainerVersion, PayloadVersion: EventVersion}}
+		payloadVersion: EventVersion, digest: sha256.New(),
+		recovered: &Journal{ContainerVersion: ContainerVersion, PayloadVersion: EventVersion}}
 
 	info, err := file.Stat()
 	if err != nil {
@@ -123,6 +144,9 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 			w.abandon()
 			return nil, err
 		}
+		// The version line is confirmed, so it is part of the digest. An anchor
+		// covers a journal from its first byte, not from the first batch.
+		w.digest.Write(Header())
 		return w, nil
 	}
 
@@ -142,9 +166,26 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 	w.recovered = journal
 	w.payloadVersion = journal.PayloadVersion
 	if n := len(journal.Batches); n > 0 {
-		w.nextNumber = journal.Batches[n-1].Number + 1
-		w.nextSequence = journal.Batches[n-1].LastSequence + 1
+		last := journal.Batches[n-1]
+		w.nextNumber = last.Number + 1
+		w.nextSequence = last.LastSequence + 1
+		w.anchoredBatch, w.anchoredSequence = last.Number, last.LastSequence
 	}
+
+	// The digest is seeded from the prefix this writer inherited, so an anchor
+	// taken after the next append covers the whole journal rather than only
+	// what this process added. It is one extra sequential read, once, at open:
+	// that is the difference between paying O(n) per session and paying it per
+	// batch.
+	if _, err := file.Seek(0, 0); err != nil {
+		w.abandon()
+		return nil, err
+	}
+	if _, err := io.CopyN(w.digest, file, journal.ConfirmedBytes); err != nil {
+		w.abandon()
+		return nil, err
+	}
+
 	if _, err := file.Seek(0, 2); err != nil {
 		w.abandon()
 		return nil, err
@@ -205,9 +246,44 @@ func (w *Writer) Append(events []session.Event) (Batch, error) {
 		LastSequence:  events[len(events)-1].Header().Sequence,
 		Events:        events,
 	}
+	// Only now. The digest stands for confirmed bytes, and a batch is confirmed
+	// once it is written and synced — so a failed sync above leaves the writer
+	// poisoned with a digest that still describes the last batch that was.
+	w.digest.Write(framed)
+	w.anchoredBatch, w.anchoredSequence = batch.Number, batch.LastSequence
+
 	w.nextNumber++
 	w.nextSequence = batch.LastSequence + 1
 	return batch, nil
+}
+
+// Anchor is the anchor for the last confirmed batch, at no cost.
+//
+// This is where an anchor comes from when one is published at cadence: the
+// digest is already standing at the byte the last batch ended on, so taking it
+// costs a Sum and no I/O, and it can be taken while this writer holds the lock
+// — which is the moment ADR-015 says the anchor is due.
+//
+// AnchorOf reads a file and produces the same value. That it must is the
+// property worth testing, and it is: two paths to one claim drift, and this one
+// exists precisely because the other cannot be called often enough.
+func (w *Writer) Anchor() (Anchor, error) {
+	switch {
+	case w.closed:
+		return Anchor{}, ErrClosed
+	case w.poisoned != nil:
+		// A poisoned writer cannot say what is on disk, so it cannot say what a
+		// digest covers. Handing one out would be a reference to bytes nothing
+		// vouches for.
+		return Anchor{}, fmt.Errorf("%w: %v", ErrPoisoned, w.poisoned)
+	case w.anchoredBatch == 0:
+		return Anchor{}, fmt.Errorf("%w: nothing is confirmed, so there is nothing to anchor", ErrEmptyBatch)
+	}
+	return Anchor{
+		LastBatch:    w.anchoredBatch,
+		LastSequence: w.anchoredSequence,
+		PrefixDigest: hex.EncodeToString(w.digest.Sum(nil)),
+	}, nil
 }
 
 // Close releases the lock. The kernel would release it anyway if the process

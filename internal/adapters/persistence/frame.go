@@ -55,6 +55,12 @@ type Batch struct {
 	FirstSequence uint64
 	LastSequence  uint64
 	Events        []session.Event
+
+	// EndOffset is the offset just past this batch's last byte. It exists
+	// because an anchor confirms a prefix rather than a file — see ADR-015 —
+	// and checking one means digesting exactly the bytes up to the batch it
+	// names, which nothing outside this reader can locate.
+	EndOffset int64
 }
 
 // TailStatus says how a journal ended, because the endings do not mean the
@@ -216,11 +222,12 @@ func ReadJournal(r io.Reader) (*Journal, error) {
 			}
 			return j, nil
 		}
+		j.ConfirmedBytes += int64(consumed)
+		batch.EndOffset = j.ConfirmedBytes
 		j.Batches = append(j.Batches, batch)
 		expectedNumber++
 		expectedSequence = batch.LastSequence + 1
 		rest = rest[consumed:]
-		j.ConfirmedBytes += int64(consumed)
 	}
 	return j, nil
 }

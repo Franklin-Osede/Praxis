@@ -77,12 +77,31 @@ type Report struct {
 	ConfigDigest string
 	SubjectID    string
 
+	// Anchor is the completeness claim, set only when one was asked for. It is
+	// separate from Proved because they are separate claims over the same
+	// bytes: a journal can be coherent and still not be the run an anchor
+	// names, and a reader that could not tell them apart is the failure
+	// ADR-015 exists to stop.
+	Anchor *AnchorClaim
+
+	// Events are the confirmed events the claims above were made over, set by
+	// Prove. A caller checking them against a market file checks these, not a
+	// second read of the journal — which could by then be a different file.
+	Events []session.Event
+
 	// Repaired and SidecarPath are set by an applied repair.
 	Repaired    bool
 	SidecarPath string
 
 	// Detail carries anything an operator needs told in words.
 	Detail string
+}
+
+// AnchorClaim is what checking a journal against an anchor found. Err is nil
+// when the journal is the run the anchor confirms, as far as the anchor reaches.
+type AnchorClaim struct {
+	Want Anchor
+	Err  error
 }
 
 // Errors reported by inspection and repair.
@@ -137,7 +156,20 @@ func Inspect(path string) (*Report, error) {
 //
 // This is that defence, offered as an operation rather than only as a side
 // effect of resuming a run.
-func Prove(path string) (*Report, error) {
+func Prove(path string) (*Report, error) { return ProveAgainst(path, nil) }
+
+// ProveAgainst is Prove plus the completeness claim, both taken under the one
+// lock this already holds.
+//
+// The two are together and not chained for the reason OpenWriter gives for
+// reading and locking together: reading twice leaves a window, and the
+// participant who can cut a journal is in ADR-015's threat model. A report
+// whose coherence line described one file and whose anchor line described
+// another would be false by composition while neither line was false alone.
+//
+// A nil anchor asks for the first claim only, and the report then says nothing
+// about the second rather than implying it.
+func ProveAgainst(path string, want *Anchor) (*Report, error) {
 	f, err := openLocked(path, false)
 	if err != nil {
 		return nil, err
@@ -151,12 +183,23 @@ func Prove(path string) (*Report, error) {
 	if _, err := f.Seek(0, 0); err != nil {
 		return report, err
 	}
-	journal, err := ReadJournal(f)
+	raw, err := wholeFile(f)
+	if err != nil {
+		return report, err
+	}
+	journal, err := ReadJournal(bytes.NewReader(raw))
 	if err != nil {
 		return report, err
 	}
 
+	// Before Verify and Replay, because the two claims are independent and the
+	// early return for an unprovable history must not erase the other one.
+	if want != nil {
+		report.Anchor = &AnchorClaim{Want: *want, Err: checkAnchorAgainst(raw, journal, *want)}
+	}
+
 	events := journal.Events()
+	report.Events = events
 	report.EventsProved = len(events)
 	if len(events) > 0 {
 		if started, ok := events[0].(session.SessionStarted); ok {

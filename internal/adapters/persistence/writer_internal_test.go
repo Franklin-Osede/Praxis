@@ -170,3 +170,49 @@ func TestAShortWriteWithoutAnErrorIsStillAFailure(t *testing.T) {
 		t.Fatalf("a poisoned writer accepted an append: %v", err)
 	}
 }
+
+// batchTwo continues twoEvents, so a test can confirm one batch and then fail
+// on the next. The writer checks sequence continuity and not domain sense.
+func batchTwo() []session.Event {
+	return []session.Event{
+		session.SessionOpened{
+			Envelope:  session.Envelope{Time: 3_000, Sequence: 3, Kind: session.KindSessionOpened},
+			SessionID: "d2", BalanceCts: 5_000_000, EquityCts: 5_000_000,
+		},
+	}
+}
+
+// Scenario: a poisoned writer hands out no anchor
+//
+//	Given a writer that confirmed one batch and then failed to sync the next
+//	When an anchor is asked for
+//	Then it is refused, because the writer can no longer say what is on disk
+//	  and a digest that cannot be said to cover the file is a reference to
+//	  bytes nothing vouches for — which is the one thing an anchor is for.
+func TestAPoisonedWriterHandsOutNoAnchor(t *testing.T) {
+	path := tempJournal(t)
+	w, err := OpenWriter(path, DurableEveryBatch)
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	defer w.Close()
+
+	if _, err := w.Append(twoEvents()); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := w.Anchor(); err != nil {
+		t.Fatalf("Anchor after a confirmed batch: %v", err)
+	}
+
+	original := syncFile
+	syncFile = func(f *os.File) error { return errInjected }
+	if _, err := w.Append(batchTwo()); !errors.Is(err, ErrPoisoned) {
+		syncFile = original
+		t.Fatalf("Append: got %v, want ErrPoisoned", err)
+	}
+	syncFile = original
+
+	if _, err := w.Anchor(); !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("a poisoned writer produced an anchor: %v", err)
+	}
+}
