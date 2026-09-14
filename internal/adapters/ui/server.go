@@ -79,6 +79,10 @@ type Server struct {
 	cursor  int
 	cfg     session.Config
 
+	// lastStep is the last step this server applied, and it is touched only on
+	// the loop. See stepRecord.
+	lastStep stepRecord
+
 	lease *lease
 
 	// commands is the only way to the kernel. Handlers post to it and wait;
@@ -195,14 +199,11 @@ func (s *Server) resume(recovered *persistence.Journal, feed *marketdata.Feed) e
 	s.session, s.cfg, s.cursor = resumed, state.Config, consumed
 
 	// A restart continues above every segment the journal already holds, so
-	// that a lease never reuses a number whose decisions are recorded.
-	var highest uint64
-	for _, act := range state.Gestures {
-		if act.Decided.Segment > highest {
-			highest = act.Decided.Segment
-		}
-	}
-	s.lease = newLease(highest, s.now)
+	// that a lease never reuses a number anything in it is stamped with. The
+	// chronology is asked rather than the commands counted: a run in which the
+	// person only advanced and confirmed stamps presentations and no command,
+	// and counting commands granted that run's number a second time.
+	s.lease = newLease(state.InteractionSegment(), s.now)
 	return nil
 }
 
@@ -250,6 +251,7 @@ func (s *Server) listen(addr string) error {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/control", s.handleControl)
 	mux.HandleFunc("/api/acknowledge", s.handleAcknowledge)
+	mux.HandleFunc("/api/step", s.handleStep)
 	mux.HandleFunc("/api/command", s.handleCommand)
 	s.http = &http.Server{Handler: s.guard(mux)}
 	return nil

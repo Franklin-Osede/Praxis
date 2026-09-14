@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"praxis/internal/adapters/marketdata"
 	"praxis/internal/market"
 	"praxis/internal/session"
 )
@@ -29,12 +30,14 @@ const (
 	ReasonLeaseStale      Reason = "lease_stale"
 	ReasonGestureConflict Reason = "gesture_conflict"
 	ReasonWrongRun        Reason = "wrong_run"
+	ReasonStaleStep       Reason = "stale_step"
 
 	// 422: the session refuses this command now.
 	ReasonOutOfOrder      Reason = "out_of_order"
 	ReasonNotPresented    Reason = "not_presented"
 	ReasonEvaluationEnded Reason = "evaluation_ended"
 	ReasonNoSessionOpen   Reason = "no_session_open"
+	ReasonFeedExhausted   Reason = "feed_exhausted"
 	ReasonRefused         Reason = "refused"
 
 	// 503: the session has stopped.
@@ -73,6 +76,8 @@ func classify(err error) (int, refusal) {
 		return http.StatusConflict, refusal{ReasonGestureConflict, err.Error()}
 	case errors.Is(err, errWrongSegment):
 		return http.StatusConflict, refusal{ReasonWrongRun, err.Error()}
+	case errors.Is(err, errStaleStep):
+		return http.StatusConflict, refusal{ReasonStaleStep, err.Error()}
 	case errors.Is(err, errUnknownKind):
 		return http.StatusBadRequest, refusal{ReasonUnreadable, err.Error()}
 	case errors.Is(err, market.ErrNotCanonicalInt):
@@ -88,6 +93,8 @@ func classify(err error) (int, refusal) {
 		return http.StatusUnprocessableEntity, refusal{ReasonEvaluationEnded, err.Error()}
 	case errors.Is(err, session.ErrNoSessionOpen):
 		return http.StatusUnprocessableEntity, refusal{ReasonNoSessionOpen, err.Error()}
+	case errors.Is(err, marketdata.ErrFeedExhausted):
+		return http.StatusUnprocessableEntity, refusal{ReasonFeedExhausted, err.Error()}
 	default:
 		return http.StatusUnprocessableEntity, refusal{ReasonRefused, err.Error()}
 	}

@@ -149,6 +149,18 @@ type ReplayedState struct {
 	Events       []Event
 }
 
+// InteractionSegment is the highest run of interaction any stamped event in the
+// journal belongs to: a decision, a derived event with a person behind it, or a
+// presentation.
+//
+// A restart has to continue above it, and the chronology is where that number
+// already lives. An adapter that recomputed it from commands alone — which is
+// what the interface did — would miss a run in which a person only looked, and
+// grant that run's number again; its first confirmation would then be refused as
+// out of order and the journal could not be continued. With manual advance a run
+// of looking without trading is the ordinary run, not a rare one.
+func (r *ReplayedState) InteractionSegment() uint64 { return r.clock.segment }
+
 // Replay rebuilds a session's whole state from its journal, and proves the
 // journal while doing it.
 //

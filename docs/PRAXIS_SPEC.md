@@ -1434,8 +1434,8 @@ and it is the same fix as `%w` one layer in.
 | status | what it means | reasons |
 |---|---|---|
 | 400 | the bytes are wrong | unreadable body, non-canonical integer, invalid identifier, unknown tag |
-| 409 | something is already taken | lease held, lease stale, same gesture with a different command |
-| 422 | the session refuses this command now | reading out of order, nothing presented, evaluation ended, no session open |
+| 409 | something is already taken | lease held, lease stale, same gesture with a different command, an act naming a run it does not belong to, a step from a row no longer on the screen |
+| 422 | the session refuses this command now | reading out of order, nothing presented, evaluation ended, no session open, no row after the last one |
 | 503 | the session has stopped | needs recovery, and the screen says so |
 
 **The retry is recognised in the handler, so `ErrGestureReused` becomes
@@ -1446,14 +1446,50 @@ caller, which is what every test in the suite is. It has a test of its own —
 the same gesture twice must not reach the kernel — so the interception is a
 decision and not an accident of the order two lines are written in.
 
-**The acknowledgement is idempotent by content, and the other four by name.**
-It carries no gesture. Its identity *is* its content — the segment and the
-observation — so there is no "same name, different command" case for it to
-have, which is why it needs no name. Repeating it records nothing and answers
-200, and it answers before the chronology is consulted, deliberately: a retry
-carries the reading it originally sent, which the log has legitimately moved
-past by then. Two forms of idempotency in one API is a hazard, so a client
-author is told which is which here rather than discovering it.
+**The acknowledgement and the step are idempotent by content, and the four
+commands by name.** Neither carries a gesture. The acknowledgement's identity
+*is* its content — the segment and the observation — so there is no "same name,
+different command" case for it to have, which is why it needs no name. Repeating
+it records nothing and answers 200, and it answers before the chronology is
+consulted, deliberately: a retry carries the reading it originally sent, which
+the log has legitimately moved past by then. Two forms of idempotency in one API
+is a hazard, so a client author is told which is which here rather than
+discovering it.
+
+**A step names the row it advances from, and that is its whole identity.** It
+is not a decision the journal records as one: the row it produces is recorded,
+and the time a person took before asking for the next is the gap between two
+presentations. So it has no gesture, and a lost response is the case it has to
+survive — applied twice, a retry would put a row in the journal that nobody saw
+and the journal would not say one was skipped. The body carries
+`fromObservedSequence`, the observation the state named when the person asked;
+absent is the empty string, for a session that has shown nothing, and zero is
+refused as a second spelling of that. The order of its checks is a decision:
+
+1. A step from a row that is not on the screen is a **retry** if the last step
+   in the same run started from that row and nothing has moved since, and is
+   answered with the state. Otherwise it is **stale** and refused. A retry means
+   something only inside the lease that sent it; a restart grants a new one, and
+   a request from the old one is refused before this is asked.
+2. The row on the screen must have been **confirmed in this run** before the
+   market moves past it. A row that passed with no presentation would be a hole
+   in the one quantity the pilots record. A session that has shown nothing has
+   nothing to confirm.
+3. Only then is a row applied, and the file running out or the evaluation
+   having ended are refused before anything is written.
+
+The retry is answered before the confirmation is asked for, the order the
+acknowledgement answers its own retry in: a lost response leaves a row the
+client never saw and so never confirmed. The row itself is applied by
+`marketdata.Step`, the same function `Drive` loops over, so a run advanced by
+hand and a run driven to the end cannot apply a row differently.
+
+**A restart continues above every run the chronology holds, not every run that
+issued a command.** With manual advance, a run in which a person only looked
+and confirmed is the ordinary run. Counting commands to find the highest segment
+granted that run's number again, and its first confirmation was refused as out
+of order — a journal nobody could continue. The number comes from the
+interaction clock, which every stamped class already advances.
 
 ### One chronology, five stamped events, three classes
 

@@ -31,7 +31,8 @@ func tickingClock() ui.Clock {
 
 // Scenario: a journal written through the interface is a journal
 //
-//	Given the same acts taken through HTTP and taken directly
+//	Given the same acts taken through HTTP and taken directly, from an empty
+//	  journal and the first row of the file
 //	Then the two journals are byte for byte identical.
 //
 // It is the analogue of the CLI's resumed-run comparison for the human edge,
@@ -39,13 +40,19 @@ func tickingClock() ui.Clock {
 // intention: everything the participant does has to arrive at the kernel as the
 // same commands a test would call, and leave the same bytes behind.
 //
+// It starts from nothing and advances by steps, interleaved with confirmations
+// and a command. It used to start from a journal already driven to the end of
+// its file, and so it compared the one state no participant is ever in: the
+// advance, the boundary logic and the confirmation between steps were not
+// covered at all, which is how a server that could not move the market passed.
+//
 // The comparison is only possible because the server stamps and the clock is
 // injected. If the browser stamped, the two runs would carry whatever it sent
 // and this test would be comparing the fixture to itself.
 func TestAJournalWrittenThroughTheInterfaceIsAJournal(t *testing.T) {
 	dir := t.TempDir()
 	marketPath := filepath.Join(dir, "market.csv")
-	if err := os.WriteFile(marketPath, []byte(thinBook), 0o600); err != nil {
+	if err := os.WriteFile(marketPath, []byte(marketFile), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -68,14 +75,13 @@ func TestAJournalWrittenThroughTheInterfaceIsAJournal(t *testing.T) {
 	}
 }
 
-// driveThroughHTTP takes the controls, confirms the observation and submits an
-// order with protection, and returns the segment the server issued.
+// driveThroughHTTP opens an empty journal, takes the controls, and walks the file:
+// a step, a confirmation, an order with protection, another step, another
+// confirmation. It returns the segment the server issued.
 func driveThroughHTTP(t *testing.T, marketPath, journalPath string) uint64 {
 	t.Helper()
-	writeJournal(t, marketPath, journalPath, pilotConfig(), false)
-
 	s, err := ui.Open(ui.Options{
-		Market: marketPath, Journal: journalPath, Now: tickingClock(),
+		Market: marketPath, Journal: journalPath, New: pilotConfig(), Now: tickingClock(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -89,13 +95,8 @@ func driveThroughHTTP(t *testing.T, marketPath, journalPath string) uint64 {
 		t.Fatal(err)
 	}
 
-	ack := acknowledge(t, s, map[string]string{
-		"lease": control.Lease, "observedSequence": observedSequenceOf(t, s),
-	})
-	defer ack.Body.Close()
-	if ack.StatusCode != http.StatusOK {
-		t.Fatalf("acknowledging: status %d, reason %q", ack.StatusCode, reasonOf(t, ack))
-	}
+	first := stepOK(t, s, control.Lease, "")
+	confirm(t, s, control.Lease, first.ObservedSequence)
 
 	resp := postCommand(t, s, map[string]string{
 		"kind": "submit_order", "lease": control.Lease,
@@ -107,15 +108,20 @@ func driveThroughHTTP(t *testing.T, marketPath, journalPath string) uint64 {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("submitting: status %d, reason %q", resp.StatusCode, reasonOf(t, resp))
 	}
+
+	second := stepOK(t, s, control.Lease, first.ObservedSequence)
+	if second.Cursor != second.Observations {
+		t.Fatalf("the walk did not reach the end of the file: %+v", second)
+	}
+	confirm(t, s, control.Lease, second.ObservedSequence)
 	return segment
 }
 
-// driveDirectly performs the same acts against the session, stamped with the
-// same clock the server would have used.
+// driveDirectly performs the same acts against a session built the way the
+// server builds one, stamped with the clock the server would have used, and
+// advanced by the same function the server calls.
 func driveDirectly(t *testing.T, marketPath, journalPath string, segment uint64) {
 	t.Helper()
-	writeJournal(t, marketPath, journalPath, pilotConfig(), false)
-
 	feed, err := marketdata.ReadFile(marketPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -126,27 +132,38 @@ func driveDirectly(t *testing.T, marketPath, journalPath string, segment uint64)
 	}
 	defer w.Close()
 
-	state, err := session.Replay(w.Recovered().Events())
+	cfg := pilotConfig()
+	cfg.Instrument = feed.Instrument
+	s, err := session.New(cfg, feed.Observations[0].Quote.Time, w)
 	if err != nil {
-		t.Fatalf("Replay: %v", err)
-	}
-	s, err := session.Resume(state, w)
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 
-	// The same clock, at the same points: the lease is granted, then the
-	// acknowledgement arrives, then the command does.
+	// The same clock, at the same points. A step stamps nothing — it is not a
+	// decision — so only the lease, the confirmations and the command read it.
 	clock := tickingClock()
 	clock() // granting the lease
-	ackAt := instantAt(clock(), segment)
-	if err := s.AcknowledgePresentation(
-		session.PresentationID{Segment: segment, ObservedSequence: s.LastObserved()}, ackAt,
-	); err != nil {
-		t.Fatalf("AcknowledgePresentation: %v", err)
-	}
-	commandAt := instantAt(clock(), segment)
 
+	stepTo := func(row int) {
+		t.Helper()
+		if _, err := marketdata.Step(s, feed, row); err != nil {
+			t.Fatalf("Step(%d): %v", row, err)
+		}
+	}
+	confirmHere := func() {
+		t.Helper()
+		if err := s.AcknowledgePresentation(
+			session.PresentationID{Segment: segment, ObservedSequence: s.LastObserved()},
+			instantAt(clock(), segment),
+		); err != nil {
+			t.Fatalf("AcknowledgePresentation: %v", err)
+		}
+	}
+
+	stepTo(0)
+	confirmHere()
+
+	commandAt := instantAt(clock(), segment)
 	entry, err := market.NewMarketOrder("e-1", feed.Instrument, market.SideBuy, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -159,6 +176,9 @@ func driveDirectly(t *testing.T, marketPath, journalPath string, segment uint64)
 	}); err != nil {
 		t.Fatalf("SubmitOrderWithProtection: %v", err)
 	}
+
+	stepTo(1)
+	confirmHere()
 }
 
 // instantAt is the stamp the lease would have produced: the wall reading, and
