@@ -3,10 +3,13 @@ package ui
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"praxis/internal/adapters/persistence"
+	"praxis/internal/session"
 )
 
 // Scenario: closing twice is not a crash
@@ -64,5 +67,70 @@ func TestTakingTheControlsWhenTheLoopIsGoneSpendsNothing(t *testing.T) {
 	}
 	if s.lease.highest != 4 {
 		t.Fatalf("segment: got %d, want the 4 it started at", s.lease.highest)
+	}
+}
+
+// Scenario: closing waits for the command the loop already accepted
+//
+//	Given a command the loop has accepted and is still running
+//	When the server is closed
+//	Then Close does not return, and the journal is not closed, until the
+//	  command has finished — and its commit succeeds.
+//
+// A signal arriving mid-commit used to close the writer under the command, and
+// the command's append failed against a closed file: a torn tail, recoverable,
+// and a pilot session interrupted for no reason but the order of two lines.
+// What the loop received it finishes; what it did not receive is refused.
+func TestCloseWaitsForTheCommandTheLoopAccepted(t *testing.T) {
+	dir := t.TempDir()
+	marketPath := filepath.Join(dir, "market.csv")
+	if err := os.WriteFile(marketPath, []byte("praxis.market.v1,MNQ,50\n"+
+		"time,sequence,session_id,bid,ask,bid_size,ask_size\n"+
+		"3000,1,d1,20000,20001,10,10\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err := Open(Options{Market: marketPath, Journal: filepath.Join(dir, "journal.praxis"), New: internalPilotConfig()})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	go s.Serve()
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	appended := make(chan error, 1)
+	go func() {
+		_ = s.ask(func() {
+			close(entered)
+			<-release
+			// A commit, straight to the writer: what matters is whether the
+			// file is still open when an accepted command reaches it.
+			_, err := s.writer.Append([]session.Event{session.SessionOpened{
+				Envelope:  session.Envelope{Time: 9_000, Sequence: s.writer.NextSequence(), Kind: session.KindSessionOpened},
+				SessionID: "late", BalanceCts: 5_000_000, EquityCts: 5_000_000,
+			}})
+			appended <- err
+		})
+	}()
+	<-entered
+
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned (%v) while the loop was still running a command it had accepted", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-appended; err != nil {
+		t.Fatalf("the accepted command's commit failed: %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// And nothing reaches a loop that has stopped: a later request is refused
+	// on the done branch rather than left waiting for a loop that is gone.
+	if err := s.ask(func() { t.Error("a command ran after Close") }); err == nil {
+		t.Fatal("a request after Close was accepted")
 	}
 }

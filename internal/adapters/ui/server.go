@@ -101,6 +101,12 @@ type Server struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
+	// stopped is closed by the loop when it returns, and created only by the
+	// code that starts it. A server whose loop never started has none, so Close
+	// has nothing to wait for rather than waiting forever for a loop that does
+	// not exist.
+	stopped chan struct{}
+
 	listener net.Listener
 	http     *http.Server
 	origin   string
@@ -156,6 +162,7 @@ func Open(opts Options) (*Server, error) {
 	if s.handover != nil {
 		s.handover(key)
 	}
+	s.stopped = make(chan struct{})
 	go s.loop()
 	return s, nil
 }
@@ -299,6 +306,18 @@ func (s *Server) Serve() error {
 // can run. A close of a closed channel is a
 // panic that takes the process down while it is shutting down cleanly — which
 // is the one moment a journal is most likely to be mid-commit.
+//
+// It waits for the loop to stop before closing the journal. The loop finishes
+// whatever command it already accepted — a command half run is a commit half
+// made — and a request that did not get in is refused on the done branch of ask.
+// Closing the writer first put a signal arriving mid-commit under the command,
+// and its append failed against a closed file.
+//
+// So Close must never be called from a function the loop is running: it would
+// wait for itself. Nothing does, and it cannot be enforced from here — which
+// goroutine is calling is not something Go lets a function ask, and a flag set
+// while a command runs would make an outside Close during a command skip the
+// very wait this exists for.
 func (s *Server) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
@@ -306,6 +325,9 @@ func (s *Server) Close() error {
 			s.http.Close()
 		}
 		close(s.done)
+		if s.stopped != nil {
+			<-s.stopped
+		}
 		err = s.writer.Close()
 	})
 	return err
@@ -313,6 +335,7 @@ func (s *Server) Close() error {
 
 // loop is the only goroutine that touches the session.
 func (s *Server) loop() {
+	defer close(s.stopped)
 	for {
 		select {
 		case run := <-s.commands:
