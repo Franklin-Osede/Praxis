@@ -65,6 +65,14 @@ type Options struct {
 	// adapter that can be tested and one that cannot.
 	Now Clock
 
+	// Handover is how the operator is shown the key that lets the controls be
+	// taken from whoever holds them. It is called once when the server opens and
+	// again after every transfer, with the key that replaces the one just spent.
+	//
+	// Nil leaves the key unshown, which fails closed: the controls can still be
+	// taken when nobody holds them, and never from someone who does.
+	Handover func(key string)
+
 	// New is the configuration for a journal that does not exist yet. It is
 	// ignored for one that does — a resumed run cannot be reconfigured,
 	// because its account and evaluation already have a history.
@@ -96,6 +104,8 @@ type Server struct {
 	listener net.Listener
 	http     *http.Server
 	origin   string
+
+	handover func(key string)
 }
 
 // Open recovers a journal, refuses one this interface must not drive, and takes
@@ -136,6 +146,15 @@ func Open(opts Options) (*Server, error) {
 	if err := s.listen(addr); err != nil {
 		writer.Close()
 		return nil, err
+	}
+	key, err := s.lease.mintHandover()
+	if err != nil {
+		writer.Close()
+		return nil, err
+	}
+	s.handover = opts.Handover
+	if s.handover != nil {
+		s.handover(key)
 	}
 	go s.loop()
 	return s, nil
@@ -366,11 +385,29 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	take := s.lease.acquire
+	var (
+		token   string
+		segment uint64
+		err     error
+	)
 	if r.URL.Query().Get("transfer") == "yes" {
-		take = s.lease.transfer
+		var body struct {
+			Handover string `json:"handover"`
+		}
+		// An absent or unreadable body presents no key, and is refused as one.
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		var next string
+		token, segment, next, err = s.lease.transfer(body.Handover)
+		if errors.Is(err, ErrHandoverRefused) {
+			s.refuse(w, err)
+			return
+		}
+		if err == nil && s.handover != nil {
+			s.handover(next)
+		}
+	} else {
+		token, segment, err = s.lease.acquire()
 	}
-	token, segment, err := take()
 	if errors.Is(err, ErrControllerActive) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

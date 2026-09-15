@@ -144,10 +144,10 @@ func TestOnlyOneClientTakesTheControls(t *testing.T) {
 // slow to land. It is refused on arrival rather than by when it was sent.
 func TestATransferInvalidatesTheLeaseItReplaced(t *testing.T) {
 	marketPath, journalPath := paths(t)
-	s := open(t, marketPath, journalPath, pilotConfig())
+	s, keys := openWithHandover(t, marketPath, journalPath, pilotConfig())
 
 	first := takeControl(t, s)
-	second := post(t, s, "/api/control?transfer=yes")
+	second := transfer(t, s, keys.latest(t))
 	defer second.Body.Close()
 	if second.StatusCode != http.StatusOK {
 		t.Fatalf("transfer: got %d", second.StatusCode)

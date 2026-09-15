@@ -1377,7 +1377,7 @@ taking a new lease opens a higher segment
 an old lease is never valid again
 a second tab is refused: 409, someone else is controlling
 losing the view may reconnect on the same lease
-handing control over is explicit, and opens a new segment
+handing control over is explicit, needs the operator's handover key, and opens a new segment
 ```
 
 The lease token is infrastructure and never enters the journal. `Segment` does,
@@ -1393,6 +1393,21 @@ over.
 
 One active connection: a second tab is a second hand on the wheel, and the
 kernel's inputs must arrive in one order.
+
+**Taking the controls from their holder needs a key only the operator's console
+shows, and it works once.** There is no way to give a lease up, so a closed tab
+keeps its lease and the next one is refused; the transfer exists for exactly that
+case, which is why it cannot ask for the current lease — its holder is the one
+that is gone. Without anything to present, any process on the machine could take
+a participant's controls, and its decisions would enter their journal as theirs:
+the one failure of the adapter that contaminates the record rather than its
+availability. So `praxis ui` prints a handover key when it starts, a transfer must
+present it, and the transfer spends it and prints the next one. The key is checked,
+the controls granted and the key replaced under one lock, so two transfers racing
+on one key grant one. Like the lease token it is infrastructure randomness and
+never enters a journal. A server given no way to show the key still mints one,
+which fails closed: controls nobody holds can be taken, and controls somebody holds
+cannot.
 
 Three smaller decisions, settled the same way:
 
@@ -1474,6 +1489,7 @@ and it is the same fix as `%w` one layer in.
 | status | what it means | reasons |
 |---|---|---|
 | 400 | the bytes are wrong | unreadable body, non-canonical integer, invalid identifier, unknown tag |
+| 403 | the request lacks what the operator must hand it | a transfer without the current handover key |
 | 409 | something is already taken | lease held, lease stale, same gesture with a different command, an act naming a run it does not belong to, a step from a row no longer on the screen |
 | 422 | the session refuses this command now | reading out of order, nothing presented, evaluation ended, no session open, no row after the last one |
 | 503 | the session has stopped | needs recovery, and the screen says so |

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"praxis/internal/adapters/ui"
@@ -38,8 +39,27 @@ func uiCommand(args []string, out, errOut *os.File) int {
 		return exitFatal
 	}
 
+	// The handover key is printed here and nowhere else: it is what lets the
+	// controls be taken from a tab that is gone, so it belongs to whoever sits at
+	// this console. Each transfer spends it and the next one is printed.
+	// Called from the opening goroutine and then from request handlers, so the
+	// count it keeps is held under a lock.
+	var (
+		printing  sync.Mutex
+		handovers int
+	)
 	server, err := ui.Open(ui.Options{
 		Market: operands[0], Journal: *journalPath, Addr: *addr,
+		Handover: func(key string) {
+			printing.Lock()
+			defer printing.Unlock()
+			if handovers == 0 {
+				fmt.Fprintf(out, "handover: %s  (takes the controls from a tab that is gone; works once)\n", key)
+			} else {
+				fmt.Fprintf(out, "handover: %s  (the previous key was used to take the controls)\n", key)
+			}
+			handovers++
+		},
 		New: session.Config{
 			SubjectID: *subject,
 			// This interface produces pilot journals and says so in the

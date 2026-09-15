@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -35,6 +36,12 @@ var (
 	// or replaced. It can arrive after the transfer — a slow request sent
 	// before it — and is refused on arrival rather than by when it was sent.
 	ErrStaleLease = errors.New("ui: this lease is no longer the controller")
+
+	// ErrHandoverRefused reports a request to take the controls from whoever
+	// holds them that did not present the operator's current handover key.
+	// Without the key, any process on the machine could take a participant's
+	// controls and its decisions would enter their journal as theirs.
+	ErrHandoverRefused = errors.New("ui: taking the controls needs the handover key the operator was shown")
 )
 
 // lease is who is driving, and which run of uninterrupted interaction their
@@ -66,6 +73,15 @@ type lease struct {
 	// fixture carries no monotonic reading, so Sub fell back to the wall
 	// difference and the two were indistinguishable under injection.
 	startedMono time.Duration
+
+	// handover is the key a transfer must present, and it is spent by the
+	// transfer that presents it. It lives here, under the same mutex as the
+	// token, so that checking it, granting the controls and replacing it are one
+	// act: two transfers racing on one key cannot both be granted.
+	//
+	// It is infrastructure randomness like the token and never enters a
+	// journal. Only the operator's console shows it.
+	handover string
 
 	// now is the clock this lease stamps with. Injected so a test can produce
 	// the same journal twice, and so that a wall clock going backwards while
@@ -99,10 +115,53 @@ func (l *lease) acquire() (token string, segment uint64, err error) {
 
 // transfer takes control from whoever has it. It is explicit, because control
 // changing hands silently is how two people end up believing they are driving.
-func (l *lease) transfer() (token string, segment uint64, err error) {
+//
+// It cannot ask for the current lease, because it exists for the case in which
+// the holder is gone: a closed tab keeps its lease and nothing can present it.
+// So it asks for the operator's handover key instead, spends it, and returns
+// the key that replaces it so the operator can be shown the next one. The
+// replacement is minted before the controls change hands, so a transfer that
+// cannot mint one changes nothing.
+func (l *lease) transfer(presented string) (token string, segment uint64, next string, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.grant()
+	// Compared in constant time, and refused outright when no key has been
+	// minted, so an empty presentation never matches an empty key.
+	if l.handover == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(l.handover)) != 1 {
+		return "", 0, "", ErrHandoverRefused
+	}
+	next, err = randomHex()
+	if err != nil {
+		return "", 0, "", fmt.Errorf("ui: cannot mint a handover key: %w", err)
+	}
+	token, segment, err = l.grant()
+	if err != nil {
+		return "", 0, "", err
+	}
+	l.handover = next
+	return token, segment, next, nil
+}
+
+// mintHandover replaces the handover key and returns it. It is called when a
+// server opens, to hand the operator the first one.
+func (l *lease) mintHandover() (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key, err := randomHex()
+	if err != nil {
+		return "", fmt.Errorf("ui: cannot mint a handover key: %w", err)
+	}
+	l.handover = key
+	return key, nil
+}
+
+// randomHex is 128 bits of infrastructure randomness, spelled as hex.
+func randomHex() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
 }
 
 // grant mints a lease. The caller holds the mutex.
@@ -110,11 +169,11 @@ func (l *lease) grant() (string, uint64, error) {
 	// Infrastructure randomness, and it never reaches the kernel: nothing in a
 	// journal depends on this value, so rule 3's requirement that randomness
 	// be injected and its seed recorded is about a different thing entirely.
-	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
+	token, err := randomHex()
+	if err != nil {
 		return "", 0, fmt.Errorf("ui: cannot mint a lease: %w", err)
 	}
-	l.token = hex.EncodeToString(raw)
+	l.token = token
 	l.highest++
 	l.segment = l.highest
 	// A new run of interaction begins here, so its readings start here too.

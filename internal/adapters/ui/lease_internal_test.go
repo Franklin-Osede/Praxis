@@ -28,7 +28,11 @@ func TestALeaseThatHasBeenReplacedNoLongerControls(t *testing.T) {
 		t.Fatalf("acquire: got %v, want %v", err, ErrControllerActive)
 	}
 
-	second, secondSegment, err := l.transfer()
+	key, err := l.mintHandover()
+	if err != nil {
+		t.Fatalf("mintHandover: %v", err)
+	}
+	second, secondSegment, _, err := l.transfer(key)
 	if err != nil {
 		t.Fatalf("transfer: %v", err)
 	}

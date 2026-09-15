@@ -25,6 +25,9 @@ const (
 	ReasonNotCanonical      Reason = "not_canonical"
 	ReasonInvalidIdentifier Reason = "invalid_identifier"
 
+	// 403: the request lacks what the operator must have handed it.
+	ReasonHandoverRefused Reason = "handover_refused"
+
 	// 409: something is already taken.
 	ReasonLeaseHeld       Reason = "lease_held"
 	ReasonLeaseStale      Reason = "lease_stale"
@@ -68,6 +71,8 @@ func classify(err error) (int, refusal) {
 	switch {
 	case errors.Is(err, session.ErrSessionNeedsRecovery):
 		return http.StatusServiceUnavailable, refusal{ReasonNeedsRecovery, err.Error()}
+	case errors.Is(err, ErrHandoverRefused):
+		return http.StatusForbidden, refusal{ReasonHandoverRefused, err.Error()}
 	case errors.Is(err, ErrControllerActive):
 		return http.StatusConflict, refusal{ReasonLeaseHeld, err.Error()}
 	case errors.Is(err, ErrStaleLease):

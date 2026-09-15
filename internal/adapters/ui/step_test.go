@@ -209,13 +209,13 @@ func TestAStepPastTheLastRowIsRefused(t *testing.T) {
 // Scenario: a step from a lease that was handed over is refused
 func TestAStepFromAHandedOverLeaseIsRefused(t *testing.T) {
 	marketPath, journalPath := paths(t)
-	s := open(t, marketPath, journalPath, pilotConfig())
+	s, keys := openWithHandover(t, marketPath, journalPath, pilotConfig())
 	old := takeControl(t, s)
 
-	transfer := post(t, s, "/api/control?transfer=yes")
-	transfer.Body.Close()
-	if transfer.StatusCode != http.StatusOK {
-		t.Fatalf("transfer: status %d", transfer.StatusCode)
+	took := transfer(t, s, keys.latest(t))
+	took.Body.Close()
+	if took.StatusCode != http.StatusOK {
+		t.Fatalf("transfer: status %d", took.StatusCode)
 	}
 
 	refused(t, step(t, s, old.Lease, ""), http.StatusConflict, "lease_stale")
