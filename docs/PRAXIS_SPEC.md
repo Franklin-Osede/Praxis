@@ -456,6 +456,46 @@ provider data -> normalizer (calendar, time zone) -> canonical file -> adapter -
 
 An adapter reads a stream it can vouch for; it does not decide what a day is.
 
+### An observation belongs to a trading session
+
+`Observe` refuses a quote when no trading session is open, before anything is
+written, and `Replay` refuses a journal holding one as a structural fault. It is
+one rule on both sides, and it has a second half the writer already kept:
+`Observe` refuses market once the evaluation has ended, and `Replay` now refuses a
+journal that records some.
+
+The reason is the rule about waiting orders: every observation is offered to what
+is waiting before the account is revalued, so the valuation an observation
+records already contains what that observation caused. With no session open there
+is nothing to offer a quote to, and accepting it anyway moved the last book past a
+price no stop had seen. The next `OpenTradingSession` then valued the account
+against that price — and could end the evaluation inside the batch that opened the
+session, against a book the execution never saw. Nothing on either side caught
+it, because the reader only asked survivors to explain themselves when it judged
+something had been offered — and it judged that nothing was offered with no
+session open, or after the evaluation ended.
+
+That judgement was the two refused cases under another name. With both refused,
+every observation the reader accepts was offered to what was waiting, and the
+condition under which a survivor owes an explanation is simply that there is a
+last book. The flag that carried the judgement is gone. A journal forged to add
+market after a failure, walking through a stop still waiting, used to replay
+clean; it is now a structural fault.
+
+With the rule, an evaluation cannot end in the batch that opens a session, by
+construction. Between the last observation of one session and the open of the
+next nothing can change the book or the account: no quote is accepted, and fills
+only happen when a quote is offered. So the valuation an open records is the last
+one of the session before it, already evaluated against the static floor, the
+trailing threshold and the target, and the daily reference is set to that same
+equity, so the daily rule reads zero. The market that would have crossed a stop
+between two sessions arrives inside the next one instead, and the stop is offered
+it first.
+
+No file-driven adapter ever produced the refused state — `Consumed` already
+requires every observation to sit in the session the file assigns it — and no
+frozen payload contains one.
+
 ### A failed commit stops the session for good
 
 A command executes in memory and its events are then committed as one batch. If

@@ -521,13 +521,19 @@ func TestAProtectiveLevelTheMarketReachedCannotGoOnWaiting(t *testing.T) {
 	}
 }
 
-// Scenario: nothing is asked of an order no session was open to offer it to
+// Scenario: a stop the market reaches between sessions is offered that market
+// inside the next one
 //
-// The live session offers an observation to what is waiting only while a
-// trading session is open and the evaluation has not ended. A reader that
-// demanded an explanation from an order nobody offered anything to would
-// reject a journal the engine itself produces.
-func TestAnOrderNobodyWasOfferedIsAskedNothing(t *testing.T) {
+// This test used to let the market walk through a waiting stop with no session
+// open, and hold that the reader asked nothing of an order nobody offered
+// anything to. That state no longer exists. An observation with no session open
+// is refused before it is written, because it was the case in which the last
+// book moved past a price no stop had seen — and the next open valued the
+// account against it. So the same market, arriving between two sessions, is
+// refused; arriving inside the next session, it is offered to the stop before
+// the account is revalued, and the stop fills, which is the rule the waiting
+// order was always owed.
+func TestAStopIsOfferedTheMarketThatReachesItAcrossABoundary(t *testing.T) {
 	s := newSession(t)
 	mustOpen(t, s, 2_000, "d1")
 	mustObserve(t, s, sized(3_000, 20_000, 20_001, 50))
@@ -536,13 +542,18 @@ func TestAnOrderNobodyWasOfferedIsAskedNothing(t *testing.T) {
 		t.Fatalf("EndTradingSession: %v", err)
 	}
 
-	// The market walks straight through the stop with no session open, so
-	// nothing is offered it and nothing happens to it.
-	mustObserve(t, s, sized(5_000, 19_800, 19_801, 50))
-	mustObserve(t, s, sized(6_000, 19_700, 19_701, 50))
-
+	if err := s.Observe(sized(5_000, 19_800, 19_801, 50), 1); !errors.Is(err, session.ErrNoSessionOpen) {
+		t.Fatalf("a quote between sessions: got %v, want ErrNoSessionOpen", err)
+	}
 	if len(s.WorkingOrders()) != 1 {
-		t.Fatalf("working: got %+v, want the stop untouched", s.WorkingOrders())
+		t.Fatalf("working: got %+v, want the stop untouched by a refused quote", s.WorkingOrders())
+	}
+
+	mustOpen(t, s, 5_500, "d2")
+	mustObserve(t, s, sized(6_000, 19_800, 19_801, 50))
+
+	if len(s.WorkingOrders()) != 0 {
+		t.Fatalf("working: got %+v, want the stop filled by the market that reached it", s.WorkingOrders())
 	}
 	checked(t, s)
 }

@@ -689,6 +689,16 @@ func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 	if s.ended() {
 		return ErrChallengeEnded
 	}
+	// An observation belongs to a trading session, and is refused before
+	// anything is written when none is open. Waiting orders and protections are
+	// offered every observation before the account is revalued, and with no
+	// session open nothing can be offered it — so accepting it would move the
+	// last book past a price no stop had seen, and the next open would value
+	// the account against that price inside the batch that opens the session.
+	// Replay holds journals to the same rule.
+	if !s.sessionOpen {
+		return fmt.Errorf("%w: an observation at %d has no session to belong to", ErrNoSessionOpen, q.Time)
+	}
 	if q.Instrument != s.cfg.Instrument {
 		return ErrWrongInstrument
 	}
@@ -706,10 +716,8 @@ func (s *Session) observe(q market.Quote, sourceSequence uint64) error {
 	s.lastQuote, s.hasQuote, s.observedThisSession = q, true, true
 	s.lastObserved = s.sequence
 
-	if s.sessionOpen {
-		if err := s.offerObservation(q.Time); err != nil {
-			return err
-		}
+	if err := s.offerObservation(q.Time); err != nil {
+		return err
 	}
 	return s.revalue(q.Time)
 }

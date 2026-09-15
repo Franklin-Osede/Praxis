@@ -171,13 +171,12 @@ func TestAStepFromOutsideTheFileIsRefused(t *testing.T) {
 // observation after it — a session opened on an evaluation it then ended, which
 // is what "the journal ends where the evaluation ends" says a run must not do.
 //
-// Through Step it cannot, and this holds the reason rather than the conclusion.
-// Step never lets an observation land with no session open: it ends a session and
-// opens the next in the same call, immediately before observing. So the quote and
-// the account an open values are the ones the last valuation of the previous
-// session already evaluated, and a valuation already evaluated cannot cross a
-// threshold it did not cross. The daily reference is set to that same equity, so
-// the daily rule cannot fire at the open either.
+// It cannot, and the reason now belongs to the kernel: an observation with no
+// session open is refused, so nothing moves the book or the account between one
+// session's last valuation and the next open, and the valuation an open records
+// is one already evaluated. TestAnEvaluationCannotEndInTheBatchThatOpensASession
+// holds that in the session package; this holds it through Step, which is how
+// every file-driven run and the interface reach the kernel.
 //
 // The case is built to be the nearest one: a position carried across a boundary
 // into an adverse gap large enough to end the evaluation. It ends — on the

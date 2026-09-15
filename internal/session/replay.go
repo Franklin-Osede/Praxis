@@ -213,11 +213,6 @@ func Replay(events []Event) (*ReplayedState, error) {
 		// the decision that opened the exposure, not to the exposure alone.
 		fillOrderID string
 
-		// offered says the last observation was given to everything waiting for
-		// one, which is the condition under which what survived it has
-		// something to answer for.
-		offered bool
-
 		// submitted is every order the trader has submitted that has not yet
 		// reached an end, with what is left of it. The map answers membership
 		// and quantity for one identifier at a time; the slice is the order
@@ -399,20 +394,38 @@ func Replay(events []Event) (*ReplayedState, error) {
 			}
 
 		case MarketObserved:
+			// The writer's rule: an observation belongs to a trading session.
+			// A quote recorded before the first session or between two would
+			// move the last book past a price nothing waiting was offered, and
+			// the next open would value the account against it. No writer
+			// produces one, so a journal holding one was not written by this
+			// kernel.
+			if !state.SessionOpen {
+				return nil, fmt.Errorf("%w: event %d observes the market with no trading session open", ErrStructure, n)
+			}
+			// And the other half: the journal ends where the evaluation ends,
+			// so the writer refuses market after it. A quote recorded after the
+			// evaluation ended is one nothing waiting was offered, and a stop it
+			// walked through would survive it with nothing to explain.
+			if ended := eval.State(); ended == challenge.StateFailed || ended == challenge.StatePassed {
+				return nil, fmt.Errorf("%w: event %d observes the market after the evaluation %s", ErrStructure, n, ended)
+			}
 			// Before this observation replaces the last one, everything that
 			// survived the last one has to account for surviving it.
-			if offered {
+			//
+			// Every observation this reader accepts was offered to what was
+			// waiting: the two rules above refuse the only ones a writer does
+			// not offer, one with no session open and one after the evaluation
+			// ended. So having a last book is the whole condition, and it holds
+			// across a SessionEnded — survivors owe their explanation against
+			// the last book they were offered, whenever it was.
+			if state.HasQuote {
 				if err := proveNothingSurvivedFillable(state, &protections, started.Config.Instrument); err != nil {
 					return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 				}
 			}
 			state.LastQuote, state.HasQuote, state.ObservedThisSession = v.Quote, true, true
 			state.LastObserved = v.Sequence
-			// A session that is not open, or an evaluation that has ended, is
-			// offered nothing — so nothing that waited through it owes an
-			// explanation. This is the same gate the live session applies.
-			offered = state.SessionOpen && eval.State() != challenge.StateFailed &&
-				eval.State() != challenge.StatePassed
 
 		case OrderRested:
 			resting := v.Order
@@ -472,7 +485,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 	if err := protections.settled(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrFabricated, err)
 	}
-	if offered {
+	if state.HasQuote {
 		if err := proveNothingSurvivedFillable(state, &protections, started.Config.Instrument); err != nil {
 			return nil, fmt.Errorf("%w: the log ends and %w", ErrFabricated, err)
 		}
