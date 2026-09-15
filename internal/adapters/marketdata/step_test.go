@@ -163,3 +163,97 @@ func TestAStepFromOutsideTheFileIsRefused(t *testing.T) {
 		t.Fatalf("a refused step wrote events: journal holds %d", s.JournalLen())
 	}
 }
+
+// Scenario: an evaluation never ends in the batch that opens a session
+//
+// OpenTradingSession revalues, and a valuation can end an evaluation. If the one
+// an open records ever did, the journal would hold a SessionOpened with no
+// observation after it — a session opened on an evaluation it then ended, which
+// is what "the journal ends where the evaluation ends" says a run must not do.
+//
+// Through Step it cannot, and this holds the reason rather than the conclusion.
+// Step never lets an observation land with no session open: it ends a session and
+// opens the next in the same call, immediately before observing. So the quote and
+// the account an open values are the ones the last valuation of the previous
+// session already evaluated, and a valuation already evaluated cannot cross a
+// threshold it did not cross. The daily reference is set to that same equity, so
+// the daily rule cannot fire at the open either.
+//
+// The case is built to be the nearest one: a position carried across a boundary
+// into an adverse gap large enough to end the evaluation. It ends — on the
+// observation, after the open.
+func TestAnEvaluationNeverEndsInTheBatchThatOpensASession(t *testing.T) {
+	const gapAcrossTheBoundary = "3000,1,d1,20000,20001,50,50\n" +
+		"4000,1,d1,19990,19991,50,50\n" +
+		"5000,1,d2,18600,18601,50,50\n" +
+		"6000,1,d2,18590,18591,50,50\n"
+	feed := feedFile(t, gapAcrossTheBoundary)
+
+	s, err := session.New(config(), 1_000, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := marketdata.Step(s, feed, 0); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	buy, err := market.NewMarketOrder("o-1", feed.Instrument, market.SideBuy, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SubmitOrder(buy, session.Decision{}); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
+	}
+	if err := marketdata.Drive(s, feed, 1); err != nil {
+		t.Fatalf("Drive: %v", err)
+	}
+	if !s.ChallengeEnded() {
+		t.Fatal("the evaluation did not end, so this proves nothing")
+	}
+
+	events := s.Events()
+	var (
+		lastValued   *session.AccountValued
+		opened       bool
+		openSequence uint64
+		compared     int
+	)
+	for _, e := range events {
+		switch v := e.(type) {
+		case session.SessionOpened:
+			opened, openSequence = true, v.Sequence
+		case session.AccountValued:
+			// The first valuation after an open is the one the open recorded,
+			// and it must repeat the last valuation of the session before it.
+			if opened && lastValued != nil {
+				compared++
+				if v.BalanceCts != lastValued.BalanceCts || v.EquityCts != lastValued.EquityCts {
+					t.Fatalf("the open at sequence %d valued balance %d equity %d; the last valuation before it was %d, %d",
+						openSequence, v.BalanceCts, v.EquityCts, lastValued.BalanceCts, lastValued.EquityCts)
+				}
+			}
+			opened = false
+			valued := v
+			lastValued = &valued
+		}
+	}
+
+	// The comparison is the claim, so it has to have been made: an open after a
+	// session with a valuation in it.
+	if compared == 0 {
+		t.Fatal("no open followed a valued session, so no open valuation was compared")
+	}
+
+	var lastOpened, lastObserved uint64
+	for _, e := range events {
+		switch e.(type) {
+		case session.SessionOpened:
+			lastOpened = e.Header().Sequence
+		case session.MarketObserved:
+			lastObserved = e.Header().Sequence
+		}
+	}
+	if lastObserved < lastOpened {
+		t.Fatalf("the journal holds a session opened at %d with no observation after it (last at %d)",
+			lastOpened, lastObserved)
+	}
+}

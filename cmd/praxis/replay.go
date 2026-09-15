@@ -132,16 +132,21 @@ func replayCommand(args []string, out, errOut *os.File) int {
 }
 
 // start builds a session for a journal that has nothing in it yet.
-func start(feed *marketdata.Feed, writer *persistence.Writer, cfg session.Config) (*session.Session, error) {
+//
+// It takes the committer the session writes through rather than the writer
+// itself. The command always passes its writer; a test passes one that fails a
+// chosen commit, so that recovering from it is tested along this path and not a
+// copy of it.
+func start(feed *marketdata.Feed, committer session.BatchCommitter, cfg session.Config) (*session.Session, error) {
 	if cfg.StartingBalanceCts <= 0 {
 		return nil, errors.New("a new journal needs --starting-balance and the rules it will be evaluated against")
 	}
 	at := feed.Observations[0].Quote.Time
-	return session.New(cfg, at, writer)
+	return session.New(cfg, at, committer)
 }
 
 // resume continues a journal, refusing one that does not describe this file.
-func resume(recovered *persistence.Journal, feed *marketdata.Feed, writer *persistence.Writer) (*session.Session, int, error) {
+func resume(recovered *persistence.Journal, feed *marketdata.Feed, committer session.BatchCommitter) (*session.Session, int, error) {
 	events := recovered.Events()
 	if err := session.Verify(events); err != nil {
 		return nil, 0, err
@@ -162,6 +167,6 @@ func resume(recovered *persistence.Journal, feed *marketdata.Feed, writer *persi
 	if err != nil {
 		return nil, 0, err
 	}
-	s, err := session.Resume(state, writer)
+	s, err := session.Resume(state, committer)
 	return s, consumed, err
 }
