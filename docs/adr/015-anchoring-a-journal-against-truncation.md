@@ -308,6 +308,35 @@ automatic.
 - For a commercial session the same reasoning has a different answer: the
   journal does not live on the client at all.
 
+## Custody, for the pilots: operational, and not built
+
+The pilots do not get publication. The property that matters is not that an
+anchor sits in another file — it is that it leaves the participant's hands, and
+anchoring every batch to a console on the same machine does not buy that. Fifteen
+sessions, five subjects, three each: that is the shape of a laboratory, and in a
+laboratory what takes the anchor out of those hands is the experimenter, not a
+file descriptor.
+
+So the protocol carries the step, at collection:
+
+- `praxis store anchor <journal>`, and the anchor written down away from the
+  machine;
+- beside it, the `config:` digest and the subject label the same command prints,
+  the market file's name and its SHA-256, the browser and its version, and the
+  check of THE-PAINT-CLAIM for that build.
+
+`docs/experiment/pilot-protocol.md` is that step, with a dry run of the whole
+apparatus recorded against it.
+
+**The residual risk, whole, because it is what makes the decision citable: an
+anchor taken at collection certifies against alteration after collection, not
+before it.** What covers the interval before it is the experimenter being
+present. A pre-registration should declare that and not imply more.
+
+This stops being protocol and becomes engineering again at the first session
+that is not collected in person. That needs cadence and real publication, and
+`Writer.Anchor` is already waiting at no cost. Not before.
+
 ## Open, and to be closed before a mechanism is chosen
 
 1. **Cadence.** Receipt, periodic checkpoint, or per-batch. This sets the
