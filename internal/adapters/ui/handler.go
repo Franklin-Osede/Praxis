@@ -83,7 +83,7 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		refusedBy = s.run(body, at)
 		state = s.state()
 	}); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonNeedsRecovery, err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonServerClosing, err.Error()})
 		return
 	}
 	if refusedBy != nil {

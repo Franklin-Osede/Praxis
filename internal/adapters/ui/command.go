@@ -25,8 +25,13 @@ const (
 	ReasonNotCanonical      Reason = "not_canonical"
 	ReasonInvalidIdentifier Reason = "invalid_identifier"
 
-	// 403: the request lacks what the operator must have handed it.
+	// 403: the request is not one this server answers, or lacks what the
+	// operator must have handed it.
+	ReasonForeignOrigin   Reason = "foreign_origin"
 	ReasonHandoverRefused Reason = "handover_refused"
+
+	// 405: the route is asked for in a way it is never asked for.
+	ReasonMethodNotAllowed Reason = "method_not_allowed"
 
 	// 409: something is already taken.
 	ReasonLeaseHeld       Reason = "lease_held"
@@ -43,8 +48,15 @@ const (
 	ReasonFeedExhausted   Reason = "feed_exhausted"
 	ReasonRefused         Reason = "refused"
 
-	// 503: the session has stopped.
+	// 500: the machine could not do something that cannot fail on purpose.
+	ReasonLeaseNotMinted Reason = "lease_not_minted"
+
+	// 503: the session has stopped, or this process is shutting down. They are
+	// two different findings and had one name: a client told a healthy session
+	// needs recovery sends an operator to inspect a journal with nothing wrong
+	// with it.
 	ReasonNeedsRecovery Reason = "needs_recovery"
+	ReasonServerClosing Reason = "server_closing"
 )
 
 // errUnknownKind and errWrongSegment are this adapter's own refusals: a tag it
@@ -71,6 +83,8 @@ func classify(err error) (int, refusal) {
 	switch {
 	case errors.Is(err, session.ErrSessionNeedsRecovery):
 		return http.StatusServiceUnavailable, refusal{ReasonNeedsRecovery, err.Error()}
+	case errors.Is(err, errServerClosing):
+		return http.StatusServiceUnavailable, refusal{ReasonServerClosing, err.Error()}
 	case errors.Is(err, ErrHandoverRefused):
 		return http.StatusForbidden, refusal{ReasonHandoverRefused, err.Error()}
 	case errors.Is(err, ErrControllerActive):
@@ -153,7 +167,7 @@ func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
 			session.PresentationID{Segment: at.Segment, ObservedSequence: observed}, at)
 		state = s.state()
 	}); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonNeedsRecovery, err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonServerClosing, err.Error()})
 		return
 	}
 	if refusedBy != nil {

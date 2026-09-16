@@ -349,6 +349,11 @@ func (s *Server) loop() {
 // ask runs one function on the loop and waits for it. Handlers never reach the
 // session directly, so two requests arriving at once are serialised by the
 // kernel's single owner rather than by hope.
+// errServerClosing is a request that did not reach the loop because the process
+// is shutting down. It is not the session needing recovery: that one is a
+// journal to inspect, and this one is a server to start again.
+var errServerClosing = errors.New("ui: the server is closing")
+
 func (s *Server) ask(run func()) error {
 	finished := make(chan struct{})
 	select {
@@ -356,7 +361,7 @@ func (s *Server) ask(run func()) error {
 		<-finished
 		return nil
 	case <-s.done:
-		return errors.New("ui: the server is closed")
+		return errServerClosing
 	}
 }
 
@@ -369,11 +374,13 @@ func (s *Server) ask(run func()) error {
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" && origin != s.origin {
-			http.Error(w, "ui: this server answers only its own origin", http.StatusForbidden)
+			writeJSON(w, http.StatusForbidden, refusal{ReasonForeignOrigin,
+				"ui: this server answers only its own origin"})
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/state" && r.Method != http.MethodPost {
-			http.Error(w, "ui: commands are POST", http.StatusMethodNotAllowed)
+			writeJSON(w, http.StatusMethodNotAllowed, refusal{ReasonMethodNotAllowed,
+				"ui: commands are POST"})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -383,7 +390,7 @@ func (s *Server) guard(next http.Handler) http.Handler {
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	var state State
 	if err := s.ask(func() { state = s.state() }); err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonServerClosing, err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, state)
@@ -404,7 +411,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	// by a client that was told it failed.
 	var state State
 	if err := s.ask(func() { state = s.state() }); err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonServerClosing, err.Error()})
 		return
 	}
 
@@ -432,11 +439,14 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		token, segment, err = s.lease.acquire()
 	}
 	if errors.Is(err, ErrControllerActive) {
-		http.Error(w, err.Error(), http.StatusConflict)
+		s.refuse(w, err)
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// The only 500 this server has: minting a lease needs the machine's
+		// randomness, and nothing else here can fail for a reason that is
+		// neither the client's nor the session's.
+		writeJSON(w, http.StatusInternalServerError, refusal{ReasonLeaseNotMinted, err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, control{

@@ -73,7 +73,7 @@ func (s *Server) handleStep(w http.ResponseWriter, r *http.Request) {
 		refusedBy = s.step(segment, from)
 		state = s.state()
 	}); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonNeedsRecovery, err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, refusal{ReasonServerClosing, err.Error()})
 		return
 	}
 	if refusedBy != nil {

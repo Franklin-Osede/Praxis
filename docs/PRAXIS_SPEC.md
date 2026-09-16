@@ -1486,13 +1486,32 @@ because a reason that is not enumerated is a string a client will match on and a
 string will drift. That is the `strings.Contains` problem moved one layer out,
 and it is the same fix as `%w` one layer in.
 
+The scope is every answer of the four command routes, the state route and the
+guard in front of them. The one exception is the 404 a request for a route that
+does not exist gets, which comes from the mux and not from this server.
+
 | status | what it means | reasons |
 |---|---|---|
 | 400 | the bytes are wrong | unreadable body, non-canonical integer, invalid identifier, unknown tag |
-| 403 | the request lacks what the operator must hand it | a transfer without the current handover key |
+| 403 | the request is not one this server answers | an origin that is not this server's, a transfer without the current handover key |
+| 405 | the route is asked for in a way it is never asked for | a command that is not a POST |
 | 409 | something is already taken | lease held, lease stale, same gesture with a different command, an act naming a run it does not belong to, a step from a row no longer on the screen |
 | 422 | the session refuses this command now | reading out of order, nothing presented, evaluation ended, no session open, no row after the last one |
-| 503 | the session has stopped | needs recovery, and the screen says so |
+| 500 | the machine could not do something that cannot fail on purpose | a lease that could not be minted |
+| 503 | the session has stopped, or this process is | needs recovery, and the screen says so; or the server is closing |
+
+**A server shutting down and a session needing recovery are two findings, and
+they had one name.** A request that does not reach the loop because the process
+is closing was answered `needs_recovery`, which sends an operator to inspect a
+journal with nothing wrong with it. It is `server_closing`, and `needs_recovery`
+is left to the session that actually stopped.
+
+**Every reason must be producible, and a test proves it rather than a reader.**
+`lease_held` was declared from the first day and unreachable until the one place
+that could emit it stopped answering in plain text. So a test reads the constants
+out of the source, and demands that each one is produced — by the classifier or
+by a handler answering a real request — or listed as unreachable with the reason
+it is. A reason declared and never connected fails immediately.
 
 **The retry is recognised in the handler, so `ErrGestureReused` becomes
 unreachable over HTTP.** `checkDecision` refuses a repeated gesture without
