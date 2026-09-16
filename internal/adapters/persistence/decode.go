@@ -38,7 +38,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 	case typeSessionStarted:
 		kind = session.KindSessionStarted
 		cfg := session.Config{
-			Instrument:               market.Instrument{Symbol: r.id(), CentsPerTick: r.cents()},
+			Instrument:               r.instrument(),
 			StartingBalanceCts:       r.cents(),
 			CommissionPerContractCts: r.cents(),
 			Rules: challenge.Rules{
@@ -69,12 +69,14 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		observed.SourceSequence = r.uint()
 		observed.Quote.Bid, observed.Quote.Ask = r.ticks(), r.ticks()
 		observed.Quote.BidSize, observed.Quote.AskSize = r.qty(), r.qty()
+		r.valid(observed.Quote, "quote")
 		event = observed
 
 	case typeOrderSubmitted:
 		kind = session.KindOrderSubmitted
 		order := market.Order{ID: r.id(), Instrument: r.instrument(), Side: r.side(), Type: r.orderType(), Qty: r.qty()}
 		order.LimitPrice, order.StopPrice = r.ticks(), r.ticks()
+		r.valid(order, "order")
 		event = session.OrderSubmitted{
 			Envelope: envelope(at, sequence, kind), Order: order,
 			Context: session.OrderContext{
@@ -98,6 +100,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		kind = session.KindOrderRested
 		order := market.Order{ID: r.id(), Instrument: r.instrument(), Side: r.side(), Type: r.orderType(), Qty: r.qty()}
 		order.LimitPrice, order.StopPrice = r.ticks(), r.ticks()
+		r.valid(order, "order")
 		event = session.OrderRested{
 			Envelope: envelope(at, sequence, kind), Order: order, RestingQty: r.qty(),
 		}
@@ -115,15 +118,17 @@ func decodeEvent(line string, version string) (session.Event, error) {
 
 	case typeFillProduced:
 		kind = session.KindFillProduced
-		event = session.FillProduced{
-			Envelope: envelope(at, sequence, kind),
-			Fill: market.Fill{
-				OrderID: r.id(), Instrument: r.instrument(), Time: r.logicalTime(),
-				Side: r.side(), Price: r.ticks(), Qty: r.qty(),
-			},
+		fill := market.Fill{
+			OrderID: r.id(), Instrument: r.instrument(), Time: r.logicalTime(),
+			Side: r.side(), Price: r.ticks(), Qty: r.qty(),
 		}
+		r.valid(fill, "fill")
+		event = session.FillProduced{Envelope: envelope(at, sequence, kind), Fill: fill}
 
 	case typePositionChanged:
+		// portfolio.PositionEvent has no Validate, so its fields are checked
+		// only for their spelling here. Giving it one is a domain change and
+		// not this decoder's to make.
 		kind = session.KindPositionChanged
 		event = session.PositionChanged{
 			Envelope: envelope(at, sequence, kind),
@@ -243,6 +248,16 @@ func (r *reader) next() string {
 	return s
 }
 
+// valid refuses a value that parsed and is not one the domain would accept. A
+// decoder does not trust the bytes it reads, and that has to mean the value and
+// not only its spelling: the live path checks every one of these at the door,
+// and a journal is the one place nothing recomputes them afterwards.
+func (r *reader) valid(v interface{ Validate() error }, what string) {
+	if err := v.Validate(); err != nil {
+		r.fail(fmt.Errorf("%w: %s: %w", ErrNotADomainValue, what, err))
+	}
+}
+
 func (r *reader) fail(err error) {
 	if r.err == nil {
 		r.err = err
@@ -329,9 +344,7 @@ func (r *reader) ref() session.ProtectionRef {
 	for k, n := range protectionRefNames {
 		if n == name {
 			ref := session.ProtectionRef{Kind: k, OrderID: orderID, EpisodeID: episodeID}
-			if err := ref.Validate(); err != nil {
-				r.fail(err)
-			}
+			r.valid(ref, "protection reference")
 			return ref
 		}
 	}
@@ -371,7 +384,9 @@ func (r *reader) id() string {
 }
 
 func (r *reader) instrument() market.Instrument {
-	return market.Instrument{Symbol: r.id(), CentsPerTick: r.cents()}
+	i := market.Instrument{Symbol: r.id(), CentsPerTick: r.cents()}
+	r.valid(i, "instrument")
+	return i
 }
 
 func (r *reader) side() market.Side {

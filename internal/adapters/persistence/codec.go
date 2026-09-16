@@ -117,8 +117,19 @@ const (
 
 // Errors reported for a payload that is not canonical event text.
 var (
-	ErrSyntax       = errors.New("persistence: line is not canonical event text")
-	ErrUnknownEvent = errors.New("persistence: unknown event type")
+	ErrSyntax = errors.New("persistence: line is not canonical event text")
+
+	// ErrNotADomainValue reports bytes that are canonical text and do not
+	// describe a value the domain would accept: a crossed quote, a fill of no
+	// quantity, a market order still carrying a limit price.
+	//
+	// It is separate from ErrSyntax because it is a separate finding, and a
+	// reader acts on them differently — one is a file that was written wrong or
+	// damaged, the other a file that says something impossible happened. The
+	// domain's own refusal is wrapped inside, so which rule was broken is
+	// reachable with errors.Is rather than by reading a sentence.
+	ErrNotADomainValue = errors.New("persistence: these bytes do not describe a domain value")
+	ErrUnknownEvent    = errors.New("persistence: unknown event type")
 	// ErrNotCanonicalInt is the domain's, so a caller matching on it matches
 	// whichever boundary refused the spelling.
 	ErrNotCanonicalInt = market.ErrNotCanonicalInt

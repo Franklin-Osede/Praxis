@@ -496,6 +496,41 @@ No file-driven adapter ever produced the refused state — `Consumed` already
 requires every observation to sit in the session the file assigns it — and no
 frozen payload contains one.
 
+### A decoder does not trust the bytes it reads, and that includes the value
+
+Refusing a line that is not canonical text was only half of it. Bytes can parse
+perfectly and describe something the domain calls impossible — a crossed quote, a
+fill of no quantity, a market order still carrying a limit price — and those were
+rebuilt into typed values and handed on. The live path refuses every one of them
+at the door; the read path did not. It is the writer/reader asymmetry, in the
+values nothing downstream recomputes.
+
+So the decoder validates every domain value it reconstructs: the instrument, the
+quote, an order in both events that carry one, the fill, and the protection
+reference. `portfolio.PositionEvent` has no `Validate`, so its fields are checked
+for their spelling alone; giving it one is a domain change and not the decoder's
+to make.
+
+The refusal is its own: `ErrSyntax` says these bytes are not canonical text and
+`ErrNotADomainValue` says they are and do not describe a value. They are acted on
+differently — a file written wrong against a file claiming the impossible — and
+the domain's own error is wrapped inside, so which rule was broken is reachable
+with `errors.Is` rather than by matching a sentence.
+
+**The domain's boundary is the decoder, and `Replay` trusts the values it is
+given.** This is the one place the last two rules of this kind went into both the
+writer and the reader, and here it does not, deliberately. Those were rules about
+order — an observation with no session open, market after the evaluation ended —
+which only a reader walking the whole log can check and only a writer holding the
+session can enforce. A value's shape is neither: it is checkable exactly where
+values enter the process, and every one enters through this decoder. A crossed
+quote handed to `Replay` in memory is reachable from Go code and from nothing
+else. If a second way into the kernel ever exists, it validates at its own door,
+and this paragraph is what it is answering.
+
+It closes the asymmetry and not forgery. A bid of 19,000 where the file said
+20,000 is a valid quote, and passes.
+
 ### A failed commit stops the session for good
 
 A command executes in memory and its events are then committed as one batch. If
