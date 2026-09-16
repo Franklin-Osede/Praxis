@@ -17,9 +17,21 @@ nobody doing anything is a claim that is not backed.
 
 ## Running a session
 
-    praxis ui <market-file> --journal <journal> --subject <label> \
+    praxis ui <market-file> --journal <journal> --subject <label> --run-id <label> \
       --starting-balance <cents> --commission <cents> \
       --max-daily-loss <cents> --profit-target <cents>
+
+`--run-id` names this execution, and the journal refuses to be written without
+one when somebody is trading it. It is supplied rather than generated, because a
+generated one would end the byte-for-byte identity of two runs that four
+determinism tests rest on.
+
+**Give every session its own label, and never reuse one.** Nothing in the
+software can stop a label being typed twice; if it is, two journals claim the
+same execution and an anchor can no longer say which of them it certifies. That
+is the whole of what the identity buys, so it is protocol discipline in the same
+way custody is. A label that carries the subject and the sitting — `t-01-s2` —
+makes a reuse visible on the page it is written on.
 
 The console prints a handover key. It stays with the operator: it is what takes
 the controls back from a tab that is gone, it works once, and it is reprinted
@@ -41,6 +53,7 @@ Write down, away from the machine:
 | the anchor | `praxis store anchor` |
 | the configuration digest | the `config:` line of `verify` |
 | the subject label | the `subject:` line of `verify` |
+| the run identity | the anchor's second field, and `--run-id` as given |
 | the market file's name and SHA-256 | `shasum -a 256 <market-file>` |
 | the browser and its version | the operator's note for this build |
 | THE-PAINT-CLAIM checked | the operator's note for this build |

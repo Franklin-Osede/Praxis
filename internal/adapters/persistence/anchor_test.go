@@ -1,6 +1,7 @@
 package persistence_test
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"reflect"
@@ -316,37 +317,123 @@ func TestAMalformedAnchorIsRefusedBeforeTheJournalIsRead(t *testing.T) {
 	}
 }
 
-// Scenario: an anchor that names a run is refused rather than half-checked
+// Scenario: two runs of one configuration differ only in the label, and an
+// anchor tells them apart
 //
-// The identity clause is the one an anchor cannot honour today, and an anchor
-// carrying a run identifier that passes would report agreement on a clause
-// nothing examined.
-func TestAnAnchorNamingARunIsRefused(t *testing.T) {
-	path, _ := twoBatches(t)
-	named := anchorOf(t, path)
-	named.RunID = "run-01"
+// This is the criterion the whole identity clause exists for, as a regression.
+// Two sessions of one subject over one file are byte-identical — that is a
+// property four determinism tests rest on, and it is why an anchor keyed on the
+// configuration could be presented against either. The run identity is the only
+// thing that separates them, so the journals must differ in that and nothing
+// else, and one session's anchor must be refused against the other.
+func TestTwoRunsDifferOnlyByTheirIdentityAndAnAnchorTellsThemApart(t *testing.T) {
+	head, tail := split(t)
+	first, second := journalPath(t), journalPath(t)
 
-	if err := persistence.CheckAnchor(path, named); !errors.Is(err, persistence.ErrNoRunIdentity) {
-		t.Fatalf("CheckAnchor with a named run: got %v, want ErrNoRunIdentity", err)
+	rename := func(events []session.Event, runID string) []session.Event {
+		out := append([]session.Event{}, events...)
+		for n, e := range out {
+			if started, ok := e.(session.SessionStarted); ok {
+				started.Config.RunID = runID
+				out[n] = started
+			}
+		}
+		return out
+	}
+	for path, runID := range map[string]string{first: "r-one", second: "r-two"} {
+		commit(t, path, rename(head, runID))
+		commit(t, path, tail)
+	}
+
+	one, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	other, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if bytes.Equal(one, other) {
+		t.Fatal("two runs with different identities produced identical journals")
+	}
+	// The bytes differ by more than the label — a batch header carries a
+	// checksum over its payload — so the claim is made where it is true: the
+	// two recorded the same history, and the only thing that separates them is
+	// the name of the run.
+	sameExcept := func(path string) []session.Event {
+		events := readFile(t, path).Events()
+		for n, e := range events {
+			if started, ok := e.(session.SessionStarted); ok {
+				started.Config.RunID = ""
+				events[n] = started
+			}
+		}
+		return events
+	}
+	if !reflect.DeepEqual(sameExcept(first), sameExcept(second)) {
+		t.Fatal("the two journals differ in more than the run they name")
+	}
+
+	anchor := anchorOf(t, first)
+	if anchor.RunID != "r-one" {
+		t.Fatalf("the anchor names run %q, want the one the journal names", anchor.RunID)
+	}
+	if err := persistence.CheckAnchor(first, anchor); err != nil {
+		t.Fatalf("CheckAnchor against its own run: %v", err)
+	}
+	if err := persistence.CheckAnchor(second, anchor); !errors.Is(err, persistence.ErrAnchorRun) {
+		t.Fatalf("one run's anchor against another: got %v, want ErrAnchorRun", err)
 	}
 }
 
-// Scenario: a journal cannot yet say which execution it is
+// Scenario: a journal written before identity existed makes no claim about it
 //
-// ADR-015 names this a prerequisite rather than a detail: ConfigDigest
-// identifies a configuration, so two sessions by one subject over one file
-// produce the same digest and an anchor keyed on it could be presented against
-// either. This test pins the gap. It is expected to fail the day v5 records a
-// run identifier, and the fix then is to check it here.
-func TestAJournalRecordsNoRunIdentityYet(t *testing.T) {
-	path, _ := twoBatches(t)
+// v4 journals stay readable, and an anchor cannot settle an identity clause
+// against one. It says so rather than passing, which is the rule the whole
+// document is about.
+func TestAnAnchorCannotSettleIdentityAgainstAJournalThatNamesNone(t *testing.T) {
+	head, _ := split(t)
+	path := journalPath(t)
+
+	scripted := append([]session.Event{}, head...)
+	for n, e := range scripted {
+		if started, ok := e.(session.SessionStarted); ok {
+			started.Config.SubjectID, started.Config.RunID = "", ""
+			started.Config.Pacing = session.PacingScripted
+			scripted[n] = started
+		}
+	}
+	framed, err := persistence.EncodeBatch(1, scripted, persistence.EventVersionV4)
+	if err != nil {
+		t.Fatalf("EncodeBatch: %v", err)
+	}
+	if err := os.WriteFile(path, append(persistence.HeaderFor(persistence.EventVersionV4), framed...), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	if _, err := persistence.RunIdentity(path); !errors.Is(err, persistence.ErrNoRunIdentity) {
-		t.Fatalf("RunIdentity: got %v, want ErrNoRunIdentity", err)
+		t.Fatalf("RunIdentity of a v4 journal: got %v, want ErrNoRunIdentity", err)
+	}
+	named := anchorOf(t, path)
+	named.RunID = "r-one"
+	if err := persistence.CheckAnchor(path, named); !errors.Is(err, persistence.ErrNoRunIdentity) {
+		t.Fatalf("CheckAnchor naming a run against a journal that names none: got %v, want ErrNoRunIdentity", err)
 	}
 }
 
-// Scenario: two runs of one configuration are byte-identical
+// Scenario: a journal names the run it is
+func TestAJournalNamesTheRunItIs(t *testing.T) {
+	path, _ := twoBatches(t)
+	identity, err := persistence.RunIdentity(path)
+	if err != nil {
+		t.Fatalf("RunIdentity: %v", err)
+	}
+	if identity != "r-01" {
+		t.Fatalf("RunIdentity: got %q, want the label the fixture supplied", identity)
+	}
+}
+
+// Scenario: two runs of one configuration are byte-identical// Scenario: two runs of one configuration are byte-identical
 //
 // The demonstration behind ErrNoRunIdentity, kept as a test so the reason the
 // clause cannot be honoured is a fact in the suite rather than an assertion in

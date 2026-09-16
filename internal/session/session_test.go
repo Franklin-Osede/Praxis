@@ -18,7 +18,11 @@ func config() session.Config {
 		// Somebody traded this, which is what makes the human clock the
 		// helpers stamp coherent. A journal carrying one and no subject is
 		// refused, and so is the reverse.
-		SubjectID:                "t-01",
+		SubjectID: "t-01",
+		// Somebody traded it, so it says which run it was: an anchor names the
+		// execution it certifies, and a traded journal that names none is one no
+		// anchor can certify.
+		RunID:                    "r-01",
 		Pacing:                   session.PacingPilot,
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,

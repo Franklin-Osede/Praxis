@@ -23,7 +23,7 @@ const ContainerVersion = "1"
 // recognised container with an unrecognised payload is refused, and so is the
 // reverse. Both payload versions are readable; only the newer is written.
 var compatible = map[string]map[string]bool{
-	ContainerVersion: {EventVersionV1: true, EventVersionV2: true, EventVersionV3: true, EventVersionV4: true},
+	ContainerVersion: {EventVersionV1: true, EventVersionV2: true, EventVersionV3: true, EventVersionV4: true, EventVersionV5: true},
 }
 
 const (

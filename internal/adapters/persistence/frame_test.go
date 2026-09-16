@@ -53,14 +53,14 @@ func TestAFramedJournalReadsBack(t *testing.T) {
 func TestTheFrameGolden(t *testing.T) {
 	// The fixture for the version being written, so the payload literal below
 	// pins every field the current version carries rather than a prefix of it.
-	raw := journalBytes(t, everyEventTypeV4()[:1])
+	raw := journalBytes(t, everyEventTypeV5()[:1])
 	lines := strings.SplitN(string(raw), "\n", 3)
 
 	if lines[0] != "PRAXIS-EVENT-STORE 1 "+persistence.EventVersion {
 		t.Fatalf("version line: got %q", lines[0])
 	}
 
-	payload := "session_started 1000 1 MNQ 50 5000000 50 5000000 100000 300000 200000 250000 s-07 pilot\n"
+	payload := "session_started 1000 1 MNQ 50 5000000 50 5000000 100000 300000 200000 250000 s-07 pilot r-01\n"
 	metadata := fmt.Sprintf("%020d %020d %020d %020d %020d", 1, len(payload), 1, 1, 1)
 	sum := crc32.Checksum([]byte(metadata+"\n"+payload), crc32.MakeTable(crc32.Castagnoli))
 	want := fmt.Sprintf("BATCH %s CRC32C:%08x", metadata, sum)

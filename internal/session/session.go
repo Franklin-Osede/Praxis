@@ -32,6 +32,11 @@ var (
 	// by definition nobody's.
 	ErrPacingWithoutSubject = errors.New("session: the pacing and the subject disagree about whether a person was there")
 
+	// ErrRunWithoutIdentity reports a journal somebody traded that does not say
+	// which execution it is. An anchor can certify no such journal, and that has
+	// to be refused where it is written rather than discovered at collection.
+	ErrRunWithoutIdentity = errors.New("session: this run was traded and does not name itself")
+
 	// ErrSessionNeedsRecovery is terminal. A commit that failed leaves the
 	// outcome unknown — the batch may be whole on disk, or partial, or absent
 	// — and only reading the journal can say which. The session therefore
@@ -148,6 +153,9 @@ func New(cfg Config, at market.LogicalTime, committer BatchCommitter) (*Session,
 	if err := pacingAgreesWithSubject(cfg); err != nil {
 		return nil, err
 	}
+	if err := pacingAgreesWithRunIdentity(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.StartingBalanceCts != cfg.Rules.StartingBalanceCts {
 		return nil, fmt.Errorf("%w: account %d, evaluation %d",
 			ErrInconsistentConfig, cfg.StartingBalanceCts, cfg.Rules.StartingBalanceCts)
@@ -173,6 +181,24 @@ func New(cfg Config, at market.LogicalTime, committer BatchCommitter) (*Session,
 		return nil, err
 	}
 	return s, nil
+}
+
+// pacingAgreesWithRunIdentity refuses a journal a person traded that cannot say
+// which execution it is.
+//
+// A scripted run may carry one or not: it is an execution like any other, and
+// nothing certifies it. A pilot or confirmatory one must, because an anchor
+// names the run it certifies and there would be nothing to name — and because
+// the moment to find that out is when the journal is written, not when an
+// experimenter is standing over it at collection.
+func pacingAgreesWithRunIdentity(cfg Config) error {
+	if cfg.RunID != "" {
+		return market.ValidIdentifier(cfg.RunID)
+	}
+	if cfg.Pacing == PacingScripted {
+		return nil
+	}
+	return fmt.Errorf("%w: %v pacing and no run identity", ErrRunWithoutIdentity, cfg.Pacing)
 }
 
 // pacingAgreesWithSubject refuses a configuration that is two claims at once.

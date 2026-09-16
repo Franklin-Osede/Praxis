@@ -88,6 +88,12 @@ type Writer struct {
 	// keeps a moving tail from being read.
 	digest hash.Hash
 
+	// runID is the execution this journal names, read from the batch that
+	// started it — whether this process wrote that batch or inherited it. An
+	// anchor names the run the journal names, and the two paths to an anchor
+	// have to produce the same value.
+	runID string
+
 	// anchoredBatch and anchoredSequence are where the digest currently stands.
 	// They are the last confirmed batch, not the next one.
 	anchoredBatch    uint64
@@ -165,6 +171,7 @@ func OpenWriter(path string, policy DurabilityPolicy) (*Writer, error) {
 	}
 	w.recovered = journal
 	w.payloadVersion = journal.PayloadVersion
+	w.runID = runIdentityOf(journal)
 	if n := len(journal.Batches); n > 0 {
 		last := journal.Batches[n-1]
 		w.nextNumber = last.Number + 1
@@ -249,6 +256,11 @@ func (w *Writer) Append(events []session.Event) (Batch, error) {
 	// Only now. The digest stands for confirmed bytes, and a batch is confirmed
 	// once it is written and synced — so a failed sync above leaves the writer
 	// poisoned with a digest that still describes the last batch that was.
+	for _, e := range events {
+		if started, ok := e.(session.SessionStarted); ok {
+			w.runID = started.Config.RunID
+		}
+	}
 	w.digest.Write(framed)
 	w.anchoredBatch, w.anchoredSequence = batch.Number, batch.LastSequence
 
@@ -280,6 +292,7 @@ func (w *Writer) Anchor() (Anchor, error) {
 		return Anchor{}, fmt.Errorf("%w: nothing is confirmed, so there is nothing to anchor", ErrEmptyBatch)
 	}
 	return Anchor{
+		RunID:        w.runID,
 		LastBatch:    w.anchoredBatch,
 		LastSequence: w.anchoredSequence,
 		PrefixDigest: hex.EncodeToString(w.digest.Sum(nil)),

@@ -24,6 +24,7 @@ func uiCommand(args []string, out, errOut *os.File) int {
 	fs.SetOutput(errOut)
 	journalPath := fs.String("journal", "", "path to the journal to write or resume (required)")
 	subject := fs.String("subject", "", "the label the protocol assigns this participant, for a new journal")
+	runID := fs.String("run-id", "", "the label the operator gives this execution, for a new journal")
 	addr := fs.String("addr", "127.0.0.1:0", "loopback address to listen on")
 	startingBalance := fs.Int64("starting-balance", 0, "starting balance in cents, for a new journal")
 	commission := fs.Int64("commission", 0, "commission per contract in cents, for a new journal")
@@ -34,7 +35,7 @@ func uiCommand(args []string, out, errOut *os.File) int {
 
 	flags, operands := splitArgs(fs, args)
 	if err := fs.Parse(flags); err != nil || len(operands) != 1 || *journalPath == "" {
-		fmt.Fprintln(errOut, "usage: praxis ui <market-file> --journal <journal> --subject <label> [configuration]")
+		fmt.Fprintln(errOut, "usage: praxis ui <market-file> --journal <journal> --subject <label> --run-id <label> [configuration]")
 		fs.PrintDefaults()
 		return exitFatal
 	}
@@ -62,6 +63,11 @@ func uiCommand(args []string, out, errOut *os.File) int {
 		},
 		New: session.Config{
 			SubjectID: *subject,
+			// Supplied, never minted. A value from crypto/rand would end the
+			// byte-for-byte identity of two runs that four determinism tests
+			// rest on, so the operator names the run and writes the name down
+			// beside the anchor — see docs/experiment/pilot-protocol.md.
+			RunID: *runID,
 			// This interface produces pilot journals and says so in the
 			// configuration, which is what puts it inside the digest a
 			// pre-registration records.

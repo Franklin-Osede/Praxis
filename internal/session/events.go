@@ -121,6 +121,21 @@ type Config struct {
 	// different speeds are not in the same study. Being here puts it inside
 	// the digest a pre-registration records.
 	Pacing PacingMode
+
+	// RunID names this execution, and it is supplied rather than minted.
+	//
+	// Two runs of one configuration over one file are byte-identical — that is a
+	// property four determinism tests rest on — so nothing inside can tell them
+	// apart, and an anchor keyed on the configuration could be presented against
+	// either. A value from crypto/rand would end the byte-identity it exists to
+	// repair, so the operator supplies it with --run-id and the journal records
+	// it as given.
+	//
+	// What it cannot do is stop an operator typing one label twice. Then two
+	// journals share an identity and the claim empties out. That is protocol
+	// discipline, like custody, and it is written in
+	// docs/experiment/pilot-protocol.md rather than implied here.
+	RunID string
 }
 
 // PacingMode says how observations reached the person.

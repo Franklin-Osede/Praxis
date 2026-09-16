@@ -99,15 +99,19 @@ could be presented against a different session of the same subject.
 
 So a run identifier is a **prerequisite**, not a detail:
 
-- It is issued by the anchor authority before the first event, and recorded in
-  `SessionStarted`. Rule 3 bars a locally minted random identifier, and a value
-  the participant chooses is a value the participant can reuse.
-- It is a payload field, and today the only one waiting for `praxis.event.v5`,
-  which does not exist. Its whole value is over pilot journals and the first of
-  those is created by the interface's advance endpoint, so v5 is tied to that
-  calendar and not to this ADR's.
-- A journal with no run identity is then *visibly* unanchored, which is worth
-  having on its own: today an unanchored run and an anchored one look alike.
+- It is **supplied by the operator** with `--run-id` and recorded in
+  `SessionStarted` as given. An earlier draft of this said the anchor authority
+  issues it; under the custody decided below the authority is the operator, and
+  the flag is the seam.
+- It is not minted. `crypto/rand` would end the byte-for-byte identity of two
+  runs that four determinism tests rest on — the boundary, recovery, replay and
+  interface comparisons — and those are what show the kernel is deterministic
+  and the interface an adapter rather than a second implementation.
+- It is a `praxis.event.v5` payload field, and the only one.
+- What it cannot do is stop an operator typing one label twice. Then two
+  journals share an identity and the claim empties out, so the protocol carries
+  the discipline the way it carries custody. Said here because a field that
+  claims more than it holds is the failure this document keeps finding.
 
 The consequence is sharper than "an anchor could be misattributed", and it falls
 hardest exactly where the cadence table recommends anchoring most. Two runs of
@@ -116,12 +120,17 @@ one configuration over one file are **byte-identical**: `SessionStarted`,
 logical time and no wall clock, so nothing separates two executions until the
 first human decision. The early anchors a per-batch cadence produces first are
 therefore the ones with exactly zero discriminating power.
-`TestTwoRunsOfOneConfigurationAreIndistinguishable` keeps that as a fact in the
-suite rather than an assertion here.
+`TestTwoRunsOfOneConfigurationAreIndistinguishable` kept that as a fact in the
+suite rather than an assertion here, and
+`TestTwoRunsDifferOnlyByTheirIdentityAndAnAnchorTellsThemApart` is what closed
+it: two runs of one configuration recording the same history, differing in the
+label alone, and one run's anchor refused against the other.
 
-Until an identifier exists, `CheckAnchor` refuses an anchor that names a run
-instead of ignoring the field. A clause that reads as checked and is not is the
-failure this document exists to stop.
+`AnchorOf` reads the identity from the journal rather than taking it as an
+argument — the inverse of the fault A2 reported, where a field was stamped with
+whatever a caller passed and checked against nothing. A journal written before
+v5 names no run, and then an anchor that names one cannot be settled against it
+and says so.
 
 ## The market file is a second artefact with the same problem
 

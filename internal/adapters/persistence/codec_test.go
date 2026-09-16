@@ -33,6 +33,7 @@ func TestDecodeOfEncodeIsTheIdentity(t *testing.T) {
 		{persistence.EventVersionV2, everyEventTypeV2()},
 		{persistence.EventVersionV3, everyEventTypeV3()},
 		{persistence.EventVersionV4, everyEventTypeV4()},
+		{persistence.EventVersionV5, everyEventTypeV5()},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			payload, err := persistence.EncodeEvents(tc.events, tc.version)

@@ -30,6 +30,7 @@ func pilotConfig() session.Config {
 	return session.Config{
 		Instrument:               mnq,
 		SubjectID:                "t-01",
+		RunID:                    "r-01",
 		Pacing:                   session.PacingPilot,
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,
@@ -221,7 +222,10 @@ func TestAnOlderJournalIsRefusedForHumanControl(t *testing.T) {
 	marketPath, journalPath := paths(t)
 
 	cfg := pilotConfig()
-	cfg.SubjectID, cfg.Pacing = "", session.PacingScripted
+	// Scripted, and with no run identity: the version it is written in has
+	// nowhere to put either, and an encoder that dropped one rather than
+	// refusing would be a journal claiming less than its configuration said.
+	cfg.SubjectID, cfg.Pacing, cfg.RunID = "", session.PacingScripted, ""
 	started := session.SessionStarted{
 		Envelope: session.Envelope{Time: 1_000, Sequence: 1, Kind: session.KindSessionStarted},
 		Config:   cfg,

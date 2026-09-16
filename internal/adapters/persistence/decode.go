@@ -53,6 +53,9 @@ func decodeEvent(line string, version string) (session.Event, error) {
 			cfg.SubjectID = r.optionalID()
 			cfg.Pacing = r.pacing()
 		}
+		if knows(version, EventVersionV5) {
+			cfg.RunID = r.optionalID()
+		}
 		event = session.SessionStarted{Envelope: envelope(at, sequence, kind), Config: cfg}
 
 	case typeSessionOpened:

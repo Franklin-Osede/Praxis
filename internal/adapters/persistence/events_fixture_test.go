@@ -211,6 +211,19 @@ func sessionIDOf(n int) challenge.SessionID {
 	return challenge.SessionID(b)
 }
 
+// everyEventTypeV5 is everyEventTypeV4 plus the one thing v5 added: the journal
+// naming the execution it is.
+func everyEventTypeV5() []session.Event {
+	events := everyEventTypeV4()
+	for n, e := range events {
+		if started, ok := e.(session.SessionStarted); ok {
+			started.Config.RunID = "r-01"
+			events[n] = started
+		}
+	}
+	return events
+}
+
 // realSessionEvents is a journal a session actually produced, rather than a
 // hand-built one: the codec must survive what the system emits, not only what
 // a fixture remembered to include.
@@ -221,6 +234,7 @@ func realSessionEvents(t *testing.T) []session.Event {
 		// Somebody traded it: these events carry a human clock, and a journal
 		// that claims both a decision and nobody to have made it is refused.
 		SubjectID:                "t-01",
+		RunID:                    "r-01",
 		Pacing:                   session.PacingPilot,
 		StartingBalanceCts:       5_000_000,
 		CommissionPerContractCts: 50,

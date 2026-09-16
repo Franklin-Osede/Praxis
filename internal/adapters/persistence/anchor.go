@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"praxis/internal/market"
+	"praxis/internal/session"
 )
 
 // Errors reported when a journal and an anchor do not agree, and when the
@@ -45,6 +46,13 @@ var (
 	// ErrNoRunIdentity reports that which execution a journal is cannot be
 	// established. Every payload version to date is one — see Anchor.RunID.
 	ErrNoRunIdentity = errors.New("persistence: this journal records no run identity")
+
+	// ErrAnchorRun reports an anchor and a journal that name different
+	// executions. Under custody there is one anchor per session, so this is the
+	// refusal that keeps a session's anchor from certifying another session of
+	// the same subject over the same file — which, byte for byte, it otherwise
+	// could.
+	ErrAnchorRun = errors.New("persistence: this anchor names a different run")
 )
 
 // Anchor is what a journal is checked against: which run it is, how far that
@@ -60,12 +68,13 @@ var (
 // say a further batch never existed, so the rate at which anchors are published
 // is what bounds the acts a truncation can hide.
 type Anchor struct {
-	// RunID names the execution, and nothing can populate it yet.
+	// RunID names the execution, read from the journal and never supplied by a
+	// caller. Under custody there is one anchor per session, so this is what
+	// keeps one session's anchor from certifying another session of the same
+	// subject over the same file — which, byte for byte, it otherwise could.
 	//
-	// No payload version records a run identity, so an anchor carrying one
-	// cannot be checked and CheckAnchor refuses it rather than ignoring it.
-	// The field is kept, empty, because the contract needs the clause and a
-	// silently unchecked field is the failure this whole ADR is about.
+	// It is empty for a journal written before a journal could say, and then
+	// the anchor makes no claim about identity and says so rather than passing.
 	RunID string
 
 	LastBatch    uint64
@@ -139,10 +148,28 @@ func AnchorOf(path string) (Anchor, error) {
 	}
 	last := journal.Batches[len(journal.Batches)-1]
 	return Anchor{
+		// Read from the journal and never supplied: an anchor names the
+		// execution the journal names. Taking it as a parameter would be A2
+		// inverted — a field stamped with whatever a caller passed and checked
+		// against nothing.
+		RunID:        runIdentityOf(journal),
 		LastBatch:    last.Number,
 		LastSequence: last.LastSequence,
 		PrefixDigest: digestOf(raw[:last.EndOffset]),
 	}, nil
+}
+
+// runIdentityOf is the execution a journal says it is, or empty for one written
+// before a journal could say.
+func runIdentityOf(journal *Journal) string {
+	for _, b := range journal.Batches {
+		for _, e := range b.Events {
+			if started, ok := e.(session.SessionStarted); ok {
+				return started.Config.RunID
+			}
+		}
+	}
+	return ""
 }
 
 // CheckAnchor reports whether a journal still contains, unaltered, the prefix
@@ -177,12 +204,16 @@ func checkAnchorAgainst(raw []byte, journal *Journal, want Anchor) error {
 	if err := want.Validate(); err != nil {
 		return err
 	}
-	// An anchor that names a run is refused rather than checked on its other
-	// fields, because passing it would report agreement on a clause that was
-	// never examined.
-	if want.RunID != "" {
-		return fmt.Errorf("%w: this anchor names run %q, and no journal can say which run it is",
-			ErrNoRunIdentity, want.RunID)
+	// The identity clause, checked at last rather than refused. A journal
+	// written before v5 names no run, so an anchor that names one cannot be
+	// settled against it and says so; two that disagree are two runs.
+	switch identity := runIdentityOf(journal); {
+	case want.RunID == identity:
+	case identity == "":
+		return fmt.Errorf("%w: this anchor names run %q", ErrNoRunIdentity, want.RunID)
+	default:
+		return fmt.Errorf("%w: this anchor names run %q and the journal is run %q",
+			ErrAnchorRun, want.RunID, identity)
 	}
 
 	for _, b := range journal.Batches {
@@ -217,10 +248,15 @@ func checkAnchorAgainst(raw []byte, journal *Journal, want Anchor) error {
 // When v5 records an identifier this reads it, and the test asserting this
 // error is what fails to say so.
 func RunIdentity(path string) (string, error) {
-	if _, _, err := readAll(path); err != nil {
+	_, journal, err := readAll(path)
+	if err != nil {
 		return "", err
 	}
-	return "", ErrNoRunIdentity
+	identity := runIdentityOf(journal)
+	if identity == "" {
+		return "", ErrNoRunIdentity
+	}
+	return identity, nil
 }
 
 // readAll returns a journal's bytes and its parse together, under the shared

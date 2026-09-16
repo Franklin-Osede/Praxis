@@ -197,6 +197,9 @@ func Replay(events []Event) (*ReplayedState, error) {
 	if err := pacingAgreesWithSubject(started.Config); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrStructure, err)
 	}
+	if err := pacingAgreesWithRunIdentity(started.Config); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStructure, err)
+	}
 
 	state := &ReplayedState{Config: started.Config, Account: account, Challenge: eval}
 	var (
@@ -881,6 +884,9 @@ func Verify(events []Event) error {
 			// this too; Verify asking it as well is what keeps Verify as
 			// strong on its own as it was before the clock read pacing.
 			if err := pacingAgreesWithSubject(started.Config); err != nil {
+				return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
+			}
+			if err := pacingAgreesWithRunIdentity(started.Config); err != nil {
 				return fmt.Errorf("%w: %w", ErrContradictoryLog, err)
 			}
 			clock.subjectID, clock.pacing = started.Config.SubjectID, started.Config.Pacing

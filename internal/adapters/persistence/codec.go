@@ -96,9 +96,10 @@ const (
 	EventVersionV2 = "praxis.event.v2"
 	EventVersionV3 = "praxis.event.v3"
 	EventVersionV4 = "praxis.event.v4"
+	EventVersionV5 = "praxis.event.v5"
 
 	// EventVersion is what a new journal is written in.
-	EventVersion = EventVersionV4
+	EventVersion = EventVersionV5
 )
 
 // ErrUnsupportedInVersion reports an event, a field or a value that the payload

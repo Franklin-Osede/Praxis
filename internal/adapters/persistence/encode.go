@@ -106,6 +106,16 @@ func encodeEvent(e session.Event, version string) (string, error) {
 			return "", fmt.Errorf("%w: %s cannot say who traded it, or how",
 				ErrUnsupportedInVersion, version)
 		}
+		// A run identity is absent for a scripted journal and required for one
+		// somebody traded, so "-" is the spelling for absent, as it is for the
+		// subject. An older version carrying one would be a journal claiming an
+		// identity its readers cannot see.
+		if knows(version, EventVersionV5) {
+			f.optionalID(v.Config.RunID)
+		} else if v.Config.RunID != "" {
+			return "", fmt.Errorf("%w: %s cannot say which run it is",
+				ErrUnsupportedInVersion, version)
+		}
 
 	case session.SessionOpened:
 		if header.Kind != session.KindSessionOpened {
@@ -321,6 +331,7 @@ func requireProtection(version string) error {
 // deciding things about names nobody chose it to decide.
 var versionOrder = map[string]int{
 	EventVersionV1: 1, EventVersionV2: 2, EventVersionV3: 3, EventVersionV4: 4,
+	EventVersionV5: 5,
 }
 
 func knows(version string, since string) bool {

@@ -21,7 +21,7 @@ import (
 func TestTheStateReportsNoSessionAfterOneEnds(t *testing.T) {
 	instrument := market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 	cfg := session.Config{
-		Instrument: instrument, SubjectID: "t-01", Pacing: session.PacingPilot,
+		Instrument: instrument, SubjectID: "t-01", RunID: "r-01", Pacing: session.PacingPilot,
 		StartingBalanceCts: 5_000_000, CommissionPerContractCts: 50,
 		Rules: challenge.Rules{
 			StartingBalanceCts: 5_000_000, MaxDailyLossCts: 100_000,
@@ -62,7 +62,7 @@ func TestTheStateReportsNoSessionAfterOneEnds(t *testing.T) {
 func TestAFailedValuationIsTerminalOnTheScreen(t *testing.T) {
 	instrument := market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 	cfg := session.Config{
-		Instrument: instrument, SubjectID: "t-01", Pacing: session.PacingPilot,
+		Instrument: instrument, SubjectID: "t-01", RunID: "r-01", Pacing: session.PacingPilot,
 		StartingBalanceCts: 5_000_000, CommissionPerContractCts: 50,
 		Rules: challenge.Rules{
 			StartingBalanceCts: 5_000_000, MaxDailyLossCts: 100_000,
@@ -97,7 +97,7 @@ func TestAFailedValuationIsTerminalOnTheScreen(t *testing.T) {
 func TestAStoppedSessionOutranksAFailedValuation(t *testing.T) {
 	instrument := market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 	cfg := session.Config{
-		Instrument: instrument, SubjectID: "t-01", Pacing: session.PacingPilot,
+		Instrument: instrument, SubjectID: "t-01", RunID: "r-01", Pacing: session.PacingPilot,
 		StartingBalanceCts: 5_000_000, CommissionPerContractCts: 50,
 		Rules: challenge.Rules{
 			StartingBalanceCts: 5_000_000, MaxDailyLossCts: 100_000,

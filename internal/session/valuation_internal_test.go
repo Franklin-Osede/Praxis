@@ -19,7 +19,7 @@ import (
 func TestValuationReportsWhatItCannotTake(t *testing.T) {
 	instrument := market.Instrument{Symbol: "MNQ", CentsPerTick: 50}
 	s, err := New(Config{
-		Instrument: instrument, SubjectID: "t-01", Pacing: PacingPilot,
+		Instrument: instrument, SubjectID: "t-01", RunID: "r-01", Pacing: PacingPilot,
 		StartingBalanceCts: 5_000_000, CommissionPerContractCts: 50,
 		Rules: challenge.Rules{
 			StartingBalanceCts: 5_000_000, MaxDailyLossCts: 100_000,
