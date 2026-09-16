@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"praxis/internal/adapters/ui"
-	"praxis/internal/session"
 )
 
 func acknowledge(t *testing.T, s *ui.Server, body map[string]string) *http.Response {
@@ -55,14 +54,15 @@ func reasonOf(t *testing.T, resp *http.Response) string {
 // indistinguishable in fact and not only in status.
 func TestAcknowledgingAnObservationAndAcknowledgingItAgain(t *testing.T) {
 	marketPath, journalPath := paths(t)
-	// A journal that already consumed the file, so there is an observation on
-	// the screen to confirm.
-	writeJournal(t, marketPath, journalPath, pilotConfig(), false)
-	server := open(t, marketPath, journalPath, session.Config{})
+	// An empty journal, advanced by hand to its first observation — the way a
+	// participant reaches one. It used to start from a journal already driven to
+	// the end of its file, which is the one state nobody is ever in.
+	server := open(t, marketPath, journalPath, pilotConfig())
 	control := takeControl(t, server)
+	shown := stepOK(t, server, control.Lease, "")
 
 	body := map[string]string{
-		"lease": control.Lease, "observedSequence": observedSequenceOf(t, server),
+		"lease": control.Lease, "observedSequence": shown.ObservedSequence,
 	}
 
 	first := acknowledge(t, server, body)
@@ -92,10 +92,9 @@ func TestAcknowledgingAnObservationAndAcknowledgingItAgain(t *testing.T) {
 //	  reading a sentence.
 func TestEveryRefusalCarriesATypedReason(t *testing.T) {
 	marketPath, journalPath := paths(t)
-	writeJournal(t, marketPath, journalPath, pilotConfig(), false)
-	server := open(t, marketPath, journalPath, session.Config{})
+	server := open(t, marketPath, journalPath, pilotConfig())
 	control := takeControl(t, server)
-	observed := observedSequenceOf(t, server)
+	observed := stepOK(t, server, control.Lease, "").ObservedSequence
 
 	for _, tc := range []struct {
 		name   string

@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Praxis</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 ui-monospace, monospace; margin: 0; padding: 1rem; }
+  h2 { font-size: 0.85rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; margin: 1.2rem 0 0.4rem; }
+  .panes { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: 0.15rem 0.6rem 0.15rem 0; vertical-align: top; }
+  th { font-weight: normal; opacity: 0.6; }
+  .unit { opacity: 0.5; }
+  fieldset { border: 1px solid; border-radius: 2px; padding: 0.6rem; }
+  fieldset[disabled] { opacity: 0.45; }
+  label { display: inline-block; margin-right: 0.8rem; }
+  input, select, button { font: inherit; }
+  input { width: 7rem; }
+  #notice { padding: 0.5rem 0.6rem; border: 1px solid; border-radius: 2px; min-height: 1.5rem; }
+  #notice[data-tone="stop"] { font-weight: bold; }
+</style>
+</head>
+<body>
+
+<div id="notice" role="status">Take the controls to begin.</div>
+
+<div class="panes">
+  <section>
+    <h2>Run</h2>
+    <table>
+      <tr><th>subject</th><td id="subject"></td></tr>
+      <tr><th>pacing</th><td id="pacing"></td></tr>
+      <tr><th>segment</th><td id="segment"></td></tr>
+      <tr><th>cursor</th><td id="cursor"></td></tr>
+      <tr><th>trading session</th><td id="session"></td></tr>
+      <tr><th>evaluation</th><td id="evaluation"></td></tr>
+      <tr><th>losing trades in a row</th><td id="streak"></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Book</h2>
+    <table>
+      <tr><th>observation</th><td id="observed"></td></tr>
+      <tr><th>time</th><td id="time"></td></tr>
+      <tr><th>bid</th><td><span id="bid"></span> <span class="unit">ticks</span> &times; <span id="bidSize"></span></td></tr>
+      <tr><th>ask</th><td><span id="ask"></span> <span class="unit">ticks</span> &times; <span id="askSize"></span></td></tr>
+    </table>
+
+    <h2>Account</h2>
+    <table>
+      <tr><th>balance</th><td><span id="balance"></span> <span class="unit">cents</span></td></tr>
+      <tr><th>equity</th><td><span id="equity"></span> <span class="unit">cents</span></td></tr>
+      <tr><th>position</th><td><span id="netQty"></span> <span id="symbol" class="unit"></span></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Working</h2>
+    <table id="working"></table>
+    <h2>Protection</h2>
+    <table id="protection"></table>
+  </section>
+</div>
+
+<h2>Controls</h2>
+<fieldset id="controls" disabled>
+  <button id="advance" type="button">Advance one observation</button>
+
+  <div style="margin-top:0.6rem">
+    <label>id <input id="orderId" value="o-1"></label>
+    <label>side
+      <select id="side"><option value="buy">buy</option><option value="sell">sell</option></select>
+    </label>
+    <label>type
+      <select id="type">
+        <option value="market">market</option>
+        <option value="limit">limit</option>
+        <option value="stop">stop</option>
+      </select>
+    </label>
+    <label>qty <input id="qty" value="1"></label>
+    <label>limit <input id="limitPrice"></label>
+    <label>stop <input id="stopPrice"></label>
+    <label>protect stop <input id="protectionStop"></label>
+    <label>protect target <input id="protectionTarget"></label>
+    <button id="submit" type="button">Submit order</button>
+  </div>
+
+  <div style="margin-top:0.6rem">
+    <label>order <input id="cancelId" value="o-1"></label>
+    <button id="cancel" type="button">Cancel order</button>
+  </div>
+
+  <div style="margin-top:0.6rem">
+    <label>protection of
+      <select id="refKind"><option value="entry">entry</option><option value="episode">episode</option></select>
+    </label>
+    <label>entry <input id="refOrderId"></label>
+    <label>episode <input id="refEpisodeId"></label>
+    <label>new stop <input id="newStop"></label>
+    <label>new target <input id="newTarget"></label>
+    <button id="replace" type="button">Replace protection</button>
+    <button id="withdraw" type="button">Withdraw protection</button>
+  </div>
+</fieldset>
+
+<p><button id="take" type="button">Take the controls</button>
+   <label style="margin-left:0.8rem">handover key <input id="handover" size="34"></label>
+   <button id="transfer" type="button">Take them from whoever holds them</button></p>
+
+<script>
+"use strict";
+
+// Everything this screen shows arrives as a decimal string of its smallest unit
+// and is written out as it arrived. Nothing here turns a quantity into a number:
+// rounding in a browser is a second implementation of a rule that lives in Go,
+// and the two disagree eventually. Section 11's inventory is what may be shown,
+// and a figure this page worked out would not be on it, however the payload
+// stayed the same.
+//
+// Nothing is polled. The five routes each answer with the whole state, and the
+// state only changes when the participant acts.
+
+const run = {
+  lease: null,
+  segment: null,
+  // The gesture counter lives in memory and starts at one. It is thrown away
+  // whenever the lease is, because a counter that outlived its segment would
+  // mint a name belonging to a run this is not — the wrong_run the server
+  // refuses.
+  gesture: 1,
+  observed: "",
+  // stopped means the apparatus cannot be trusted to record what happens next,
+  // so nothing further is offered.
+  stopped: false,
+};
+
+const el = (id) => document.getElementById(id);
+const text = (id, value) => { el(id).textContent = value === undefined || value === null ? "" : value; };
+
+function notice(message, tone) {
+  el("notice").textContent = message;
+  el("notice").dataset.tone = tone || "";
+}
+
+// controls are closed from the moment a step answers until the acknowledgement
+// is answered. A click that landed in between would be refused as not presented:
+// an act of the participant the journal does not contain, caused by the
+// apparatus — and the attempt that did get recorded would carry the time of a
+// refused one nobody can see.
+function controls(enabled) {
+  el("controls").disabled = !enabled || run.stopped || !run.lease;
+}
+
+function forget() {
+  run.lease = null;
+  run.segment = null;
+  run.gesture = 1;
+  run.observed = "";
+  controls(false);
+}
+
+async function send(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { status: response.status, payload };
+}
+
+// refusals is what the screen does with each typed reason. The status is a
+// coarse bucket, so nothing here reads it.
+function refused(reason, detail) {
+  switch (reason) {
+    case "not_presented":
+      return { tone: "stop", message: "The screen was not confirmed. " + detail };
+
+    case "stale_step":
+      return { tone: "", message: "The screen had moved on; it has been redrawn." };
+
+    case "gesture_conflict":
+      return { tone: "stop", message: "Another tab is using these controls. This one has stopped." };
+
+    case "lease_held":
+      return { tone: "", message: "Someone else is controlling this session." };
+    case "lease_stale":
+      return { tone: "stop", message: "These controls were taken over. This tab no longer drives." };
+
+    case "server_closing":
+      return { tone: "stop", message: "The server is shutting down. Start it again." };
+    case "needs_recovery":
+      return { tone: "stop", message: "The session has stopped. Tell the operator: " + detail };
+
+    case "evaluation_ended":
+      return { tone: "stop", message: "The evaluation is over. " + detail };
+    case "feed_exhausted":
+      return { tone: "stop", message: "The file has no further observation." };
+    case "no_session_open":
+    case "out_of_order":
+    case "refused":
+      return { tone: "", message: detail };
+
+    case "handover_refused":
+      return { tone: "", message: "That is not the handover key the console shows." };
+    case "foreign_origin":
+    case "method_not_allowed":
+    case "unreadable":
+    case "not_canonical":
+    case "invalid_identifier":
+    case "body_too_large":
+    case "lease_not_minted":
+      return { tone: "stop", message: "This screen asked for something it should never ask for (" + reason + "). It has stopped." };
+
+    default:
+      return { tone: "stop", message: "Unknown refusal " + reason + ". This screen has stopped." };
+  }
+}
+
+function handle(reason, detail) {
+  const said = refused(reason, detail);
+  notice(said.message, said.tone);
+  if (reason === "lease_stale" || reason === "server_closing" || reason === "gesture_conflict") {
+    forget();
+    return;
+  }
+  if (said.tone === "stop") {
+    run.stopped = true;
+    controls(false);
+  }
+}
+
+function render(state) {
+  text("subject", state.subject);
+  text("pacing", state.pacing);
+  text("segment", run.segment);
+  text("cursor", state.cursor + " of " + state.observations);
+  text("session", state.sessionOpen ? state.sessionId : "none open");
+  text("evaluation", state.evaluation.state + (state.evaluation.reason ? " (" + state.evaluation.reason + ")" : ""));
+  text("streak", state.consecutiveLosingTrades);
+
+  text("observed", state.observedSequence || "nothing shown yet");
+  const book = state.book;
+  text("time", book ? book.time : "");
+  text("bid", book ? book.bid : "");
+  text("bidSize", book ? book.bidSize : "");
+  text("ask", book ? book.ask : "");
+  text("askSize", book ? book.askSize : "");
+
+  text("balance", state.money ? state.money.balanceCts : "unavailable");
+  text("equity", state.money ? state.money.equityCts : "unavailable");
+  text("netQty", state.position.netQty);
+  text("symbol", state.position.symbol);
+
+  rows("working", state.working, (o) => [o.id, o.side, o.type, o.qty, o.limitPrice, o.stopPrice]);
+  rows("protection", state.protection, (p) => [p.status, p.entryOrderId || p.episodeId || "", p.stopPrice, p.targetPrice, p.protectedQty || ""]);
+
+  run.observed = state.observedSequence || "";
+  if (state.needsRecovery) {
+    handle("needs_recovery", state.needsRecovery);
+  }
+}
+
+function rows(id, items, fields) {
+  const table = el(id);
+  table.textContent = "";
+  for (const item of items || []) {
+    const row = document.createElement("tr");
+    for (const value of fields(item)) {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.appendChild(cell);
+    }
+    table.appendChild(row);
+  }
+}
+
+// painted resolves after the frame carrying what was just rendered has been
+// composited. Two frames, because the first callback runs before that frame is
+// drawn — see THE-PAINT-CLAIM in section 11: this ordering is what makes
+// ObservationPresented true, and nothing in the repository can prove it.
+function painted() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+async function advance() {
+  controls(false);
+  const step = await send("/api/step", {
+    lease: run.lease,
+    fromObservedSequence: run.observed,
+  });
+  if (step.status !== 200) {
+    handle(step.payload.reason, step.payload.detail);
+    if (step.payload.reason === "stale_step") {
+      await refresh();
+    }
+    controls(true);
+    return;
+  }
+
+  render(step.payload);
+  await painted();
+
+  const said = await send("/api/acknowledge", {
+    lease: run.lease,
+    observedSequence: run.observed,
+  });
+  if (said.status !== 200) {
+    handle(said.payload.reason, said.payload.detail);
+    return;
+  }
+  render(said.payload);
+  notice("Observation " + run.observed + " is on the screen.");
+  controls(true);
+}
+
+async function refresh() {
+  const response = await fetch("/api/state");
+  if (response.status === 200) {
+    render(await response.json());
+  }
+}
+
+async function command(body) {
+  controls(false);
+  const name = run.segment + ":" + run.gesture;
+  const answer = await send("/api/command", Object.assign({ lease: run.lease, gesture: name }, body));
+  if (answer.status !== 200) {
+    handle(answer.payload.reason, answer.payload.detail);
+    // The name is spent either way: a refused command may have been refused
+    // after the kernel recorded it, and a name asked twice with two commands is
+    // the conflict a second tab produces.
+    run.gesture += 1;
+    controls(true);
+    return;
+  }
+  run.gesture += 1;
+  render(answer.payload);
+  notice("Done.");
+  controls(true);
+}
+
+const value = (id) => el(id).value.trim();
+
+el("take").addEventListener("click", async () => {
+  const answer = await send("/api/control", {});
+  if (answer.status !== 200) {
+    handle(answer.payload.reason, answer.payload.detail);
+    return;
+  }
+  run.lease = answer.payload.lease;
+  run.segment = answer.payload.segment;
+  run.gesture = 1;
+  run.stopped = false;
+  render(answer.payload.state);
+  notice("You have the controls. Advance to see an observation.");
+  controls(true);
+});
+
+el("transfer").addEventListener("click", async () => {
+  const answer = await send("/api/control?transfer=yes", { handover: value("handover") });
+  if (answer.status !== 200) {
+    handle(answer.payload.reason, answer.payload.detail);
+    return;
+  }
+  el("handover").value = "";
+  run.lease = answer.payload.lease;
+  run.segment = answer.payload.segment;
+  run.gesture = 1;
+  run.stopped = false;
+  render(answer.payload.state);
+  notice("You have the controls. The console shows a new handover key.");
+  controls(true);
+});
+
+el("advance").addEventListener("click", advance);
+
+el("submit").addEventListener("click", () => command({
+  kind: "submit_order",
+  orderId: value("orderId"),
+  side: value("side"),
+  type: value("type"),
+  qty: value("qty"),
+  limitPrice: value("limitPrice"),
+  stopPrice: value("stopPrice"),
+  protectionStop: value("protectionStop"),
+  protectionTarget: value("protectionTarget"),
+}));
+
+el("cancel").addEventListener("click", () => command({
+  kind: "cancel_order",
+  orderId: value("cancelId"),
+}));
+
+// One command replaces a protection. There is no remove button beside a set
+// button: two commands would manufacture an interval with no protection the
+// trader never intended, and the length of those intervals is one of the things
+// the log exists to measure.
+el("replace").addEventListener("click", () => command({
+  kind: "replace_protection",
+  refKind: value("refKind"),
+  refOrderId: value("refOrderId"),
+  refEpisodeId: value("refEpisodeId"),
+  protectionStop: value("newStop"),
+  protectionTarget: value("newTarget"),
+}));
+
+el("withdraw").addEventListener("click", () => command({
+  kind: "withdraw_protection",
+  refKind: value("refKind"),
+  refOrderId: value("refOrderId"),
+  refEpisodeId: value("refEpisodeId"),
+}));
+
+refresh();
+</script>
+</body>
+</html>

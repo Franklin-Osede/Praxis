@@ -281,6 +281,7 @@ func (s *Server) listen(addr string) error {
 	mux.HandleFunc("/api/acknowledge", s.handleAcknowledge)
 	mux.HandleFunc("/api/step", s.handleStep)
 	mux.HandleFunc("/api/command", s.handleCommand)
+	mux.Handle("/", s.screen())
 	s.http = &http.Server{
 		Handler: s.guard(mux),
 		// A client that opens a connection and sends nothing holds a goroutine

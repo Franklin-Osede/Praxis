@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"praxis/internal/adapters/ui"
-	"praxis/internal/session"
 )
 
 func postCommand(t *testing.T, s *ui.Server, body map[string]string) *http.Response {
@@ -36,21 +35,19 @@ func postCommand(t *testing.T, s *ui.Server, body map[string]string) *http.Respo
 func readyToTrade(t *testing.T) (*ui.Server, string, uint64) {
 	t.Helper()
 	marketPath, journalPath := paths(t)
-	writeJournal(t, marketPath, journalPath, pilotConfig(), false)
-	server := open(t, marketPath, journalPath, session.Config{})
+	// From nothing: take the controls, advance to the first observation, confirm
+	// it. That is the sequence a participant walks and the one the client makes,
+	// and every command test below now starts from it rather than from a journal
+	// parked at the end of its file.
+	server := open(t, marketPath, journalPath, pilotConfig())
 	control := takeControl(t, server)
 
 	segment, err := parseUint(control.Segment)
 	if err != nil {
 		t.Fatalf("segment %q: %v", control.Segment, err)
 	}
-	resp := acknowledge(t, server, map[string]string{
-		"lease": control.Lease, "observedSequence": observedSequenceOf(t, server),
-	})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("acknowledging: status %d, reason %q", resp.StatusCode, reasonOf(t, resp))
-	}
+	shown := stepOK(t, server, control.Lease, "")
+	confirm(t, server, control.Lease, shown.ObservedSequence)
 	return server, control.Lease, segment
 }
 

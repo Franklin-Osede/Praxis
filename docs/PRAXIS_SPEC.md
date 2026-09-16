@@ -1256,6 +1256,61 @@ The confirmatory mode is **not built yet**, and should not be until the pilot
 interface has shown it can measure presentation, gesture, recovery and exclusive
 control without losing or duplicating a decision.
 
+**The screen is embedded in the binary.** It is served from `//go:embed` at the
+server's root, and there is no flag that reads it from disk. What that buys is
+narrow and worth saying exactly: it does not prove what the subject saw — ADR-015
+already says a modified binary defeats every construction in this repository — it
+removes a documented, unattested knob. The screen is the subject's information
+set, and a condition the subject can edit is not a condition. It also keeps the
+screen inside the artefact a digest can cover.
+
+If a development door is ever wanted, the rule is decided in advance: reading the
+page from disk must make the binary refuse `pilot` and `confirmatory` pacing, so
+that a development build cannot produce a journal the confirmatory sample could
+contain. A flag that only changes where bytes are read from is not acceptable.
+
+### THE-PAINT-CLAIM: the acknowledgement is sent after the paint, and nothing here proves it
+
+`ObservationPresented` says the interface put an observation in front of the
+person and said so. The client sends it after rendering the row and waiting two
+animation frames, so the frame carrying those pixels has been composited before
+the request leaves; the interval a hypothesis measures then runs from a server
+receipt that is after the paint.
+
+`elementtiming` with a `PerformanceObserver` would be the browser's own report
+that the element painted, and it is refused: it fires only on Chromium, so it
+needs a fallback, and a fallback that is used means the stronger claim is not the
+one that happened. A claim that depends on the browser would have to name the
+browser, and the journal does not.
+
+**No test in this repository proves the ordering.** Go can drive the same request
+sequence a client makes; nothing here can see a browser paint. This limitation
+has a name so that a pre-registration can cite it rather than pointing at a
+section: it is THE-PAINT-CLAIM. What backs it is an operator's check once per
+build — a devtools trace confirming the acknowledgement leaves after the paint —
+recorded in the pilot protocol, the same answer custody gets and for the same
+reason: what the software cannot prove is an operational control.
+
+The browser and its version belong to that protocol and not to the payload. They
+are provenance of the apparatus and it is tempting to record them beside the run
+identifier, but the browser supplies them and nothing can contradict them — the
+same objection that keeps the participant's clock out of the journal. The
+experimenter writes them down, as they write down the anchor.
+
+**The controls are disabled from the step's response until the acknowledgement is
+answered.** Otherwise a fast click lands before the acknowledgement, the kernel
+refuses it as not presented, and that is an act of the participant the journal
+does not contain — caused by the apparatus rather than the person. Worse for the
+measurement: the attempt that does get recorded carries inside it the time of a
+refused attempt nobody can see. With the controls disabled, the client's rule for
+`not_presented` — send the acknowledgement, retry once, stop if it repeats —
+covers a case that should never happen rather than an ordinary one.
+
+**A refusal that ends a run ends the client's counters with it.** On
+`server_closing` or `lease_stale` the client discards the lease *and* the gesture
+counter. A counter that survived would mint `<segment>:<sequence>` naming a
+segment that is no longer its own, which is the `wrong_run` `decisionOf` refuses.
+
 **What is on screen is a claim the journal is already making.**
 `OrderContext.ConsecutiveLosingTrades` is documented as what the trader knew,
 and the only thing that can make that true is the interface showing it. If the
