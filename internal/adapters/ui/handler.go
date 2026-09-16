@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -65,8 +64,10 @@ const (
 // interleave. The loop is the only serialisation there is.
 func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	var body command
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, refusal{ReasonUnreadable, err.Error()})
+	if decoded, ok := s.decodeBody(w, r, &body); !ok {
+		return
+	} else if !decoded {
+		writeJSON(w, http.StatusBadRequest, refusal{ReasonUnreadable, "ui: the request carries no body"})
 		return
 	}
 

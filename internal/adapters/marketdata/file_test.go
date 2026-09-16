@@ -2,6 +2,8 @@ package marketdata_test
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -321,4 +323,42 @@ func TestAFileWhoseIdentifiersCannotBeWrittenIsRefused(t *testing.T) {
 			}
 		}
 	})
+}
+
+// endless writes valid rows for ever, each after the one before it, so what
+// refuses the file is its size and not its order.
+type endless struct {
+	at   int
+	time int
+	row  string
+}
+
+func (e *endless) Read(p []byte) (int, error) {
+	n := 0
+	for n < len(p) {
+		if e.at >= len(e.row) {
+			e.time += 1_000
+			e.row, e.at = fmt.Sprintf("%d,1,d1,20000,20001,10,10\n", e.time), 0
+		}
+		c := copy(p[n:], e.row[e.at:])
+		n, e.at = n+c, e.at+c
+	}
+	return n, nil
+}
+
+// Scenario: a market file with no end is refused rather than read
+//
+// persistence bounds what a reader holds at once in three places, and this one
+// had no ceiling at all. The file comes from the operator rather than from a
+// network, so it is a different risk from an HTTP body — but "the operator would
+// not do that" is not a bound, and a truncated file read as a whole one would be
+// a run over market nobody chose.
+func TestAMarketFileWithNoEndIsRefused(t *testing.T) {
+	header := "praxis.market.v1,MNQ,50\ntime,sequence,session_id,bid,ask,bid_size,ask_size\n"
+	rows := &endless{time: 2_000}
+
+	_, err := marketdata.Read(io.MultiReader(strings.NewReader(header), rows))
+	if !errors.Is(err, marketdata.ErrTooLarge) {
+		t.Fatalf("Read of a file with no end: got %v, want ErrTooLarge", err)
+	}
 }

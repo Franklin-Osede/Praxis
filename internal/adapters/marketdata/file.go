@@ -58,7 +58,18 @@ var (
 	ErrOutOfOrder      = errors.New("marketdata: row is not after the one before it")
 	ErrSessionReturned = errors.New("marketdata: session identifier reappears after another began")
 	ErrEmptySessionID  = errors.New("marketdata: row carries no session identifier")
+
+	// ErrTooLarge reports a file past what a reader will take. The file comes
+	// from the operator rather than from a network, which makes it a different
+	// risk from a request body and not an unbounded one: a reader with no
+	// ceiling reads until the machine stops it, and "the operator would not do
+	// that" is not a bound. It is the journal's ceiling, because the two are
+	// read together and a limit that differed would be a limit to remember.
+	ErrTooLarge = errors.New("marketdata: file is larger than this reader will take")
 )
+
+// MaxFileBytes is how much market data one reader will consume.
+const MaxFileBytes = 64 << 20
 
 // Observation is one row: a quote and the trading session it belongs to.
 type Observation struct {
@@ -85,7 +96,10 @@ func ReadFile(path string) (*Feed, error) {
 
 // Read parses a canonical market file, rejecting anything it cannot vouch for.
 func Read(r io.Reader) (*Feed, error) {
-	in := csv.NewReader(r)
+	// Counted as it is parsed rather than read whole first: a file that never
+	// ends must be refused without being held.
+	bounded := &bounded{from: r, left: MaxFileBytes + 1}
+	in := csv.NewReader(bounded)
 	in.FieldsPerRecord = -1 // checked per row, to report a short row as truncation
 
 	version, err := in.Read()
@@ -125,6 +139,11 @@ func Read(r io.Reader) (*Feed, error) {
 			break
 		}
 		if err != nil {
+			// A file past the ceiling is its own finding: it did not end early,
+			// it did not end.
+			if errors.Is(err, ErrTooLarge) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("%w: row %d: %v", ErrTruncated, row, err)
 		}
 		if len(record) != len(columns) {
@@ -157,6 +176,26 @@ func Read(r io.Reader) (*Feed, error) {
 		return nil, ErrNoObservations
 	}
 	return feed, nil
+}
+
+// bounded is a reader that refuses rather than truncates. io.LimitReader would
+// report the end of the file, and a truncated file read as a whole one is a run
+// over market nobody chose.
+type bounded struct {
+	from io.Reader
+	left int64
+}
+
+func (b *bounded) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		return 0, fmt.Errorf("%w: more than %d bytes", ErrTooLarge, MaxFileBytes)
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.from.Read(p)
+	b.left -= int64(n)
+	return n, err
 }
 
 func parseVersion(record []string) (market.Instrument, error) {

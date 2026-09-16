@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -50,8 +49,10 @@ type stepRecord struct {
 // be one reading, or a transfer or a second tab could land between them.
 func (s *Server) handleStep(w http.ResponseWriter, r *http.Request) {
 	var body advance
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, refusal{ReasonUnreadable, err.Error()})
+	if decoded, ok := s.decodeBody(w, r, &body); !ok {
+		return
+	} else if !decoded {
+		writeJSON(w, http.StatusBadRequest, refusal{ReasonUnreadable, "ui: the request carries no body"})
 		return
 	}
 	from, err := optionalSequence(body.FromObservedSequence)

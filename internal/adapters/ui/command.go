@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -32,6 +31,10 @@ const (
 
 	// 405: the route is asked for in a way it is never asked for.
 	ReasonMethodNotAllowed Reason = "method_not_allowed"
+
+	// 413: the bytes are well formed and there are too many of them, which is
+	// not the same finding as bytes that cannot be read.
+	ReasonBodyTooLarge Reason = "body_too_large"
 
 	// 409: something is already taken.
 	ReasonLeaseHeld       Reason = "lease_held"
@@ -141,8 +144,10 @@ type acknowledgement struct {
 // a reading out of order to someone whose controls were taken away.
 func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
 	var body acknowledgement
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, refusal{ReasonUnreadable, err.Error()})
+	if decoded, ok := s.decodeBody(w, r, &body); !ok {
+		return
+	} else if !decoded {
+		writeJSON(w, http.StatusBadRequest, refusal{ReasonUnreadable, "ui: the request carries no body"})
 		return
 	}
 	observed, err := market.ParseUint(body.ObservedSequence)

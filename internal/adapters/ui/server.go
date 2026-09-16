@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"praxis/internal/adapters/marketdata"
 	"praxis/internal/adapters/persistence"
@@ -279,7 +281,21 @@ func (s *Server) listen(addr string) error {
 	mux.HandleFunc("/api/acknowledge", s.handleAcknowledge)
 	mux.HandleFunc("/api/step", s.handleStep)
 	mux.HandleFunc("/api/command", s.handleCommand)
-	s.http = &http.Server{Handler: s.guard(mux)}
+	s.http = &http.Server{
+		Handler: s.guard(mux),
+		// A client that opens a connection and sends nothing holds a goroutine
+		// and a descriptor until something lets it go. These do.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// WriteTimeout is deliberately unset. A response is written after the
+		// single loop has run the command, so a deadline on it cuts the answer
+		// to a command that was applied: the participant sees a lost response
+		// and retries. The retry is safe — that is what a gesture identifier
+		// and a step's from-observation are for — but it costs a pilot's
+		// attention and buys nothing, because a slow reader blocks its own
+		// handler's goroutine and never the loop.
+	}
 	return nil
 }
 
@@ -424,8 +440,11 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Handover string `json:"handover"`
 		}
-		// An absent or unreadable body presents no key, and is refused as one.
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		// An absent or unreadable body presents no key, and is refused as one —
+		// but one past the ceiling is refused as what it is before it is read.
+		if _, ok := s.decodeBody(w, r, &body); !ok {
+			return
+		}
 		var next string
 		token, segment, next, err = s.lease.transfer(body.Handover)
 		if errors.Is(err, ErrHandoverRefused) {
@@ -474,6 +493,36 @@ func (s *Server) state() State {
 // participant is shown — and nothing else. Wiring the book back to it would
 // undo this without anything looking wrong.
 func (s *Server) lastQuote() (market.Quote, bool) { return s.session.LastQuote() }
+
+// maxBodyBytes is what a request may weigh. Every body this protocol has is a
+// handful of decimal strings, so the ceiling is generous by three orders of
+// magnitude and still bounds what one page open in a browser can make this
+// process hold.
+const maxBodyBytes = 64 << 10
+
+// decodeBody reads a request body under that ceiling, and answers the two ways
+// it can fail as the two findings they are: bytes that cannot be read, and bytes
+// that can and are too many. It reports whether the caller may go on, and
+// whether anything was decoded at all — an empty body is not a failure for a
+// route whose body is optional.
+func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, into any) (decoded, ok bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	err := json.NewDecoder(r.Body).Decode(into)
+	switch {
+	case err == nil:
+		return true, true
+	case errors.Is(err, io.EOF):
+		return false, true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, refusal{ReasonBodyTooLarge,
+			fmt.Sprintf("ui: a request body may weigh %d bytes", maxBodyBytes)})
+		return false, false
+	}
+	writeJSON(w, http.StatusBadRequest, refusal{ReasonUnreadable, err.Error()})
+	return false, false
+}
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
 	w.Header().Set("Content-Type", "application/json")

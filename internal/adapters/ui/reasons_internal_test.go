@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"praxis/internal/adapters/marketdata"
@@ -157,6 +158,14 @@ func fromHandlers(t *testing.T) map[Reason]bool {
 	w = httptest.NewRecorder()
 	running.handleCommand(w, httptest.NewRequest(http.MethodPost, "/api/command", bytes.NewReader([]byte("{"))))
 	record(w, http.StatusBadRequest, "a body that is not JSON")
+
+	w = httptest.NewRecorder()
+	// Valid JSON and too much of it: a decoder refuses bytes that are not JSON
+	// at the first character, before any ceiling is reached, so a body that
+	// tests the ceiling has to be one it would otherwise read.
+	running.handleCommand(w, httptest.NewRequest(http.MethodPost, "/api/command",
+		bytes.NewReader([]byte(`{"orderId":"`+strings.Repeat("a", maxBodyBytes)+`"}`))))
+	record(w, http.StatusRequestEntityTooLarge, "a body past the ceiling")
 
 	// The controls taken, and then asked for again.
 	first := httptest.NewRecorder()

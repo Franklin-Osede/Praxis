@@ -134,3 +134,46 @@ func TestCloseWaitsForTheCommandTheLoopAccepted(t *testing.T) {
 		t.Fatal("a request after Close was accepted")
 	}
 }
+
+// Scenario: the server bounds how long it waits for a request, and deliberately
+// not how long it takes to answer
+//
+// A client that opens a connection and sends nothing holds a goroutine and a
+// file descriptor until it is bounded. The read side is bounded here.
+//
+// The write side is not, and that is a decision rather than an omission. A
+// response is written after the single loop has run the command, so a slow
+// command with a write deadline is a command that was applied and whose answer
+// was cut: the participant sees a lost response. The retries that costs are
+// exactly what the gesture identifier and the step's from-observation exist to
+// make safe, so it would not corrupt anything — it would spend a pilot's
+// attention, and buy nothing, because a slow reader blocks its own handler's
+// goroutine and never the loop.
+func TestTheServerBoundsWhatItWaitsForAndNotWhatItAnswers(t *testing.T) {
+	dir := t.TempDir()
+	marketPath := filepath.Join(dir, "market.csv")
+	if err := os.WriteFile(marketPath, []byte("praxis.market.v1,MNQ,50\n"+
+		"time,sequence,session_id,bid,ask,bid_size,ask_size\n"+
+		"3000,1,d1,20000,20001,10,10\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err := Open(Options{Market: marketPath, Journal: filepath.Join(dir, "journal.praxis"), New: internalPilotConfig()})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	for name, got := range map[string]time.Duration{
+		"ReadHeaderTimeout": s.http.ReadHeaderTimeout,
+		"ReadTimeout":       s.http.ReadTimeout,
+		"IdleTimeout":       s.http.IdleTimeout,
+	} {
+		if got <= 0 {
+			t.Errorf("%s is %v: a client that sends nothing is never let go", name, got)
+		}
+	}
+	if s.http.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout is %v: a command that ran would have its answer cut, and the "+
+			"participant would retry something already applied", s.http.WriteTimeout)
+	}
+}

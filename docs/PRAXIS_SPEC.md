@@ -1530,6 +1530,7 @@ does not exist gets, which comes from the mux and not from this server.
 | 400 | the bytes are wrong | unreadable body, non-canonical integer, invalid identifier, unknown tag |
 | 403 | the request is not one this server answers | an origin that is not this server's, a transfer without the current handover key |
 | 405 | the route is asked for in a way it is never asked for | a command that is not a POST |
+| 413 | the bytes are well formed and there are too many of them | a request body past the ceiling |
 | 409 | something is already taken | lease held, lease stale, same gesture with a different command, an act naming a run it does not belong to, a step from a row no longer on the screen |
 | 422 | the session refuses this command now | reading out of order, nothing presented, evaluation ended, no session open, no row after the last one |
 | 500 | the machine could not do something that cannot fail on purpose | a lease that could not be minted |
@@ -1540,6 +1541,27 @@ they had one name.** A request that does not reach the loop because the process
 is closing was answered `needs_recovery`, which sends an operator to inspect a
 journal with nothing wrong with it. It is `server_closing`, and `needs_recovery`
 is left to the session that actually stopped.
+
+**A local server is still a server, and what it will hold is bounded.** A request
+body may weigh 64 KiB — every body this protocol has is a handful of decimal
+strings — and one past that is refused as `body_too_large` rather than as
+unreadable, because a request that is well formed and too big is a different
+finding and an operator told 400 would go looking for a client writing bad JSON.
+The read side of a connection is bounded too: a client that opens one and sends
+nothing is let go.
+
+**The write side is deliberately unbounded, and that is a decision.** A response
+is written after the single loop has run the command, so a write deadline cuts
+the answer to a command that was already applied: the participant sees a lost
+response and retries. The retry is safe — that is what the gesture identifier and
+the step's from-observation are for — but it spends a pilot's attention and buys
+nothing, because a slow reader blocks its own handler's goroutine and never the
+loop.
+
+A market file is bounded at the same 64 MiB a journal is. It comes from the
+operator rather than from a network, which makes it a different risk and not an
+unbounded one, and a reader that refuses is not a reader that truncates: a file
+cut short and read as a whole one would be a run over market nobody chose.
 
 **Every reason must be producible, and a test proves it rather than a reader.**
 `lease_held` was declared from the first day and unreachable until the one place
