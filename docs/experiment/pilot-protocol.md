@@ -57,6 +57,16 @@ Write down, away from the machine:
 | the market file's name and SHA-256 | `shasum -a 256 <market-file>` |
 | the browser and its version | the operator's note for this build |
 | THE-PAINT-CLAIM checked | the operator's note for this build |
+| any repair evidence beside the journal | `ls <journal>.tail-*`, **including its absence** |
+
+**Why the repair evidence is on this list.** A repair truncates a journal back to
+its last confirmed batch and keeps what it discarded in a file beside it. An
+anchor is taken at collection, which is *after* any repair, so it certifies the
+repaired journal as complete and cannot see that anything was discarded — and
+the only evidence is a file the person who repaired it could delete. So the
+operator lists it and writes down what is there, absence included. A session that
+arrives with repair evidence is a session that was interrupted and cut back,
+which is a fact about that pilot rather than an operational incident.
 
 **What this covers, and what it does not.** An anchor taken at collection
 certifies the journal against alteration *after* collection. It says nothing
@@ -81,11 +91,12 @@ sitting in front of it.
 
 Then collection, on that journal:
 
-    praxis.anchor.v1 - 15 29 sha256:1e71af8a...
+    praxis.anchor.v1 t-01-s1 15 29 sha256:44228356...
 
+    versions:  container 1, payload praxis.event.v5
     condition: clean
-    config:    sha256:0ff7c312...
-    subject:   t-dry
+    config:    sha256:cc6c807c...
+    subject:   t-01
     proved:    29 events replayed against the aggregates that produced them
     anchored:  yes — through batch 15, sequence 29, and the bytes leading to it
                nothing bounds what came after it
@@ -93,5 +104,15 @@ Then collection, on that journal:
                the rows its anchored prefix consumed are bound through the anchor;
                rows consumed after it are not
 
+    $ ls <journal>.tail-*
+    no matches
+
 The run above crossed a boundary with a position open, ended on the file running
-out rather than on an error, and its journal verified on all three claims.
+out rather than on an error, and its journal verified on all three claims. The
+anchor's second field is the run identity, which is what lets one session's
+anchor be told from another's.
+
+Run it again whenever the binary changes in a way that changes what a journal
+holds. This transcript is from `praxis.event.v5`, the version the pilots will
+write; an earlier one was recorded against v4 and no longer describes what an
+operator will see.
