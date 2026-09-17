@@ -73,6 +73,30 @@ certifies the journal against alteration *after* collection. It says nothing
 about the interval before it; what covers that is the operator being present.
 A pre-registration should say exactly this.
 
+## The first session with a person is a rehearsal, and its data is discarded
+
+Declared here, before any session is run, because that is what makes it
+legitimate: deciding to discard a session *after* seeing what it contains is a
+degree of freedom an analysis cannot have. This one is discarded by design and in
+advance, whatever it shows.
+
+What it rehearses is the part no software imposes. The engine has tests; the
+steps on this page do not, and they have never been walked with a person sitting
+in front of the screen:
+
+- the paint check for this build, done and written down;
+- the anchor taken at collection and recorded away from the machine;
+- `ls <journal>.tail-*`, with its answer written down either way;
+- a run label that is this session's and no other's;
+- and the plain question of whether the operator can do all of it while
+  somebody waits.
+
+Fourteen useful sessions and one that tests the operator costs less than fifteen
+contaminated by a step skipped the first time and noticed at the analysis. The
+rehearsal's journal is kept — it is evidence about the apparatus — and excluded
+from the sample, and the exclusion is cited to this paragraph rather than
+explained afterwards.
+
 ## A dry run of the whole apparatus
 
 Run once before the first real session, with a fictitious subject, over a small
