@@ -22,6 +22,7 @@ func TestGenerateGolden(t *testing.T) {
 		{persistence.EventVersionV3, everyEventTypeV3(), "testdata/golden-events-v3.txt"},
 		{persistence.EventVersionV4, everyEventTypeV4(), "testdata/golden-events-v4.txt"},
 		{persistence.EventVersionV5, everyEventTypeV5(), "testdata/golden-events-v5.txt"},
+		{persistence.EventVersionV6, everyEventTypeV6(), "testdata/golden-events-v6.txt"},
 	} {
 		payload, err := persistence.EncodeEvents(g.events, g.version)
 		if err != nil {

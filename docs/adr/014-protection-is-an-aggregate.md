@@ -270,6 +270,18 @@ the rules already settled here — a stop that has reached its level is a market
 order and cannot wait, and a marketable limit fills at its limit. Anyone reading
 a journal as a broker simulation should know this is where the two differ.
 
+**A protection with no leg left ends.** Cancelling the last leg over exposure
+that is still open — a stop that triggered and found nothing, or filled part of
+the position, with no target beside it — leaves an aggregate that can offer an
+observation nothing. It stayed `Active` holding no levels, which the screen
+showed the participant as cover over a position that had none, and which the
+live path refuses to be given directly, since both levels at zero is invalid.
+So the last cancellation owes a `ProtectionEnded` with reason `cover_gone`,
+demanded by `Verify` and `Replay` like every other ending the log requires. The
+reason is a value no earlier version has a name for, so it inaugurates
+`praxis.event.v6`, published with the rule that first writes it. An older writer
+refuses it rather than producing a line its reader would reject.
+
 Within one observation the order is fixed:
 
 ```text

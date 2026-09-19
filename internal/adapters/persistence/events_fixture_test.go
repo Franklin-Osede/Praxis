@@ -315,3 +315,16 @@ func present(t *testing.T, s *session.Session, elapsed session.ElapsedNanos) {
 		t.Fatalf("AcknowledgePresentation: %v", err)
 	}
 }
+
+// everyEventTypeV6 is v5 with the ending a protection gets when its last leg is
+// cancelled over exposure that is still open — the value v6 publishes.
+func everyEventTypeV6() []session.Event {
+	events := everyEventTypeV5()
+	for n, e := range events {
+		if ended, ok := e.(session.ProtectionEnded); ok {
+			ended.Reason = session.ProtectionCoverGone
+			events[n] = ended
+		}
+	}
+	return events
+}

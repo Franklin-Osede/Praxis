@@ -439,6 +439,7 @@ func Replay(events []Event) (*ReplayedState, error) {
 			state.Working = removeWorking(state.Working, v.OrderID)
 			// A cancellation nothing owed is one the book itself has to
 			// explain, and for a protective leg the book still can.
+			end, uncovered := owedEvent{}, false
 			if !owedThis {
 				if err := proveLegCancellation(&protections, state.LastQuote, started.Config.Instrument, v); err != nil {
 					return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
@@ -446,10 +447,16 @@ func Replay(events []Event) (*ReplayedState, error) {
 				if err := proveOrderCancellation(submitted, state.LastQuote, v); err != nil {
 					return nil, fmt.Errorf("%w: event %d: %w", ErrFabricated, n, err)
 				}
+				// Asked before the leg goes, so the ending holds the levels
+				// the protection had when it was taken.
+				end, uncovered = protections.uncoveredByCancelling(v.OrderID)
 			}
 			delete(submitted, v.OrderID)
 			protections.entryGone(v.OrderID)
 			protections.legCancelled(v.OrderID)
+			if uncovered {
+				protections.owe(end)
+			}
 
 		case OrderSubmitted:
 			submitted[v.Order.ID] = v.Order
@@ -974,8 +981,15 @@ func Verify(events []Event) error {
 			sides[v.Order.ID] = v.Order.Side == market.SideBuy
 
 		case OrderCancelled:
+			end, uncovered := owedEvent{}, false
+			if !owedThis {
+				end, uncovered = protections.uncoveredByCancelling(v.OrderID)
+			}
 			protections.entryGone(v.OrderID)
 			protections.legCancelled(v.OrderID)
+			if uncovered {
+				protections.owe(end)
+			}
 
 		case ProtectionPlaced:
 			gestures.attachProtection(v.StopPrice, v.TargetPrice)

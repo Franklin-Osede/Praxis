@@ -671,8 +671,8 @@ func TestARealProtectedJournalRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWriter: %v", err)
 	}
-	if w.PayloadVersion() != EventVersionV5 {
-		t.Fatalf("a new journal is written in %q, want v5", w.PayloadVersion())
+	if w.PayloadVersion() != EventVersionV6 {
+		t.Fatalf("a new journal is written in %q, want v6", w.PayloadVersion())
 	}
 
 	s, err := session.New(sessionConfig(), 1_000, w)
@@ -722,7 +722,7 @@ func TestARealProtectedJournalRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
-	if journal.PayloadVersion != EventVersionV5 {
+	if journal.PayloadVersion != EventVersionV6 {
 		t.Fatalf("version: got %q", journal.PayloadVersion)
 	}
 	if !reflect.DeepEqual(journal.Events(), s.Events()) {

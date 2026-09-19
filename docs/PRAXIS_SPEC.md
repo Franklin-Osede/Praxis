@@ -252,7 +252,10 @@ meets the book it was placed against** for the same reason: a stop or target mov
 to where the market already is executes in the replacement's own batch, and a
 replacement the book does not reach records only itself. Real platforms often
 refuse such a level instead; filling it is the deliberate trade, because the act
-is then recorded rather than lost. Within one
+is then recorded rather than lost. **A protection whose last leg is cancelled
+over exposure that is still open ends**, with reason `cover_gone` — the value
+that inaugurates `praxis.event.v6` — because an aggregate with no level left is
+cover the screen would report over a position that has none. Within one
 observation the protections already standing go first, then each working order
 in turn with its own protection resolved before the next order is offered
 anything — otherwise the next order takes the liquidity that stop should have

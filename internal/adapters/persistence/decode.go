@@ -193,7 +193,7 @@ func decodeEvent(line string, version string) (session.Event, error) {
 		kind = session.KindProtectionEnded
 		ended := session.ProtectionEnded{Envelope: envelope(at, sequence, kind), Ref: r.ref()}
 		ended.StopPrice, ended.TargetPrice = r.ticks(), r.ticks()
-		ended.Reason = r.protectionEndReason()
+		ended.Reason = r.protectionEndReason(version)
 		if knows(version, EventVersionV4) {
 			ended.Decided = r.decision()
 		}
@@ -355,12 +355,17 @@ func (r *reader) ref() session.ProtectionRef {
 	return session.ProtectionRef{}
 }
 
-func (r *reader) protectionEndReason() session.ProtectionEndReason {
+func (r *reader) protectionEndReason(version string) session.ProtectionEndReason {
 	s := r.next()
 	for k, name := range protectionEndNames {
-		if name == s {
-			return k
+		if name != s {
+			continue
 		}
+		if since, later := protectionEndsSince[k]; later && !knows(version, since) {
+			r.fail(fmt.Errorf("%w: %s has no name for %q", ErrUnsupportedInVersion, version, s))
+			return 0
+		}
+		return k
 	}
 	r.fail(fmt.Errorf("%w: protection end reason %q", ErrSyntax, s))
 	return 0

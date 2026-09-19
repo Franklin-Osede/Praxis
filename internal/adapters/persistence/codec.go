@@ -90,16 +90,19 @@ import (
 //
 // The position episode counter inaugurated v2, protection v3, and the
 // cancellation reasons one-cancels-the-other execution needs inaugurate v4 —
-// each published with the commands that first write it.
+// each published with the commands that first write it. v5 added the run
+// identity, and v6 the ending a protection gets when its last leg is cancelled
+// over exposure that is still open: a value no earlier version has a name for.
 const (
 	EventVersionV1 = "praxis.event.v1"
 	EventVersionV2 = "praxis.event.v2"
 	EventVersionV3 = "praxis.event.v3"
 	EventVersionV4 = "praxis.event.v4"
 	EventVersionV5 = "praxis.event.v5"
+	EventVersionV6 = "praxis.event.v6"
 
 	// EventVersion is what a new journal is written in.
-	EventVersion = EventVersionV5
+	EventVersion = EventVersionV6
 )
 
 // ErrUnsupportedInVersion reports an event, a field or a value that the payload

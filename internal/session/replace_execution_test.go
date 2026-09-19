@@ -113,6 +113,46 @@ func TestMarketAfterAStopMovedIntoTheBookStillProves(t *testing.T) {
 	checked(t, s)
 }
 
+// Scenario: a replacement meets the book as it was left, not as it arrived
+//
+//	Given a long whose own exit has already taken part of the bid
+//	When its stop is moved onto that bid
+//	Then it fills only what the depth still holds, and the rest is cancelled.
+//
+// The live session consumes displayed size as it fills, exactly as Replay does
+// from the fills the journal records. A replacement offered the quote as it
+// arrived would trade depth the session had already spent.
+func TestAReplacementMeetsTheBookAsItWasLeft(t *testing.T) {
+	s := newSession(t)
+	mustOpen(t, s, 2_000, "d1")
+	mustObserve(t, s, market.Quote{Instrument: mnq, Time: 3_000, Bid: 20_000, Ask: 20_001, BidSize: 6, AskSize: 50})
+	mustProtect(t, s, order("entry", market.SideBuy, 10), 19_900, 0)
+
+	// The trader sells four by hand: the bid had six, and two are left.
+	exit, err := market.NewLimitOrder("exit", mnq, market.SideSell, 4, 20_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSubmit(t, s, exit)
+	if net := netQty(t, s); net != 6 {
+		t.Fatalf("position %d, want 6 after selling four", net)
+	}
+	before := s.JournalLen()
+
+	replaceActive(t, s, 20_000, 0)
+
+	if fill := sellFill(t, s.Events()[before:]); fill.Qty != 2 || fill.Price != 20_000 {
+		t.Fatalf("the stop filled %d at %d, want the 2 the bid still held", fill.Qty, fill.Price)
+	}
+	if net := netQty(t, s); net != 4 {
+		t.Fatalf("position %d, want 4: the book could not take more", net)
+	}
+	if got := endReasons(s.Events()[before:]); len(got) != 1 || got[0] != "cover_gone" {
+		t.Fatalf("endings %v, want one cover_gone: the triggered stop was the last leg", got)
+	}
+	checked(t, s)
+}
+
 // Scenario: a replacement that ends the evaluation records it in its own batch
 //
 // A target that fills realises the gain, and a gain reads balance: the

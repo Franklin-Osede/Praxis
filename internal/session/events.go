@@ -522,6 +522,13 @@ const (
 	ProtectionPositionClosed
 	ProtectionFlipped
 	ProtectionExecuted
+
+	// ProtectionCoverGone is the last leg cancelled while exposure is still
+	// open: a stop that triggered and found nothing, or filled part of the
+	// position, with no target beside it. The aggregate has nothing left to
+	// offer an observation, and staying Active would report cover over a
+	// position that has none.
+	ProtectionCoverGone
 )
 
 func (r ProtectionEndReason) String() string {
@@ -540,6 +547,8 @@ func (r ProtectionEndReason) String() string {
 		return "flipped"
 	case ProtectionExecuted:
 		return "executed"
+	case ProtectionCoverGone:
+		return "cover_gone"
 	default:
 		return "unspecified"
 	}

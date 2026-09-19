@@ -51,6 +51,14 @@ var (
 		session.ProtectionPositionClosed:     "position_closed",
 		session.ProtectionFlipped:            "flipped",
 		session.ProtectionExecuted:           "executed",
+		session.ProtectionCoverGone:          "cover_gone",
+	}
+
+	// protectionEndsSince is cancelReasonsSince for endings: a reader of an
+	// older version has no name for the ending a protection left with no leg
+	// over open exposure gets, so an older writer refuses it.
+	protectionEndsSince = map[session.ProtectionEndReason]string{
+		session.ProtectionCoverGone: EventVersionV6,
 	}
 	pacingNames = map[session.PacingMode]string{
 		session.PacingScripted:     "scripted",
@@ -244,6 +252,9 @@ func encodeEvent(e session.Event, version string) (string, error) {
 		if header.Kind != session.KindProtectionEnded {
 			return "", ErrKindMismatch
 		}
+		if err := requireProtectionEnd(version, v.Reason); err != nil {
+			return "", err
+		}
 		f.name(typeProtectionEnded).at(header).ref(v.Ref)
 		f.int(int64(v.StopPrice)).int(int64(v.TargetPrice))
 		f.enum(protectionEndNames[v.Reason], "protection end reason")
@@ -331,11 +342,19 @@ func requireProtection(version string) error {
 // deciding things about names nobody chose it to decide.
 var versionOrder = map[string]int{
 	EventVersionV1: 1, EventVersionV2: 2, EventVersionV3: 3, EventVersionV4: 4,
-	EventVersionV5: 5,
+	EventVersionV5: 5, EventVersionV6: 6,
 }
 
 func knows(version string, since string) bool {
 	return versionOrder[version] >= versionOrder[since]
+}
+
+func requireProtectionEnd(version string, reason session.ProtectionEndReason) error {
+	since, later := protectionEndsSince[reason]
+	if later && !knows(version, since) {
+		return fmt.Errorf("%w: %s has no name for %q", ErrUnsupportedInVersion, version, protectionEndNames[reason])
+	}
+	return nil
 }
 
 func requireCancelReason(version string, reason session.CancelReason) error {

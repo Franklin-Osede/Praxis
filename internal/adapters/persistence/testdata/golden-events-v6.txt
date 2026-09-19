@@ -1,0 +1,17 @@
+session_started 1000 1 MNQ 50 5000000 50 5000000 100000 300000 200000 250000 s-07 pilot r-01
+session_opened 2000 2 2026-08-27 5000000 5000000
+challenge_decision 2000 3 2 activated 2026-08-27 5000000 5000000 0 0 none 0 0
+account_valued 2000 4 2026-08-27 5000000 4999900
+market_observed 3000 5 MNQ 50 3000 4 20000 20001 10 12
+order_submitted 3000 6 o-1 MNQ 50 sell limit 3 20050 0 5000000 4999900 2 1 -1500 -4 3 g-1 1764000000000000000 1 40000000000
+order_rested 3000 7 o-2 MNQ 50 buy stop 5 0 20060 4
+order_cancelled 3000 8 o-3 6 unfillable_remainder - 0 0 0
+fill_produced 3000 9 o-1 MNQ 50 3000 sell 20050 3
+position_changed 3000 10 reduced MNQ 50 sell 3 20050 -750 150
+session_ended 9000 11 2026-08-27
+protection_placed 9000 12 o-4 19900 20400 praxis:12:stop praxis:12:target
+protection_replaced 9000 13 entry o-4 0 19900 20400 19800 0 praxis:12:stop - 1 g-2 1764000000000000000 1 40000000000
+protection_ended 9000 14 episode - 10 19800 0 cover_gone - 0 0 0
+observation_presented 9000 15 5 1764000000000000000 1 12000000
+order_cancelled 9000 16 praxis:12:target 7 by_oco - 0 0 0
+order_cancelled 9000 17 praxis:12:stop 10 position_closed - 0 0 0

@@ -410,6 +410,11 @@ func (p *protectionProjection) consequencesOf(
 		// is a limit and keeps waiting over what is left.
 		if protective && fillOrderID == active.stopOrderID {
 			owed = append(owed, owedCancel(active.stopOrderID, absQty(netQty), CancelledUnfillableRemainder))
+			// With no target beside it the cancellation takes the last leg,
+			// and an aggregate with nothing left over an open position ends.
+			if end, uncovered := p.uncoveredWithout(episodeID, active.stopOrderID); uncovered {
+				owed = append(owed, end)
+			}
 		}
 		endPlan(ProtectionDidNotOpenExposure)
 
@@ -525,6 +530,40 @@ func (p *protectionProjection) entryGone(orderID string) {
 	}
 	p.owe(owedEnd(entryReference(orderID), planned.stopPrice, planned.targetPrice,
 		ProtectionEntryCancelled, true))
+}
+
+// uncoveredWithout reports the ending owed when legID is cancelled and leaves
+// the protection with no leg over exposure that is still open.
+//
+// It is asked before the cancellation is folded in, so the ending holds the
+// levels as they stood when the fact that ended it happened — the same rule
+// requireOwed checks endings by everywhere else.
+func (p *protectionProjection) uncoveredWithout(episodeID uint64, legID string) (owedEvent, bool) {
+	active, ok := p.activeFor(episodeID)
+	if !ok || active.protectedQty == 0 {
+		return owedEvent{}, false
+	}
+	for _, leg := range []string{active.stopOrderID, active.targetOrderID} {
+		if leg != "" && leg != legID {
+			return owedEvent{}, false
+		}
+	}
+	return owedEnd(episodeReference(episodeID),
+		active.stopPrice, active.targetPrice, ProtectionCoverGone, true), true
+}
+
+// uncoveredByCancelling is uncoveredWithout for a reader, which holds the
+// identifier of the leg going and not the episode it belongs to.
+func (p *protectionProjection) uncoveredByCancelling(orderID string) (owedEvent, bool) {
+	if orderID == "" {
+		return owedEvent{}, false
+	}
+	for _, active := range p.active {
+		if orderID == active.stopOrderID || orderID == active.targetOrderID {
+			return p.uncoveredWithout(active.episodeID, orderID)
+		}
+	}
+	return owedEvent{}, false
 }
 
 func (p *protectionProjection) owe(events ...owedEvent) {
@@ -1211,7 +1250,16 @@ func (s *Session) executeLeg(at market.LogicalTime, episodeID uint64, which legK
 	// part leaves a change behind, and the ending of what remains is derived
 	// from it like everything else.
 	if result.StopTriggered && len(result.Fills) == 0 {
-		return s.recordOwed(at, owedCancel(order.ID, order.Qty, CancelledUnfillableRemainder))
+		// The ending is decided before the cancellation is folded in, so it
+		// holds the levels the protection had when the stop triggered.
+		end, uncovered := s.protections.uncoveredWithout(episodeID, order.ID)
+		if err := s.recordOwed(at, owedCancel(order.ID, order.Qty, CancelledUnfillableRemainder)); err != nil {
+			return err
+		}
+		if !uncovered {
+			return nil
+		}
+		return s.recordOwed(at, end)
 	}
 	return nil
 }
