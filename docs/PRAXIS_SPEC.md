@@ -1010,6 +1010,16 @@ Use table-driven unit tests, property/invariant tests, deterministic replay
 tests, and a regression test for every confirmed bug. Do not add a Gherkin
 runner. Business-readable scenarios may be comments above table tests.
 
+**The screen is tested in a real browser, and the suite needs one to mean
+anything about it.** `internal/adapters/ui/browser_test.go` runs the page the
+server serves in headless Chrome or Chromium through chromedp, because the
+recovery defect it guards lived only in the page and every HTTP test passed
+while it stood. It skips in one case only — no executable found — and says so;
+a browser that is found and fails to start is a failure. A run that accepts a
+change to the interface sets `PRAXIS_REQUIRE_BROWSER=1`, which turns that skip
+into a failure, and `PRAXIS_BROWSER` names the executable where it is not in a
+standard place. No test sees a paint: THE-PAINT-CLAIM stays with the operator.
+
 Required growing properties:
 
 - Same data, actions, seed, configuration, and ordered input produce identical

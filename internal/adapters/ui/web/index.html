@@ -304,19 +304,34 @@ async function advance() {
   }
 
   render(step.payload);
-  await painted();
+  if (!(await acknowledge())) {
+    return;
+  }
+  notice("Observation " + run.observed + " is on the screen.");
+  controls(true);
+}
 
+// acknowledge confirms the row just rendered, after it is painted, and answers
+// whether the controls may open. A row is confirmed once per segment: a new
+// lease opens a new segment, and the server refuses to let the market move past
+// a row that segment has not confirmed, so taking the controls confirms the row
+// already on the screen exactly as a step confirms the one it brought. A
+// session that has shown nothing has nothing to confirm.
+async function acknowledge() {
+  if (!run.observed) {
+    return true;
+  }
+  await painted();
   const said = await send("/api/acknowledge", {
     lease: run.lease,
     observedSequence: run.observed,
   });
   if (said.status !== 200) {
     handle(said.payload.reason, said.payload.detail);
-    return;
+    return false;
   }
   render(said.payload);
-  notice("Observation " + run.observed + " is on the screen.");
-  controls(true);
+  return true;
 }
 
 async function refresh() {
@@ -358,6 +373,9 @@ el("take").addEventListener("click", async () => {
   run.gesture = 1;
   run.stopped = false;
   render(answer.payload.state);
+  if (!(await acknowledge())) {
+    return;
+  }
   notice("You have the controls. Advance to see an observation.");
   controls(true);
 });
@@ -374,6 +392,9 @@ el("transfer").addEventListener("click", async () => {
   run.gesture = 1;
   run.stopped = false;
   render(answer.payload.state);
+  if (!(await acknowledge())) {
+    return;
+  }
   notice("You have the controls. The console shows a new handover key.");
   controls(true);
 });
