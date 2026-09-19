@@ -284,6 +284,7 @@ function render(state) {
   text("balance", state.money ? state.money.balanceCts : "unavailable");
   text("equity", state.money ? state.money.equityCts : "unavailable");
   text("netQty", state.position.netQty);
+  text("symbol", state.position.symbol);
   // Said the same way for everyone: which order filled, what it did, and every
   // leg it did to the position. A close by hand and a stop-out leave the same
   // numbers, and a participant who reads one as the other decides next on a

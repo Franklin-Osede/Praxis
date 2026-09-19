@@ -557,15 +557,23 @@ func TestTheScreenSaysWhatFilledAndWhatItDid(t *testing.T) {
 	if got := settle(t, ctx, untilAdvanced, chromedp.Click("#advance", chromedp.ByID)); got != "advanced" {
 		t.Fatalf("advancing into the stop: %s", got)
 	}
-	var stopped, netQty string
+	var stopped, netQty, symbol string
 	if err := chromedp.Run(ctx,
 		chromedp.Text("#fills", &stopped, chromedp.ByID),
 		chromedp.Text("#netQty", &netQty, chromedp.ByID),
+		chromedp.Text("#symbol", &symbol, chromedp.ByID),
 	); err != nil {
 		t.Fatalf("reading the screen: %v", err)
 	}
 	if netQty != "0" {
 		t.Fatalf("position %q, want the stop to have closed it", netQty)
+	}
+	// The inventory in section 11 is a list of what the participant may see,
+	// and what is sent is shown: a field the server authorises and the page
+	// drops leaves the whole suite green, because the test that guards the
+	// inventory reads the JSON and not the screen.
+	if symbol != "MNQ" {
+		t.Fatalf("the position is shown as %q %q, and the instrument is on the inventory", netQty, symbol)
 	}
 	if !strings.HasPrefix(stopped, "your stop sell 1 at 19800") || !strings.Contains(stopped, "closed 1") {
 		t.Fatalf("after the stop the screen says %q, which does not name the stop", stopped)
