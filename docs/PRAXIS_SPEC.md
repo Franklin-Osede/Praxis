@@ -247,7 +247,12 @@ sides of each other, or they do each other's job and both can be reachable in a
 single observation.
 
 **A protection meets the observation that activated it**, not the next one: an
-entry that filled through a gap may already be past its stop. Within one
+entry that filled through a gap may already be past its stop. **A replaced level
+meets the book it was placed against** for the same reason: a stop or target moved
+to where the market already is executes in the replacement's own batch, and a
+replacement the book does not reach records only itself. Real platforms often
+refuse such a level instead; filling it is the deliberate trade, because the act
+is then recorded rather than lost. Within one
 observation the protections already standing go first, then each working order
 in turn with its own protection resolved before the next order is offered
 anything — otherwise the next order takes the liquidity that stop should have

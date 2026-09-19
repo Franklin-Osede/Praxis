@@ -252,6 +252,24 @@ A protection is offered the same observation that activated it, not the next
 one. An entry that filled through a gap may already be past its stop, and
 waiting would grant a survival the market never gave.
 
+A replacement is the same case. Its new levels are offered the book as it was
+left, in the replacement's own batch, and the account is revalued if anything
+executed. Leaving a reached level standing until the next observation wrote a
+journal the live session accepted and `Replay` refused, because a level the
+market had reached was still waiting when the observation ended. Refusing the
+replacement instead was rejected: moving a stop is the act the provisional
+primary hypothesis measures, and a refused act leaves no trace. A replacement
+the book does not reach records only itself, so no journal that was provable
+before this rule changes meaning, and no payload version is needed.
+
+**The realism cost is accepted deliberately.** Many real platforms reject a sell
+stop placed at or above the bid rather than filling it, and Praxis fills it. For
+this experiment that is the better trade: the act is recorded instead of lost,
+and it is the act the provisional primary hypothesis measures. It also follows
+the rules already settled here — a stop that has reached its level is a market
+order and cannot wait, and a marketable limit fills at its limit. Anyone reading
+a journal as a broker simulation should know this is where the two differ.
+
 Within one observation the order is fixed:
 
 ```text

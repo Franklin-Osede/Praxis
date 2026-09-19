@@ -919,7 +919,34 @@ func (s *Session) replaceProtection(ref ProtectionRef, stop, target market.Ticks
 	}); err != nil {
 		return err
 	}
-	return s.protections.applyReplaced(replaced)
+	if err := s.protections.applyReplaced(replaced); err != nil {
+		return err
+	}
+	// The new levels stand against the book as it was left, exactly as a
+	// protection meets the observation that activated it: a stop moved to where
+	// the market already is has been reached, and leaving it waiting would end
+	// the observation with a reachable level standing, which no reader believes.
+	// A replacement the book does not reach records nothing more, so journals
+	// holding only those keep the shape they have.
+	// The valuation follows anything the resolution recorded, and not only a
+	// fill: a leg cancelled for want of liquidity records a cancellation and an
+	// ending with no money moving, and the ending still belongs to a batch that
+	// says where the account stood. A replacement that recorded nothing changes
+	// no equity, and a valuation after it would be a second copy of a fact the
+	// log already holds — the reason activation is derived rather than recorded.
+	//
+	// This leaves the two paths asymmetric on purpose: SubmitOrderWithProtection
+	// revalues even when nothing fills, because an order submitted is a fact
+	// about the session whether or not the book answered, and because journals
+	// the goldens pin already hold that shape. Do not make one match the other.
+	before := s.JournalLen()
+	if err := s.resolveProtection(at); err != nil {
+		return err
+	}
+	if s.JournalLen() == before {
+		return nil
+	}
+	return s.revalue(at)
 }
 
 // CancelProtection withdraws a protection, leaving its entry alone.
