@@ -69,7 +69,7 @@
   <button id="advance" type="button">Advance one observation</button>
 
   <div style="margin-top:0.6rem">
-    <label>id <input id="orderId" value="o-1"></label>
+    <label>id <input id="orderId" readonly></label>
     <label>side
       <select id="side"><option value="buy">buy</option><option value="sell">sell</option></select>
     </label>
@@ -89,16 +89,12 @@
   </div>
 
   <div style="margin-top:0.6rem">
-    <label>order <input id="cancelId" value="o-1"></label>
+    <label>order <select id="cancelId"></select></label>
     <button id="cancel" type="button">Cancel order</button>
   </div>
 
   <div style="margin-top:0.6rem">
-    <label>protection of
-      <select id="refKind"><option value="entry">entry</option><option value="episode">episode</option></select>
-    </label>
-    <label>entry <input id="refOrderId"></label>
-    <label>episode <input id="refEpisodeId"></label>
+    <label>protection <select id="protectionRef"></select></label>
     <label>new stop <input id="newStop"></label>
     <label>new target <input id="newTarget"></label>
     <button id="replace" type="button">Replace protection</button>
@@ -131,6 +127,12 @@ const run = {
   // mint a name belonging to a run this is not — the wrong_run the server
   // refuses.
   gesture: 1,
+  // order counts the submissions this lease has made, so the page can name an
+  // order without asking the participant for a name. An identifier is spent
+  // forever, and a name typed twice is a refusal that leaves no trace — the
+  // seconds spent discovering it would land inside the next command's interval,
+  // which is the thing being measured.
+  order: 1,
   observed: "",
   // stopped means the apparatus cannot be trusted to record what happens next,
   // so nothing further is offered.
@@ -138,6 +140,33 @@ const run = {
 };
 
 const el = (id) => document.getElementById(id);
+
+// orderName is the name the next submission carries. The segment makes it this
+// run's and no other's, the same property the gesture name rests on.
+function orderName() {
+  return "o-" + run.segment + "-" + run.order;
+}
+
+function showOrderName() {
+  el("orderId").value = run.lease ? orderName() : "";
+}
+
+// options fills a select from the state, so a participant chooses a row instead
+// of copying a key out of a table.
+function options(id, items) {
+  const select = el(id);
+  const had = select.value;
+  select.textContent = "";
+  for (const item of items) {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    select.appendChild(option);
+  }
+  if (items.some((item) => item.value === had)) {
+    select.value = had;
+  }
+}
 const text = (id, value) => { el(id).textContent = value === undefined || value === null ? "" : value; };
 
 function notice(message, tone) {
@@ -158,6 +187,7 @@ function forget() {
   run.lease = null;
   run.segment = null;
   run.gesture = 1;
+  run.order = 1;
   run.observed = "";
   controls(false);
 }
@@ -258,6 +288,17 @@ function render(state) {
   rows("working", state.working, (o) => [o.id, o.side, o.type, o.qty, o.limitPrice, o.stopPrice]);
   rows("protection", state.protection, (p) => [p.status, p.entryOrderId || p.episodeId || "", p.stopPrice, p.targetPrice, p.protectedQty || ""]);
 
+  options("cancelId", (state.working || []).map((o) => ({
+    value: o.id,
+    label: o.side + " " + o.qty + " " + o.type + " (" + o.id + ")",
+  })));
+  // The reference travels as the two fields the protocol defines; which of them
+  // it is stays out of the participant's hands.
+  options("protectionRef", (state.protection || []).map((p) => p.status === "planned"
+    ? { value: "entry:" + p.entryOrderId, label: "planned with " + p.entryOrderId + " (stop " + p.stopPrice + ", target " + p.targetPrice + ")" }
+    : { value: "episode:" + p.episodeId, label: "protecting " + p.protectedQty + " (stop " + p.stopPrice + ", target " + p.targetPrice + ")" }));
+  showOrderName();
+
   run.observed = state.observedSequence || "";
   if (state.needsRecovery) {
     handle("needs_recovery", state.needsRecovery);
@@ -351,13 +392,24 @@ async function command(body) {
     // after the kernel recorded it, and a name asked twice with two commands is
     // the conflict a second tab produces.
     run.gesture += 1;
+    spendOrderName(body);
     controls(true);
     return;
   }
   run.gesture += 1;
+  spendOrderName(body);
   render(answer.payload);
   notice("Done.");
   controls(true);
+}
+
+// spendOrderName moves to the next name after a submission, refused or not: a
+// name the kernel may have recorded is never offered again.
+function spendOrderName(body) {
+  if (body && body.kind === "submit_order") {
+    run.order += 1;
+    showOrderName();
+  }
 }
 
 const value = (id) => el(id).value.trim();
@@ -403,7 +455,7 @@ el("advance").addEventListener("click", advance);
 
 el("submit").addEventListener("click", () => command({
   kind: "submit_order",
-  orderId: value("orderId"),
+  orderId: orderName(),
   side: value("side"),
   type: value("type"),
   qty: value("qty"),
@@ -422,21 +474,26 @@ el("cancel").addEventListener("click", () => command({
 // button: two commands would manufacture an interval with no protection the
 // trader never intended, and the length of those intervals is one of the things
 // the log exists to measure.
-el("replace").addEventListener("click", () => command({
+el("replace").addEventListener("click", () => command(Object.assign({
   kind: "replace_protection",
-  refKind: value("refKind"),
-  refOrderId: value("refOrderId"),
-  refEpisodeId: value("refEpisodeId"),
   protectionStop: value("newStop"),
   protectionTarget: value("newTarget"),
-}));
+}, reference())));
 
-el("withdraw").addEventListener("click", () => command({
+el("withdraw").addEventListener("click", () => command(Object.assign({
   kind: "withdraw_protection",
-  refKind: value("refKind"),
-  refOrderId: value("refOrderId"),
-  refEpisodeId: value("refEpisodeId"),
-}));
+}, reference())));
+
+// reference turns the chosen row back into the tagged reference the protocol
+// defines: either the entry that placed it or the episode it protects.
+function reference() {
+  const chosen = value("protectionRef");
+  const kind = chosen.slice(0, chosen.indexOf(":"));
+  const name = chosen.slice(chosen.indexOf(":") + 1);
+  return kind === "entry"
+    ? { refKind: "entry", refOrderId: name, refEpisodeId: "" }
+    : { refKind: "episode", refOrderId: "", refEpisodeId: name };
+}
 
 refresh();
 </script>

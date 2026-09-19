@@ -383,3 +383,105 @@ func TestTheScreenContinuesAfterAHandover(t *testing.T) {
 	}
 }
 
+// untilCommandDone is true once the controls are open again after a command, or
+// the page has stopped.
+const untilCommandDone = `(() => {
+  const notice = document.getElementById("notice");
+  if (notice.dataset.tone === "stop") return "stopped: " + notice.textContent;
+  if (!document.getElementById("controls").disabled && notice.textContent === "Done.") return "done";
+  return null;
+})()`
+
+// Scenario: a participant trades without typing an identifier
+//
+//	Given a fresh pilot session on the screen
+//	When they submit an order with protection, then move its stop
+//	Then the page names the order itself and carries the reference of the
+//	  protection they chose, and both commands are accepted.
+//
+// Typing a name is not friction, it is a measurement fault: an identifier is
+// spent forever, so a name reused is refused, a refusal leaves no trace by
+// design, and the seconds spent discovering it land inside the next command's
+// interval — which is what the experiment measures.
+func TestTheScreenNamesOrdersAndProtectionsItself(t *testing.T) {
+	marketPath, journalPath := paths(t)
+	s, err := ui.Open(ui.Options{Market: marketPath, Journal: journalPath, New: pilotConfig(), Now: tickingClock()})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	go s.Serve()
+	t.Cleanup(func() { s.Close() })
+
+	ctx := browser(t, s)
+	if got := settle(t, ctx, untilSettled, chromedp.Click("#take", chromedp.ByID)); got != "enabled" {
+		t.Fatalf("taking the controls: %s", got)
+	}
+	const untilFirst = `(() => {
+  const notice = document.getElementById("notice");
+  if (notice.dataset.tone === "stop") return "stopped: " + notice.textContent;
+  const open = !document.getElementById("controls").disabled;
+  if (open && document.getElementById("cursor").textContent === "1 of 2") return "advanced";
+  return null;
+})()`
+	if got := settle(t, ctx, untilFirst, chromedp.Click("#advance", chromedp.ByID)); got != "advanced" {
+		t.Fatalf("the first advance: %s", got)
+	}
+
+	// The name is the page's, and the participant never typed it.
+	var minted string
+	if err := chromedp.Run(ctx, chromedp.Value("#orderId", &minted, chromedp.ByID)); err != nil {
+		t.Fatalf("reading the order name: %v", err)
+	}
+	if minted == "" {
+		t.Fatal("the page offered no order name")
+	}
+
+	got := settle(t, ctx, untilCommandDone,
+		chromedp.SetValue("#qty", "2", chromedp.ByID),
+		chromedp.SetValue("#protectionStop", "19900", chromedp.ByID),
+		chromedp.SetValue("#protectionTarget", "20400", chromedp.ByID),
+		chromedp.Click("#submit", chromedp.ByID),
+	)
+	if got != "done" {
+		t.Fatalf("submitting an order: %s", got)
+	}
+
+	// The protection is chosen as a row, and its reference never reaches the
+	// participant's hands.
+	var chosen string
+	if err := chromedp.Run(ctx, chromedp.Value("#protectionRef", &chosen, chromedp.ByID)); err != nil {
+		t.Fatalf("reading the protection choice: %v", err)
+	}
+	if !strings.HasPrefix(chosen, "episode:") {
+		t.Fatalf("the protection on offer is %q, want the active episode", chosen)
+	}
+	got = settle(t, ctx, untilCommandDone,
+		chromedp.SetValue("#newStop", "19950", chromedp.ByID),
+		chromedp.SetValue("#newTarget", "20400", chromedp.ByID),
+		chromedp.Click("#replace", chromedp.ByID),
+	)
+	if got != "done" {
+		t.Fatalf("replacing the protection: %s", got)
+	}
+
+	// The next name is a different one: a spent name is never offered again.
+	var next string
+	if err := chromedp.Run(ctx, chromedp.Value("#orderId", &next, chromedp.ByID)); err != nil {
+		t.Fatalf("reading the next order name: %v", err)
+	}
+	if next == minted {
+		t.Fatalf("the page offers %q again after spending it", next)
+	}
+
+	var stop, netQty string
+	if err := chromedp.Run(ctx,
+		chromedp.Evaluate(`document.querySelector("#protection tr td:nth-child(3)").textContent`, &stop),
+		chromedp.Text("#netQty", &netQty, chromedp.ByID),
+	); err != nil {
+		t.Fatalf("reading the screen: %v", err)
+	}
+	if stop != "19950" || netQty != "2" {
+		t.Fatalf("the screen shows a stop of %q over %q, want 19950 over 2", stop, netQty)
+	}
+}
+
