@@ -97,6 +97,33 @@ rehearsal's journal is kept — it is evidence about the apparatus — and exclu
 from the sample, and the exclusion is cited to this paragraph rather than
 explained afterwards.
 
+## If a session is interrupted
+
+Restart `praxis ui` on the **same** journal, with the same `--subject` and
+`--run-id` or with neither: the journal keeps its own, and a label that
+disagrees is refused rather than ignored. Never run `praxis replay` on a
+journal somebody traded — it advances the market with nobody watching, and the
+rows it adds were seen by no one.
+
+If the restart refuses the journal for an unconfirmed tail, repair is the
+operator's decision and is taken with the participant present:
+
+    praxis store repair <journal>            # a dry run: it changes nothing
+    praxis store repair <journal> --apply
+
+**Check the dry run's `batches: N confirmed` against something written down** —
+the batch in the last anchor, or the last `praxis store verify` that exited 0 —
+before `--apply`. Not against the dry run's own account of itself: damage to a
+length field is exactly what makes that number wrong, and a journal whose
+confirmed commands are misreported as an unfinished write is truncated on
+ordinary consent. If N is lower than what you wrote down, stop and keep the
+file; the discarded bytes survive only in `<journal>.tail-*`, which the repair
+writes beside it.
+
+Record the interruption on the collection sheet either way. Sessions lost to
+interruption is one of the quantities the pilots exist to estimate, and nothing
+in the software counts them.
+
 ## A dry run of the whole apparatus
 
 Run once before the first real session, with a fictitious subject, over a small
