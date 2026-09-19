@@ -70,6 +70,16 @@ window.__praxis = [];
 })();
 `
 
+// untilScriptRan is true once the page's own script has reached its end.
+//
+// WaitVisible proves the node exists, not that the script ran: the button is in
+// the markup above the <script>, so a click dispatched in that gap reaches no
+// listener, nothing is sent, and the page sits at its initial notice for ever —
+// a sixty-second timeout whose notice is still the markup's own text. refresh()
+// is the script's last statement, after every addEventListener, so its answered
+// request is the proof that the controls are wired.
+const untilScriptRan = `(() => (window.__praxis || []).some((entry) => entry.startsWith("response /api/state ")) ? "loaded" : null)()`
+
 // untilSettled is true once the controls are open or the page has stopped, and
 // says which.
 const untilSettled = `(() => {
@@ -145,6 +155,7 @@ func browser(t *testing.T, s *ui.Server) context.Context {
 	if err := chromedp.Run(ctx); err != nil {
 		t.Fatalf("the browser at %s was found and did not start: %v", path, err)
 	}
+	var loaded string
 	err := chromedp.Run(ctx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			_, err := page.AddScriptToEvaluateOnNewDocument(recorder).Do(ctx)
@@ -152,9 +163,10 @@ func browser(t *testing.T, s *ui.Server) context.Context {
 		}),
 		chromedp.Navigate("http://"+s.Addr()+"/"),
 		chromedp.WaitVisible("#take", chromedp.ByID),
+		chromedp.Poll(untilScriptRan, &loaded, chromedp.WithPollingTimeout(30*time.Second)),
 	)
 	if err != nil {
-		t.Fatalf("loading the page: %v", err)
+		t.Fatalf("loading the page: %v\n%s", err, diagnose(ctx))
 	}
 	return ctx
 }
