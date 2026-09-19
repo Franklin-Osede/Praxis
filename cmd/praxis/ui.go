@@ -40,6 +40,18 @@ func uiCommand(args []string, out, errOut *os.File) int {
 		return exitFatal
 	}
 
+	// Only a flag the operator actually typed is a claim about this run. An
+	// absent --subject is not an empty subject: it is silence, and a resumed
+	// journal keeps the labels it already holds. See ui.Options.DeclaredSubject.
+	typed := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { typed[f.Name] = true })
+	declared := func(name, value string) string {
+		if !typed[name] {
+			return ""
+		}
+		return value
+	}
+
 	// The handover key is printed here and nowhere else: it is what lets the
 	// controls be taken from a tab that is gone, so it belongs to whoever sits at
 	// this console. Each transfer spends it and the next one is printed.
@@ -51,6 +63,8 @@ func uiCommand(args []string, out, errOut *os.File) int {
 	)
 	server, err := ui.Open(ui.Options{
 		Market: operands[0], Journal: *journalPath, Addr: *addr,
+		DeclaredSubject: declared("subject", *subject),
+		DeclaredRunID:   declared("run-id", *runID),
 		Handover: func(key string) {
 			printing.Lock()
 			defer printing.Unlock()

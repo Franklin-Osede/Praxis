@@ -40,6 +40,10 @@ var (
 	// Repair is never automatic: it is a decision about which bytes to
 	// discard, and it belongs to a person with a command line.
 	ErrDamagedTail = errors.New("ui: this journal has an unconfirmed tail; run praxis store inspect")
+
+	// ErrDeclaredMismatch reports labels supplied for a journal that already
+	// names others. See Options.DeclaredSubject.
+	ErrDeclaredMismatch = errors.New("ui: this journal names a different run")
 )
 
 // Options are what a server is opened over.
@@ -79,6 +83,18 @@ type Options struct {
 	// ignored for one that does — a resumed run cannot be reconfigured,
 	// because its account and evaluation already have a history.
 	New session.Config
+
+	// DeclaredSubject and DeclaredRunID are the labels the operator actually
+	// typed, empty when they typed none. A resumed journal keeps its own, so
+	// these are never read from: they are checked against it, and a
+	// disagreement is refused rather than ignored.
+	//
+	// Silence is not a claim. An operator who names nothing is continuing the
+	// run that is there; one who names another run is saying something untrue
+	// about it, and the next participant's decisions would be recorded under
+	// the last one's label.
+	DeclaredSubject string
+	DeclaredRunID   string
 }
 
 // Server owns one session and gives exactly one client the controls.
@@ -176,7 +192,7 @@ func (s *Server) start(opts Options, feed *marketdata.Feed) error {
 	if len(recovered.Batches) == 0 {
 		return s.begin(opts, feed)
 	}
-	return s.resume(recovered, feed)
+	return s.resume(opts, recovered, feed)
 }
 
 func writerJournal(w *persistence.Writer) *persistence.Journal { return w.Recovered() }
@@ -196,7 +212,7 @@ func (s *Server) begin(opts Options, feed *marketdata.Feed) error {
 	return nil
 }
 
-func (s *Server) resume(recovered *persistence.Journal, feed *marketdata.Feed) error {
+func (s *Server) resume(opts Options, recovered *persistence.Journal, feed *marketdata.Feed) error {
 	events := recovered.Events()
 	if err := session.Verify(events); err != nil {
 		return err
@@ -206,6 +222,9 @@ func (s *Server) resume(recovered *persistence.Journal, feed *marketdata.Feed) e
 		return err
 	}
 	if err := usableHere(state.Config, recovered.PayloadVersion); err != nil {
+		return err
+	}
+	if err := declaresTheSameRun(opts, state.Config); err != nil {
 		return err
 	}
 	if state.Config.Instrument != feed.Instrument {
@@ -232,6 +251,27 @@ func (s *Server) resume(recovered *persistence.Journal, feed *marketdata.Feed) e
 	// person only advanced and confirmed stamps presentations and no command,
 	// and counting commands granted that run's number a second time.
 	s.lease = newLease(state.InteractionSegment(), s.now)
+	return nil
+}
+
+// declaresTheSameRun refuses labels that disagree with the journal's own, and
+// says both. It is asked before the session opens, so a run that would have
+// been recorded under the wrong label never starts.
+func declaresTheSameRun(opts Options, cfg session.Config) error {
+	for _, claim := range []struct {
+		what      string
+		declared  string
+		inJournal string
+	}{
+		{"subject", opts.DeclaredSubject, cfg.SubjectID},
+		{"run", opts.DeclaredRunID, cfg.RunID},
+	} {
+		if claim.declared == "" || claim.declared == claim.inJournal {
+			continue
+		}
+		return fmt.Errorf("%w: its %s is %q and %q was supplied; a journal's configuration comes from its own history",
+			ErrDeclaredMismatch, claim.what, claim.inJournal, claim.declared)
+	}
 	return nil
 }
 
