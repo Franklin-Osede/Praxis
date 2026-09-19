@@ -13,6 +13,11 @@ import (
 	"praxis/internal/session"
 )
 
+// errHumanPaced reports a journal produced by a person through the interface.
+// It is this command's refusal and not the kernel's: the session is willing to
+// take an observation, and what must not happen is this feed supplying one.
+var errHumanPaced = errors.New("praxis: this journal was traded by somebody")
+
 // replayCommand runs or resumes a simulation over a market file.
 //
 // "replay" here means replaying the market inside a session, which is not what
@@ -154,6 +159,17 @@ func resume(recovered *persistence.Journal, feed *marketdata.Feed, committer ses
 	state, err := session.Replay(events)
 	if err != nil {
 		return nil, 0, err
+	}
+	// A journal somebody traded is not this command's to continue. The feed
+	// here is scripted: it advances the market with nobody watching, so every
+	// row it added would be one no participant was shown, and the
+	// presentations the journal holds would stop matching its observations —
+	// a hole in the one quantity the pilots record, in a journal that still
+	// verifies clean afterwards. Recovery for those runs is praxis ui, which
+	// resumes the same journal and waits for a person.
+	if state.Config.Pacing != session.PacingScripted {
+		return nil, 0, fmt.Errorf("%w: it was traded at %v pacing; resume it with praxis ui",
+			errHumanPaced, state.Config.Pacing)
 	}
 	// Configuration comes from the journal, never from the flags. A resumed
 	// run cannot be reconfigured: the account and the evaluation already have
