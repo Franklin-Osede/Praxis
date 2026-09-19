@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"strings"
 
 	"praxis/internal/challenge"
 	"praxis/internal/market"
@@ -49,6 +50,19 @@ type State struct {
 	// participant knew it. OrderContext records it as what the trader knew,
 	// and the only thing that can make that true is the screen.
 	ConsecutiveLosingTrades uint32 `json:"consecutiveLosingTrades"`
+
+	// Fills is what filled while the row on the screen was the row on the
+	// screen, in the order it happened. A manual close and a stop-out leave the
+	// same numbers — position flat, money moved — and a participant who cannot
+	// tell them apart takes their next decision on a misreading the journal
+	// cannot separate afterwards. It is on the inventory in §11 for that
+	// reason, and it says nothing the journal does not already record.
+	//
+	// The row and not the last fill: two orders can fill on one observation,
+	// and naming one of them describes a smaller event than the one that
+	// happened. It empties when the market moves on, because it is about what
+	// is on the screen.
+	Fills []Fill `json:"fills,omitempty"`
 
 	Working    []Order      `json:"working"`
 	Protection []Protection `json:"protection"`
@@ -104,6 +118,29 @@ type Order struct {
 	StopPrice  string `json:"stopPrice"`
 }
 
+// Fill names one fill and everything it did to the position.
+type Fill struct {
+	// Cause is "order" for something the participant submitted, "stop" or
+	// "target" for a protective leg doing its work.
+	Cause string `json:"cause"`
+	Side  string `json:"side"`
+	Qty   string `json:"qty"`
+	Price string `json:"price"`
+
+	// Changes are the legs the fill produced, in order. A reversal is two: the
+	// position closed and the opposite one opened. Reporting only the first
+	// told a participant their position had closed while they held the other
+	// side of it, with the position row beside it saying otherwise.
+	Changes []PositionChange `json:"changes"`
+}
+
+// PositionChange is one leg of what a fill did.
+type PositionChange struct {
+	// Kind is opened, increased, reduced or closed.
+	Kind string `json:"kind"`
+	Qty  string `json:"qty"`
+}
+
 type Protection struct {
 	// Status is "planned" or "active": a plan waits for its entry, and an
 	// active protection is bound to the position it covers.
@@ -113,6 +150,62 @@ type Protection struct {
 	StopPrice    string `json:"stopPrice"`
 	TargetPrice  string `json:"targetPrice"`
 	ProtectedQty string `json:"protectedQty,omitempty"`
+}
+
+// fillsOnScreen reads the fills the row on the screen produced, with what each
+// did to the position. Nothing is derived: the fill, the changes it caused and
+// the name of the order that filled are all recorded, and a protective leg
+// carries the reserved name the session gave it.
+//
+// It walks back to the observation on the screen and forward from there, so a
+// fill belongs to the row it happened on and goes when that row does.
+func fillsOnScreen(events []session.Event) []Fill {
+	from := 0
+	for n := len(events) - 1; n >= 0; n-- {
+		if _, observed := events[n].(session.MarketObserved); observed {
+			from = n + 1
+			break
+		}
+	}
+
+	var fills []Fill
+	for _, e := range events[from:] {
+		switch v := e.(type) {
+		case session.FillProduced:
+			fills = append(fills, Fill{
+				Cause: causeOf(v.Fill.OrderID),
+				Side:  v.Fill.Side.String(),
+				Qty:   decimal(int64(v.Fill.Qty)),
+				Price: decimal(int64(v.Fill.Price)),
+			})
+		case session.PositionChanged:
+			// Every change belongs to the fill before it, and a reversal
+			// produces two of them from one.
+			if len(fills) == 0 {
+				continue
+			}
+			last := &fills[len(fills)-1]
+			last.Changes = append(last.Changes, PositionChange{
+				Kind: v.Change.Kind.String(),
+				Qty:  decimal(int64(v.Change.Qty)),
+			})
+		}
+	}
+	return fills
+}
+
+// causeOf says whose order filled. The session names a protective leg from a
+// reserved namespace and ends it with the leg it is, so this reads the record
+// rather than guessing from prices.
+func causeOf(orderID string) string {
+	switch {
+	case strings.HasSuffix(orderID, ":stop"):
+		return "stop"
+	case strings.HasSuffix(orderID, ":target"):
+		return "target"
+	default:
+		return "order"
+	}
 }
 
 // decimal is market's spelling, not a second one. Every quantity crosses as a
@@ -139,6 +232,7 @@ func project(s *session.Session, cursor, observations int, cfg session.Config, v
 		// as what the trader knew and the screen is the only thing that can
 		// make that true.
 		ConsecutiveLosingTrades: s.ConsecutiveLosingTrades(),
+		Fills:                   fillsOnScreen(s.Events()),
 	}
 	// A valuation that could not be taken leaves no money on the screen. It is
 	// not a figure to be replaced by another one: the balance it used to fall

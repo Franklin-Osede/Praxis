@@ -273,6 +273,8 @@ func TestTheStateHasExactlyTheAuthorisedFields(t *testing.T) {
 		"money.balanceCts": true, "money.equityCts": true,
 		"evaluation.state": true, "evaluation.reason": true,
 		"consecutiveLosingTrades": true,
+		"fills[].cause": true, "fills[].side": true, "fills[].qty": true,
+		"fills[].price": true, "fills[].changes[].kind": true, "fills[].changes[].qty": true,
 		"working[].id":            true, "working[].side": true, "working[].type": true,
 		"working[].qty": true, "working[].limitPrice": true, "working[].stopPrice": true,
 		"protection[].status": true, "protection[].entryOrderId": true,
@@ -306,7 +308,7 @@ func TestTheStateHasExactlyTheAuthorisedFields(t *testing.T) {
 	}
 	// And the collections were actually populated, or the fields inside them
 	// were never examined.
-	for _, path := range []string{"book.bid", "working[].id", "protection[].status"} {
+	for _, path := range []string{"book.bid", "working[].id", "protection[].status", "fills[].cause"} {
 		if !seen[path] {
 			t.Fatalf("the fixture never produced %q, so its fields went unchecked", path)
 		}
@@ -555,6 +557,16 @@ func writeRestingAndProtected(t *testing.T, marketPath, journalPath string) {
 	}
 	if err := s.SubmitOrderWithProtection(entry, 18_900, 19_500, act); err != nil {
 		t.Fatalf("SubmitOrderWithProtection: %v", err)
+	}
+	// And one that fills, so the fill the screen reports is reached rather than
+	// assumed absent.
+	filled, err := market.NewMarketOrder("o-2", feed.Instrument, market.SideBuy, 1)
+	if err != nil {
+		t.Fatalf("NewMarketOrder: %v", err)
+	}
+	act.GestureID = "g-2"
+	if err := s.SubmitOrder(filled, act); err != nil {
+		t.Fatalf("SubmitOrder: %v", err)
 	}
 }
 

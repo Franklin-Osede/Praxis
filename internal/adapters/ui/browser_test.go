@@ -3,6 +3,7 @@ package ui_test
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -485,3 +486,88 @@ func TestTheScreenNamesOrdersAndProtectionsItself(t *testing.T) {
 	}
 }
 
+// fill types into one of the page's boxes. An empty value is a legitimate
+// entry — a protection with no target — and SetValue refuses one.
+func fill(id, value string) chromedp.Action {
+	return chromedp.Evaluate(`document.getElementById("`+id+`").value = "`+value+`"`, nil)
+}
+
+// fallingMarket drops far enough on its second row to take a stop out.
+const fallingMarket = `praxis.market.v1,MNQ,50
+time,sequence,session_id,bid,ask,bid_size,ask_size
+3000,1,d1,20000,20001,10,10
+4000,2,d1,19800,19801,10,10
+`
+
+// Scenario: the screen says whether the trader closed the position or the stop did
+//
+//	Given a long with a stop below it
+//	When the market falls through the stop
+//	Then the screen names the stop as the cause, where a close by hand names
+//	  the order.
+//
+// The two leave the same numbers — flat position, money moved — and the operator
+// dry run could not tell them apart. A participant who reads one as the other
+// takes the next decision on a position they do not have, and nothing
+// downstream separates that from the behaviour being measured.
+func TestTheScreenSaysWhatFilledAndWhatItDid(t *testing.T) {
+	dir := t.TempDir()
+	marketPath := filepath.Join(dir, "falling.csv")
+	if err := os.WriteFile(marketPath, []byte(fallingMarket), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err := ui.Open(ui.Options{
+		Market: marketPath, Journal: filepath.Join(dir, "journal.praxis"),
+		New: pilotConfig(), Now: tickingClock(),
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	go s.Serve()
+	t.Cleanup(func() { s.Close() })
+
+	ctx := browser(t, s)
+	if got := settle(t, ctx, untilSettled, chromedp.Click("#take", chromedp.ByID)); got != "enabled" {
+		t.Fatalf("taking the controls: %s", got)
+	}
+	const untilFirst = `(() => {
+  const open = !document.getElementById("controls").disabled;
+  return open && document.getElementById("cursor").textContent === "1 of 2" ? "advanced" : null;
+})()`
+	if got := settle(t, ctx, untilFirst, chromedp.Click("#advance", chromedp.ByID)); got != "advanced" {
+		t.Fatalf("the first advance: %s", got)
+	}
+	got := settle(t, ctx, untilCommandDone,
+		fill("qty", "1"), fill("protectionStop", "19900"), fill("protectionTarget", ""),
+		chromedp.Click("#submit", chromedp.ByID),
+	)
+	if got != "done" {
+		t.Fatalf("submitting the order: %s", got)
+	}
+
+	var opened string
+	if err := chromedp.Run(ctx, chromedp.Text("#fills", &opened, chromedp.ByID)); err != nil {
+		t.Fatalf("reading the fill: %v", err)
+	}
+	if !strings.HasPrefix(opened, "your order buy 1 at 20001") || !strings.Contains(opened, "opened 1") {
+		t.Fatalf("after the entry the screen says %q", opened)
+	}
+
+	// The market falls through the stop on the next row.
+	if got := settle(t, ctx, untilAdvanced, chromedp.Click("#advance", chromedp.ByID)); got != "advanced" {
+		t.Fatalf("advancing into the stop: %s", got)
+	}
+	var stopped, netQty string
+	if err := chromedp.Run(ctx,
+		chromedp.Text("#fills", &stopped, chromedp.ByID),
+		chromedp.Text("#netQty", &netQty, chromedp.ByID),
+	); err != nil {
+		t.Fatalf("reading the screen: %v", err)
+	}
+	if netQty != "0" {
+		t.Fatalf("position %q, want the stop to have closed it", netQty)
+	}
+	if !strings.HasPrefix(stopped, "your stop sell 1 at 19800") || !strings.Contains(stopped, "closed 1") {
+		t.Fatalf("after the stop the screen says %q, which does not name the stop", stopped)
+	}
+}

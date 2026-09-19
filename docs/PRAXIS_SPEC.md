@@ -1350,12 +1350,35 @@ drawn and belongs to the protocol, not the layout. It is this:
 | `money.balanceCts`, `money.equityCts` | settled and marked, by the session's own valuation |
 | `evaluation.state`, `evaluation.reason` | active, passed or failed, and why |
 | `consecutiveLosingTrades` | the streak `OrderContext` will record on the next decision |
+| `fills[].cause`, `fills[].side`, `fills[].qty`, `fills[].price`, `fills[].changes[].kind`, `fills[].changes[].qty` | what filled while this row has been on the screen, whether each was the trader's order or a protective leg, and every leg it did to the position |
 | `working[]` | id, side, type, qty, limit price, stop price |
 | `protection[]` | status, entry order id, episode id, stop price, target price, protected qty |
 | `needsRecovery` | the session has stopped, or its valuation could not be taken |
 
 Nothing else. In particular: no distance to any threshold, no high-water mark,
 no drawdown figure, and no count of anything the participant has not done.
+
+**`fills` was added after the screen was drawn, and the reason is stated
+because that is the exception this rule exists to prevent.** A manual close and
+a stop-out leave the same screen — position flat, money moved — and the operator
+dry run found that the two are indistinguishable. A participant who cannot tell
+which happened takes their next decision on a misreading of their own position,
+and nothing downstream can separate that from the behaviour being measured: it
+would be a confound built into the apparatus rather than a fact about the
+trader. Every field of it is already in the journal — the fill, its order's name
+and the position changes it caused — so it tells the participant nothing the log
+does not record, and it is on this list rather than in the layout. It says
+nothing about any rule or threshold.
+
+It is **the fills of the row on the screen**, and that is the field's meaning
+rather than an implementation detail. Two orders can fill on one observation — a
+working order and a protective leg, or two resting limits — and naming the last
+of them describes a smaller event than the one that happened. For the same
+reason each fill carries every leg it produced: a reversal is one fill that
+closes a position and opens the opposite one, and reporting only the close told
+a participant their position had gone while the position row beside it said they
+were short. The list empties when the market moves on, because it is about what
+is on the screen.
 
 **`observedSequence` is the journal position, and that is a decision rather than
 what was to hand.** An opaque token would read as nothing, but it would need a

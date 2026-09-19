@@ -53,6 +53,7 @@
       <tr><th>balance</th><td><span id="balance"></span> <span class="unit">cents</span></td></tr>
       <tr><th>equity</th><td><span id="equity"></span> <span class="unit">cents</span></td></tr>
       <tr><th>position</th><td><span id="netQty"></span> <span id="symbol" class="unit"></span></td></tr>
+      <tr><th>filled here</th><td id="fills"></td></tr>
     </table>
   </section>
 
@@ -283,7 +284,18 @@ function render(state) {
   text("balance", state.money ? state.money.balanceCts : "unavailable");
   text("equity", state.money ? state.money.equityCts : "unavailable");
   text("netQty", state.position.netQty);
-  text("symbol", state.position.symbol);
+  // Said the same way for everyone: which order filled, what it did, and every
+  // leg it did to the position. A close by hand and a stop-out leave the same
+  // numbers, and a participant who reads one as the other decides next on a
+  // position they do not have. It is what filled while this row has been on the
+  // screen, so two fills on one observation are both named.
+  text("fills", (state.fills || []).length === 0
+    ? "nothing yet on this observation"
+    : state.fills.map((f) =>
+        (f.cause === "order" ? "your order " : "your " + f.cause + " ")
+        + f.side + " " + f.qty + " at " + f.price
+        + " — " + (f.changes || []).map((c) => c.kind + " " + c.qty).join(", ")
+      ).join("; "));
 
   rows("working", state.working, (o) => [o.id, o.side, o.type, o.qty, o.limitPrice, o.stopPrice]);
   rows("protection", state.protection, (p) => [p.status, p.entryOrderId || p.episodeId || "", p.stopPrice, p.targetPrice, p.protectedQty || ""]);
