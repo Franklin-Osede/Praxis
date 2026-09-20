@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,15 +76,17 @@ func writeTo(t *testing.T, dir, name string, raw []byte) string {
 //
 //	Given a journal of several confirmed batches
 //	And the length in an early batch's header raised past the bytes that follow
-//	When the journal is inspected
-//	Then it is not reported as an incomplete tail, because the batches after
-//	     the damaged one are whole, confirmed, and still on the disk.
+//	When the journal is read
+//	Then it is refused as damage with data after it, and not reported as an
+//	     incomplete tail, because the batches after the damaged one are whole,
+//	     confirmed, and still on the disk.
 //
-// This is the claim, isolated from any bit pattern: the reader concludes "the
-// file was cut short here" from a length it cannot satisfy, and every
-// confirmed batch after that point is inside what it then calls the unfinished
-// append. An operator reading the report is told those bytes were never
-// confirmed. They were.
+// The finding is the one the other door already gives — ErrCorruptMidFile, and
+// ConditionFatal out of Inspect — and deliberately not a new name. A batch
+// damaged so its checksum fails, with data after it, is refused under that
+// error today; this is the same fact reached through the length field, and a
+// second name for it would put the client back to discriminating on a label
+// that does not match the fact.
 func TestALengthRaisedPastTheFileIsNotReportedAsAnUnfinishedAppend(t *testing.T) {
 	dir := t.TempDir()
 	original := filepath.Join(dir, "journal.praxis")
@@ -100,18 +103,25 @@ func TestALengthRaisedPastTheFileIsNotReportedAsAnUnfinishedAppend(t *testing.T)
 	// nor only its last batch.
 	damaged := append([]byte(nil), raw...)
 	from, to := lengthFieldAt(offsets[1])
-	beyond := uint64(len(raw)) // more than can possibly remain after the header
-	copy(damaged[from:to], []byte(fmt.Sprintf("%020d", beyond)))
+	copy(damaged[from:to], []byte(fmt.Sprintf("%020d", uint64(len(raw)))))
+	path := writeTo(t, dir, "damaged.praxis", damaged)
 
-	report, err := Inspect(writeTo(t, dir, "damaged.praxis", damaged))
-	if err != nil {
-		t.Fatalf("Inspect: %v", err)
+	if _, err := ReadJournal(bytes.NewReader(damaged)); !errors.Is(err, ErrCorruptMidFile) {
+		t.Errorf("the reader answered %v, want %v", err, ErrCorruptMidFile)
 	}
-	stranded := len(whole.Batches) - report.ConfirmedBatches
-	if report.Condition == ConditionIncompleteTail && stranded > 1 {
-		t.Errorf("a damaged length field is reported as %q, which Repair discards on Apply alone, "+
-			"and %d confirmed batches are inside those %d bytes: %s",
-			report.Condition, stranded, report.DiscardedBytes, report.Detail)
+
+	report, err := Inspect(path)
+	if !errors.Is(err, ErrNotAJournal) {
+		t.Errorf("Inspect answered %v, want it refused as %v", err, ErrNotAJournal)
+	}
+	if report == nil {
+		t.Fatal("Inspect reported nothing at all")
+	}
+	if report.Condition != ConditionFatal {
+		stranded := len(whole.Batches) - report.ConfirmedBatches
+		t.Errorf("a damaged length field is reported as %q, and %d of %d confirmed batches "+
+			"are inside %d bytes: %s",
+			report.Condition, stranded, len(whole.Batches), report.DiscardedBytes, report.Detail)
 	}
 }
 
@@ -213,5 +223,84 @@ func TestEverySingleBitFlipOfALengthFieldIsClassifiedHonestly(t *testing.T) {
 		t.Errorf("%d of %d single-bit flips of a length field are reported as an unfinished "+
 			"append while confirmed batches sit inside the discarded region; first: %s",
 			silent, swept, first)
+	}
+}
+
+// Scenario: a journal genuinely cut short still repairs on Apply alone
+//
+//	Given a journal whose last batch was cut in the middle of its payload
+//	When it is repaired with Apply and without DiscardCorruptBatch
+//	Then it repairs cleanly, because that is what an incomplete tail is.
+//
+// The guard on the scenarios above. They are satisfied by a reader that calls
+// everything fatal, and such a reader would have traded one defect for a worse
+// one: repair exists for exactly this case, and a probe that cannot tell it
+// from damage takes away the only thing repair is for.
+func TestAJournalCutInsideItsLastBatchStillRepairsCleanly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "journal.praxis")
+	writeSessionWithOrder(t, path)
+	raw := fileBytes(t, path)
+
+	whole := readJournalBytes(t, raw)
+	offsets := headerOffsets(t, raw)
+	last := offsets[len(offsets)-1]
+
+	// Inside the last batch's payload: past its header line, short of its end.
+	_, headerEnd := lengthFieldAt(last)
+	cut := int(headerEnd) + 40
+	if cut >= len(raw) {
+		t.Fatalf("the last batch is too small to cut inside: %d bytes left", len(raw)-int(headerEnd))
+	}
+	if err := os.WriteFile(path, raw[:cut], 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	report, err := Repair(path, RepairOptions{Apply: true})
+	if err != nil {
+		t.Fatalf("a genuinely incomplete tail was refused: %v", err)
+	}
+	if !report.Repaired || report.Condition != ConditionClean {
+		t.Fatalf("report: %+v", report)
+	}
+	if got, want := report.ConfirmedBatches, len(whole.Batches)-1; got != want {
+		t.Errorf("the repaired journal confirms %d batches, want %d", got, want)
+	}
+}
+
+// Scenario: a journal cut short deep inside itself is still an incomplete tail
+//
+//	Given a journal cut in the middle of its second batch, so that four whole
+//	batches are simply not on the disk at all
+//	When it is repaired with Apply and without DiscardCorruptBatch
+//	Then it repairs cleanly.
+//
+// This is the case that looks most like the defect and is not it. Both end
+// with five of six batches gone; the difference is whether the bytes are
+// there. A probe that answered on the count rather than on the bytes would
+// refuse this one, and refusing it means a machine killed mid-append cannot be
+// recovered — which is the ordinary case, not the exotic one.
+func TestAJournalCutDeepInsideItselfStillRepairsCleanly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "journal.praxis")
+	writeSessionWithOrder(t, path)
+	raw := fileBytes(t, path)
+
+	offsets := headerOffsets(t, raw)
+	_, headerEnd := lengthFieldAt(offsets[1])
+	cut := int(headerEnd) + 20
+	if err := os.WriteFile(path, raw[:cut], 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	report, err := Repair(path, RepairOptions{Apply: true})
+	if err != nil {
+		t.Fatalf("a journal cut deep inside itself was refused: %v", err)
+	}
+	if !report.Repaired || report.Condition != ConditionClean {
+		t.Fatalf("report: %+v", report)
+	}
+	if report.ConfirmedBatches != 1 {
+		t.Errorf("the repaired journal confirms %d batches, want 1", report.ConfirmedBatches)
 	}
 }
