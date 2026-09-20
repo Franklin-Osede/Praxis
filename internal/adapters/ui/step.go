@@ -66,6 +66,9 @@ func (s *Server) handleStep(w http.ResponseWriter, r *http.Request) {
 		refusedBy error
 	)
 	if err := s.ask(func() {
+		if refusedBy = s.halted(); refusedBy != nil {
+			return
+		}
 		segment, err := s.lease.check(body.Lease)
 		if err != nil {
 			refusedBy = err
