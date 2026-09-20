@@ -304,3 +304,80 @@ func TestAJournalCutDeepInsideItselfStillRepairsCleanly(t *testing.T) {
 		t.Errorf("the repaired journal confirms %d batches, want 1", report.ConfirmedBatches)
 	}
 }
+
+// headerLineAt is a batch's whole header line, from "BATCH" to the byte before
+// its newline.
+func headerLineAt(raw []byte, headerOffset int64) (from, to int64) {
+	for n := headerOffset; n < int64(len(raw)); n++ {
+		if raw[n] == '\n' {
+			return headerOffset, n
+		}
+	}
+	return headerOffset, int64(len(raw))
+}
+
+// Scenario: every single-bit flip of every header field, classified
+//
+// The wide sweep, agreed to run after the known mode was closed rather than
+// before it: whatever it finds, it finds against a reader that already tells
+// damage from an ending, which is a better place to look from.
+//
+// Two findings are counted, not one. The first is the defect just fixed — an
+// unfinished append that confirmed batches are inside. The second is worse and
+// was never measured: a journal that reads clean while holding fewer batches
+// than it held, which is silent truncation and would be reported to an
+// operator as a healthy file.
+func TestEverySingleBitFlipOfAHeaderFieldIsClassifiedHonestly(t *testing.T) {
+	dir := t.TempDir()
+	original := filepath.Join(dir, "journal.praxis")
+	writeSessionWithOrder(t, original)
+	raw := fileBytes(t, original)
+
+	whole := readJournalBytes(t, raw)
+	offsets := headerOffsets(t, raw)
+
+	var swept, refused, held, clean, silent, shortened int
+	var first string
+	for n, headerAt := range offsets {
+		from, to := headerLineAt(raw, headerAt)
+		for at := from; at < to; at++ {
+			for bit := 0; bit < 8; bit++ {
+				flipped := append([]byte(nil), raw...)
+				flipped[at] ^= 1 << bit
+				swept++
+
+				report, err := Inspect(writeTo(t, dir, "flip.praxis", flipped))
+				if err != nil {
+					refused++
+					continue
+				}
+				stranded := len(whole.Batches) - report.ConfirmedBatches
+				switch {
+				case report.Condition == ConditionIncompleteTail && stranded > 1:
+					silent++
+					if first == "" {
+						first = fmt.Sprintf("batch %d, byte %d of the header, bit %d: "+
+							"%d confirmed batches inside an \"unfinished append\"", n+1, at-from, bit, stranded)
+					}
+				case report.Condition == ConditionClean && stranded > 0:
+					shortened++
+					if first == "" {
+						first = fmt.Sprintf("batch %d, byte %d of the header, bit %d: "+
+							"reads clean with %d batches, and the journal had %d",
+							n+1, at-from, bit, report.ConfirmedBatches, len(whole.Batches))
+					}
+				case report.Condition == ConditionClean:
+					clean++
+				default:
+					held++
+				}
+			}
+		}
+	}
+	t.Logf("%d flips: %d refused, %d held for consent, %d read clean and whole",
+		swept, refused, held, clean)
+	if silent+shortened > 0 {
+		t.Errorf("%d discarded on Apply alone and %d read clean while short, of %d flips; first: %s",
+			silent, shortened, swept, first)
+	}
+}
