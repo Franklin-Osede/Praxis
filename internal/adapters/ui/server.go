@@ -535,6 +535,32 @@ func (s *Server) state() State {
 // undo this without anything looking wrong.
 func (s *Server) lastQuote() (market.Quote, bool) { return s.session.LastQuote() }
 
+// halted is the failure that stopped this session, wrapped so that it classifies
+// as the refusal the kernel gives for the same fact, or nil.
+//
+// It is asked at the top of every turn that would otherwise answer out of this
+// adapter's own memory, and that ordering is the whole of it. The gesture
+// register and the step record are written while a command mutates the
+// aggregates, which ADR-012 puts before the commit is attempted; a command
+// whose commit then failed leaves both of them describing an act the store
+// never took. The shortcuts that read them — this gesture is a retry, this
+// gesture is a reuse, this step is stale — are answered without the kernel
+// being asked at all, so the kernel's own refusal, correct as it is, is never
+// reached.
+//
+// It is asked before the lease, which is deliberate. A dead session and a lease
+// somebody else now holds are both true, and only one of them is worth acting
+// on: told the lease is stale, a client takes the controls again and goes on
+// trading a run that has stopped. State reports the two in the same order and
+// for the same reason.
+func (s *Server) halted() error {
+	err := s.session.NeedsRecovery()
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", session.ErrSessionNeedsRecovery, err)
+}
+
 // maxBodyBytes is what a request may weigh. Every body this protocol has is a
 // handful of decimal strings, so the ceiling is generous by three orders of
 // magnitude and still bounds what one page open in a browser can make this

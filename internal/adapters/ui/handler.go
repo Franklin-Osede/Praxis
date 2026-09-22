@@ -76,6 +76,9 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		refusedBy error
 	)
 	if err := s.ask(func() {
+		if refusedBy = s.halted(); refusedBy != nil {
+			return
+		}
 		at, err := s.lease.stamp(body.Lease)
 		if err != nil {
 			refusedBy = err
