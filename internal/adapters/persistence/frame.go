@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -219,6 +220,18 @@ func ReadJournal(r io.Reader) (*Journal, error) {
 			if status == TailCorrupt && consumed < len(rest) {
 				return nil, fmt.Errorf("%w: batch %d", ErrCorruptMidFile, expectedNumber)
 			}
+			// The same finding reached by the other door, and it must be the
+			// same finding. An incomplete tail is a claim — the file stops
+			// inside this batch — and the only evidence for it is that the
+			// length in the header is more than the bytes that remain. A
+			// length damaged upwards says exactly that while the batches after
+			// it sit whole on the disk, so the claim is checked before it is
+			// made rather than asserted from the one thing that cannot tell
+			// the two apart.
+			if status == TailIncomplete && continuesAfter(rest, expectedNumber) {
+				return nil, fmt.Errorf("%w: batch %d claims %s", ErrCorruptMidFile,
+					expectedNumber, "more bytes than the file holds, and a later batch lies whole inside them")
+			}
 			j.Tail, j.DiscardedBytes = status, int64(len(rest))
 			if status == TailCorrupt {
 				j.TailBatch = header
@@ -286,6 +299,62 @@ func readBatch(raw []byte, wantNumber, wantSequence uint64, version string) (Bat
 
 	return Batch{Number: number, FirstSequence: first, LastSequence: last, Events: events},
 		len(line) + 1 + int(length), TailComplete, nil, nil
+}
+
+// continuesAfter reports whether a batch later than the damaged one lies whole
+// inside the bytes a reader is about to call an unfinished append.
+//
+// A genuinely unfinished append is the partial bytes of exactly one batch: the
+// file is append-only, every batch is synced before the next begins, and
+// OpenWriter refuses a journal whose tail is unconfirmed. So nothing whole can
+// be inside one, and anything that is means the length was damaged rather than
+// the write cut short.
+//
+// The scan is necessary because the damaged length is precisely what is not
+// known, so where the frame really ends is not known either. It is cheap all
+// the same, and measured rather than assumed: over a 1317-byte region there
+// are five "BATCH " positions and the checksum is taken four times. The count
+// follows the batches in the region and not its bytes, because the literal is
+// what the scan looks for, the header's shape — seven fields, five of exactly
+// twenty digits, eight lowercase hex — is what rejects an accidental one, and
+// the numbering then removes the damaged batch's own header.
+//
+// So a false positive needs a CRC32C collision at one of a handful of
+// positions: about n·2⁻³² with n in single figures. The cost of one is a
+// repair refused rather than a batch discarded, which is the direction this
+// should fail in.
+func continuesAfter(rest []byte, damaged uint64) bool {
+	keyword := []byte(batchKeyword + " ")
+	for at := 0; at < len(rest); {
+		n := bytes.Index(rest[at:], keyword)
+		if n < 0 {
+			return false
+		}
+		at += n
+		if candidate(rest[at:], damaged) {
+			return true
+		}
+		at++
+	}
+	return false
+}
+
+// candidate is one position held to everything a batch must satisfy: the
+// header parses, it is numbered after the damaged batch, its payload fits in
+// what remains, and the checksum over its own bytes matches. The checksum is
+// last because it is the only expensive one.
+func candidate(raw []byte, damaged uint64) bool {
+	line, payload, ok := splitLine(raw)
+	if !ok {
+		return false
+	}
+	number, length, first, last, count, sum, err := parseBatchHeader(line)
+	switch {
+	case err != nil, number <= damaged, length > MaxPayloadBytes, uint64(len(payload)) < length:
+		return false
+	}
+	metadata := formatMetadata(number, length, first, last, count)
+	return crc32.Checksum(append([]byte(metadata+"\n"), payload[:length]...), castagnoli) == sum
 }
 
 func parseVersionLine(line string) (container, payload string, err error) {
